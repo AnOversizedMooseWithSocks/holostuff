@@ -264,3 +264,30 @@ def test_only_code_learned_means_string_queries_reach_code_labels():
     for s, lab in snips:
         mind.learn(s, lab, "code")
     assert mind.classify("def g ( y ) : return y + 2")[0] in ("code:a", "code:b")
+
+
+def test_absorb_with_sequences_assembles_a_complete_mind():
+    # The complete self-assembly: ONE absorb call returns a mind that classifies,
+    # recalls, AND generates -- one named sequence schema per discovered text-like
+    # sub-format, unnamed generation routed by the compression gate.
+    rng = np.random.default_rng(0)
+    code = [("def step ( self , a ) : r = self . world . step ( a ) ; return r"),
+            ("for i in range ( n ) : total += vals [ i ] ; "
+             "if total > cap : break"),
+            ("v = w @ x ; return v / np . linalg . norm ( v )")] * 10
+    docs = [("the forager perceives its situation and decides a move then remembers "
+             "what happened so the next decision is better informed"),
+            ("each leaf keeps a small memory inside capacity and the query descends "
+             "with a beam that can back track into nearby cells")] * 10
+    pile = ([(s, "code:lib", "code") for s in code] +
+            [(s, "doc:lib", "text") for s in docs])
+    rng.shuffle(pile)
+    mind = UnifiedMind(dim=512, seed=0).absorb(pile, sequences=True)
+
+    assert set(mind._gens) == {"text", "code"}      # one schema per discovered format
+    out_c = mind.generate("def step ( self", length=50, temperature=0.4)   # gate routes
+    out_d = mind.generate("the forager ", length=50, temperature=0.4)
+    assert len(out_c) > 25 and len(out_d) > 25
+    # and the same mind still classifies untagged across the sub-format line
+    assert mind.classify("v = m @ x ; return v")[0] == "code:lib"
+    assert mind.classify("the memory keeps each leaf inside capacity")[0] == "doc:lib"

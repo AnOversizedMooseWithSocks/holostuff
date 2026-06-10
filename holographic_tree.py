@@ -267,3 +267,64 @@ def _demo():
 
 if __name__ == "__main__":
     _demo()
+
+# ---------------------------------------------------------------------------
+# ReflexCache: the slime-mould fast path in front of ANY index
+# (moved here from holographic_navigator: the reflex fronts index machinery,
+#  not navigators -- _Index in holographic_mind uses it too)
+# ---------------------------------------------------------------------------
+
+class ReflexCache:
+    """A use-reinforced fast path -- the navigator's habits.
+
+    Real query streams are skewed: a handful of items get most of the traffic.
+    Slime mould handles exactly this by thickening the veins it travels often and
+    letting unused ones wither; the engine's ReflexArc is the same idea (a
+    familiar input skips the expensive path). So the navigator keeps a small HOT
+    SET of the items it commits to most, and checks them FIRST, before descending
+    the tree. If one clearly matches the cue it is recognised instantly -- a
+    reflex -- at the cost of a tiny scan instead of a full search.
+
+    Two pieces of self-regulation keep this honest:
+      * reinforcement -- every committed item's count goes up, and the hot set is
+        periodically rebuilt from the most-committed items (veins thicken with use);
+      * a flux guard -- after a warm-up, if the hot set is rarely the answer
+        (a uniform, unpredictable stream), it stops scanning it altogether, so the
+        habit never costs more than it saves. Veins nobody travels are pruned.
+    """
+
+    def __init__(self, n_items, hot_size=48, gate=0.55, margin=0.08, warmup=600, period=200):
+        self.n_items = n_items
+        self.hot_size = hot_size
+        self.gate = gate          # a hot item must match the cue at least this well
+        self.margin = margin      # ...and lead the runner-up by at least this much
+        self.warmup = warmup
+        self.period = period
+        self.counts = np.zeros(n_items)
+        self.hot = np.array([], dtype=int)
+        self.recent_hits = []
+        self.active = True
+        self.t = 0
+
+    def consider(self, cue, items):
+        """Return (item_index, comparisons) if a hot item clearly matches, else
+        (None, comparisons_spent_looking)."""
+        if not (self.active and len(self.hot)):
+            return None, 0
+        sims = items[self.hot] @ cue
+        order = np.sort(sims)[::-1]
+        runner = order[1] if len(order) > 1 else -2.0
+        if order[0] > self.gate and (order[0] - runner) > self.margin:
+            return int(self.hot[int(sims.argmax())]), len(self.hot)
+        return None, len(self.hot)
+
+    def reinforce(self, item_index, was_hit, items):
+        """Record a commitment, and periodically rebuild + flux-guard the veins."""
+        self.t += 1
+        self.counts[item_index] += 1
+        self.recent_hits.append(int(was_hit))
+        if self.t % self.period == 0:
+            self.hot = np.argsort(self.counts)[::-1][:self.hot_size]
+            if self.t >= self.warmup and len(self.recent_hits) >= self.period:
+                # keep the habit only if it is actually paying off
+                self.active = float(np.mean(self.recent_hits[-self.period:])) > 0.08

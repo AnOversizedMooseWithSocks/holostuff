@@ -181,7 +181,7 @@ class UnifiedMind:
         return {m: g for m, g in self._format_gate.items() if m in modalities}
 
     # -- self-assembly: a working mind straight from a pile of examples -----
-    def absorb(self, examples, maintain=True):
+    def absorb(self, examples, maintain=True, sequences=False):
         """SELF-ASSEMBLY: hand the mind a pile of `(input, label)` or
         `(input, label, modality)` examples and it builds itself -- discovers each
         item's modality, pre-reads whatever text it sees (so word vectors carry
@@ -189,10 +189,17 @@ class UnifiedMind:
         memory with cold word vectors throws information away), learns everything
         into the one memory, and runs one maintenance pass.
 
+        With `sequences=True` the assembly is COMPLETE: the mind also fits one
+        named sequence schema per text-like sub-format it discovered, from the
+        same accumulated samples the classify gate uses -- so the one call returns
+        a mind that classifies, recalls, AND generates, with unnamed generation
+        routed by the compression gate. Off by default only because the schema
+        fits cost a few seconds each.
+
         This is the one good idea of the retired `assemble()` facade, done on the
         real self-organizing machinery instead of a toy reimplementation. It is
-        sugar over read()/learn()/maintain_now() -- deliberately, so there is
-        nothing here to drift out of sync with the long-hand path."""
+        sugar over read()/learn()/maintain_now()/learn_sequence() -- deliberately,
+        so there is nothing here to drift out of sync with the long-hand path."""
         examples = [(e if len(e) == 3 else (e[0], e[1], None)) for e in examples]
         examples = [(x, lab, m if m is not None else self.encoder.infer(x))
                     for x, lab, m in examples]
@@ -207,6 +214,13 @@ class UnifiedMind:
             self.learn(x, lab, m)
         if maintain:
             self.maintain_now()
+        if sequences:
+            # third pass: one sequence schema per discovered text-like sub-format,
+            # fitted on the same capped samples learn() accumulated for the gate
+            for m, corpus in self._format_corpus.items():
+                if len(corpus) >= 200:
+                    self.learn_sequence(corpus, modality=("code" if m == "code" else "text"),
+                                        name=m)
         return self
 
     # -- the same data, a recall view (nearest individual) -----------------

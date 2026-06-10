@@ -192,13 +192,12 @@ from holographic_text import TOPICS, _content
 rng3 = np.random.default_rng(0)
 pile = [(_content(s), topic) for topic, ss in TOPICS.items() for s in ss]
 pile += [(_patterns(k, rng3), f"img:{k}") for k in ("rows", "check") for _ in range(12)]
-um = UnifiedMind(dim=1024, seed=0).absorb(pile)     # modalities DISCOVERED, not declared
+um = UnifiedMind(dim=1024, seed=0).absorb(pile, sequences=True)   # ONE call: classify+recall+generate
 t_ok = um.classify(_content("the striker scored a goal in the match"))[0]
 i_ok = um.classify(_patterns("rows", rng3))[0]
-print(f"  absorb() built a working mind from a bare pile of (input, label) pairs")
+print(f"  absorb() built a COMPLETE mind from a bare pile of (input, label) pairs")
 print(f"  an untagged sentence classifies as : '{t_ok}'  (modality self-discovered)")
 print(f"  an untagged image classifies as    : '{i_ok}'")
-um.learn_sequence(" ".join(s for ss in TOPICS.values() for s in ss).lower())
 print(f"  and the same mind generates        : \"{um.generate('the ', 60, 0.4)[:58]}\"")
 
 print("\n" + "-" * 66)
