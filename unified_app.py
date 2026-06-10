@@ -145,11 +145,14 @@ def build(dataset_id):
         test += [(d, lab) for d in docs[cut:]]
     rng.shuffle(train)
 
+    # SELF-ASSEMBLY: absorb() is the one way to build a mind from examples -- it
+    # discovers modalities, pre-reads the text (word co-occurrence before filing),
+    # learns everything into the one memory, and runs the maintenance pass. The
+    # long-hand read/learn/maintain_now sequence this replaced is what absorb is
+    # sugar for, so behaviour is identical; having ONE path keeps app and library
+    # from drifting.
     mind = UnifiedMind(dim=1024, seed=0, text_window=3)
-    mind.read([toks for toks, _ in train])          # learn word co-occurrence
-    for toks, lab in train:
-        mind.learn(toks, lab, "text")               # classification + recall, one memory
-    mind.maintain_now()
+    mind.absorb(train)                              # classification + recall, one memory
     mind.learn_sequence(raw[:160000], n=6)          # generation, same space
 
     acc = sum(mind.classify(toks, "text")[0] == lab for toks, lab in test) / max(1, len(test))

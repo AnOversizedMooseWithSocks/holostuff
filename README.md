@@ -15,7 +15,7 @@ No neural-network framework, no pretrained models, no GPU - just numpy. (The UI,
 image I/O, tests, and plots use Flask / Pillow / pytest / matplotlib.)
 
 If you only read one thing: run it (below), click **Run full system tour**, and
-watch all twelve subsystems work in ~30 seconds.
+watch all thirteen subsystems work in ~30 seconds -- it now ends with the unified mind self-assembling from a bare pile of examples.
 
 ### One model on top (`holographic_unified.py`)
 
@@ -95,6 +95,82 @@ trains one `UnifiedMind` on it, and lets you classify, recall the nearest stored
 watch the memory organize itself into sub-prototypes, and generate new text in the
 corpus's style, all against the one trained mind.
 
+**Self-discovery and self-assembly** were the next two gaps, and closing them surfaced
+one re-measured trap and two clean negatives -- all kept. *Self-discovery:* the routing
+safeguard used to depend on the caller's bookkeeping -- pass no modality tag and it
+silently vanished. Now the encoder itself names the modality it would use
+(`UniversalEncoder.infer`, the single source of truth `encode` also dispatches through,
+so the tag used for routing can never disagree with the encoding used), and
+`learn`/`classify` discover untagged inputs. The trap: naive type dispatch sends a LIST
+of tokens to the order-sensitive sequence encoder -- the *same* encoding bug fixed once
+already, sneaking back in through inference -- and scores 93.8% on the mixed-modality
+demo. With the one rule that a list of strings is a bag of words, inferred routing
+scores 97.5%, *exactly* matching caller-declared tags. *Self-assembly:*
+`UnifiedMind.absorb(examples)` builds a working mind from a bare pile of
+`(input, label)` pairs -- discovers each item's modality, pre-reads the text it sees so
+word vectors carry co-occurrence meaning before anything is filed, learns everything
+into the one memory, and runs a maintenance pass; it is deliberately sugar over
+`read`/`learn`/`maintain_now` so there is nothing to drift out of sync. The negatives:
+wiring the learned *navigator* into unified recall lost badly on the mind's own store
+(48% recall@1 at ~130 comparisons, where the fixed-beam forest gets 89% within ~512 --
+its arrive/keep-moving margin sense was tuned on uniform random vectors and the unified
+store is clustered), so recall keeps the dumb-but-honest index and the navigator stays
+a study. And the recall index's *switch-over to the forest* turned out to be 16x too
+eager: measured, a single numpy matmul scan is exact AND faster than the tree's
+Python-level routing until roughly 4,000 items (at the old 256-item threshold the scan
+is ~7x faster and the forest already costs recall), so the threshold now sits at the
+crossover -- below it the forest paid more wall-clock for less accuracy.
+
+**Structure before meaning, on a new format.** The destination demands that the same
+machinery handle text, code, images, and more by discovering each format's *structure*
+first -- and the schema module always claimed its compress-by-merging move was
+modality-blind ("idioms and indentation in code"), but code had never been measured. It
+now is, and the corpus is -- recursively -- this project's own source: ~500k characters
+of it. The discovered schema cuts held-out bits/char from 2.98 (flat character model) to
+2.28 (the fractal coder), 24% fewer bits, the same shape of win it earned on Austen. The
+emergent chunks, found with no labels from raw characters, ARE Python syntax:
+`def __init__`, `rng = np.random.default_rng(`, `)\n        return `, whole indentation
+idioms, the banner comment lines. And a compression gate can tell code from prose --
+each schema claims its own held-out format -- with one honest caveat that is itself a
+finding: feed the code expert this project's RAW source, which is half English
+docstrings, and it becomes a *better English model* than a prose expert trained on less,
+so the gate mis-routes. Representative corpora are part of the mechanism, not an
+optional nicety. (Both results are locked in as tests.)
+
+The third format closed the set: the same primitive on **images**, measured on the
+project's own 712-sprite set (each pixel an opaque colour-code atom in raster order). The
+honest shape of this one is that the schema is *data-hungry* here: at 60 training sprites
+the rare chunks starve and the fractal coder LOSES to the flat pixel model (1.91 vs 1.96
+bits/pixel); at 150 sprites it wins on every split tried (1.49 -> 1.30, and 23% fewer
+bits at deeper settings -- the same magnitude as text and code). Structure exists in the
+format; feeding the statistics is part of the mechanism. And the unified mind now *uses*
+the format work: `learn_sequence` takes a modality (so it learns to continue code, not
+just prose) and a name, so one mind holds MANY sequence schemas at once instead of a
+single slot that silently overwrote. Unnamed generation routes the seed through the
+compression gate -- whoever compresses the seed best understands it -- which is
+content-level self-discovery, needed exactly where type inference goes blind: code and
+prose are both `str`. Measured: a `def encode(self, x):` seed routes to the code schema
+and continues as code; a prose seed routes to prose. One routing primitive, reused at
+every level of the stack.
+
+The same gate then moved into **classification**, and the measurement that justified it
+was a surprise: not a booster, a *correctness fix*. First the encoder needed `"code"` as
+a first-class text-like modality -- before that, a declared code tag silently fell to the
+opaque-symbol path and two nearly identical snippets encoded as orthogonal (measured
+cosine 0.04). With that fixed, one mind learned documentation and source code about the
+*same* subsystems (heavy shared vocabulary -- the adversarial case) into the one memory.
+The finding: routing's gain over a flat scan is ZERO on this data (bag-of-token vectors
+already separate docs from code -- the safeguard story again, one level down), but the
+old type-only path was actively destructive -- tags declared at learn time put code
+labels in a "code" pool, an untagged classify inferred "text", and the routing safeguard
+then *excluded the true labels from competition entirely*: 24% accuracy, 66% cross-pool
+leakage, worse than no routing at all. The compression gate, fitted on the mind's own
+learned samples (capped, refit only when the corpus grows by a third), identified the
+sub-format on 100% of held-out queries and recovered declared-tag accuracy exactly --
+~2s one-time fit, ~10ms per untagged string query at steady state. So `classify` now
+discovers in two stages: type (`encoder.infer`) for everything, then content (the gate)
+exactly where type goes blind. All pinned as tests.
+
 ---
 
 ## Quick start
@@ -126,13 +202,13 @@ in, and a Labyrinth mode has it learn the way out of a maze -- all on a prototyp
 **Test suite** (runs the full pytest suite), **Query & recall** (the interactive image demo - degrade an
 image, optionally destroy part of the plate, watch it get recalled), **Recall by description**
 (cross-modal recall - describe an image in words and get the matching one back from the tag address space),
-**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (162 at last count; three skip without the optional NLTK corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
+**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (192 at last count; five skip without the optional NLTK corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
 
 ### From the command line
     python tour.py                    # guided tour of all subsystems (~20s)
     python holographic_creature.py    # any module runs its own demo
     python holographic_encoders.py    # numbers / text / records demos
-    pytest -q                         # the whole test suite (60 tests)
+    pytest -q                         # the whole test suite (192 tests)
 
 ---
 
@@ -274,30 +350,23 @@ navigator has a literal train of thought: a familiar query returns
 little navigator in the data world, thinking out loud. (`python
 holographic_navigator.py` runs both halves.)
 
-**One general-purpose mind for any input.** Everything above rests on a single
+**One shared encoder for any input.** Everything above rests on a single
 fact: once you encode something into a hypervector, the same operations work on
 it -- `bundle`/`bind`/`cosine` do not care where the vector came from. So the
 hypervector is a universal interchange format, and the machines built on it (a
 prototype classifier, the recursive index, the creature's brain) are a component
-library that snaps onto *any* encoded input. `holographic_mind.py` is the front
-door. A `UniversalEncoder` turns text, numbers, categories, raw feature vectors
-(an audio MFCC frame, an image embedding), images, structured records (a dict of
-fields), or sequences into one unit vector in one shared space -- different
-modalities, identical representation. A `Mind` then takes a direction -- classify,
-recall, or decide, either stated or inferred by `assemble()` from the shape of
-what you hand it -- and lazily assembles the matching structure: teach it labelled
-examples and it grows a classifier, pour items in and it grows a searchable index,
-give it states/actions/rewards and it grows the creature's brain. The same `Mind`
-class, measured end to end across modalities, handles text topic-labelling,
-structured records with unseen field values, noisy 12x12 image patterns, tone
-pitch from an FFT spectrum, associative recall from a partial cue, and a learned
-contextual-decision policy -- each at high accuracy, with only the input format
-and the direction changing between them. Honest scope: "general purpose" here
-means a modality-agnostic representation plus a small library of measured machines
-auto-wired to the job -- not a universal solver. The intelligence lives in the
-components; what is new is that one interface and one representation now span all
-of them, so the same mind can be pointed at a sentence one minute and a control
-problem the next. (`python holographic_mind.py` prints the measured table.)
+library that snaps onto *any* encoded input. `holographic_mind.py` holds the
+shared pieces: a `UniversalEncoder` that turns text, numbers, categories, raw
+feature vectors (an audio MFCC frame, an image embedding), images, structured
+records (a dict of fields), or sequences into one unit vector in one shared
+space -- and that can *name* the modality it would use (`infer`), which is what
+lets the unified mind discover an input's kind instead of being told (see
+below). This file used to also hold a `Mind` facade with an `assemble()` that
+guessed the task from data shape; it was retired, because it re-implemented thin
+versions of machinery that exists for real elsewhere -- exactly the failing
+`UnifiedMind` was built to fix. Its one good idea, building a working mind
+straight from a pile of examples, lives on as `UnifiedMind.absorb()`, running on
+the real self-organizing memory instead of a toy one.
 
 **A holographic mixture of experts, with a learned gate.** The general Mind routes
 by a rule -- which verb you called, what type the input is. A true mixture of
@@ -686,16 +755,23 @@ popcount kernel); the 1-bit win is the footprint, which fits in cache at scale.
 The engine (pure numpy):
 
     holographic_ai.py         bind/bundle/cleanup, key->value memory, learner, reflex, drift
-    holographic_unified.py    TOP LEVEL: one encoder + one self-organizing memory + one brain
+    holographic_unified.py    TOP LEVEL: one encoder + one memory + one brain + named sequence schemas
     unified_app.py            web console to test the unified mind on pulled corpora
     holographic_encoders.py   numbers (scalar/fractional-power), text, mixed records
     holographic_reasoning.py  resonator, conformal intervals, epistemic map, compass
     holographic_creature.py   grid-world + a holographic RL mind (the forager)
     holographic_navigator.py  the same mind, repurposed to navigate the data tree
-    holographic_mind.py       general-purpose front door: any input -> one mind
+    holographic_mind.py       the shared UniversalEncoder (with modality self-discovery)
     holographic_moe.py        mixture of experts with a learned holographic gate
     holographic_organizer.py  self-organizing memory: reorganize a shadow, then swap
+    holographic_schema.py     structure by compression: chunk schemas, fractal coder, the gate
     holographic_text.py       text from scratch: learn / analyze / organize / produce
+    holographic_tree.py       recursive RP-tree + HoloForest (capacity -> partition)
+    holographic_graph_memory.py  routed-descent memory -- a recorded negative for classification
+    holographic_slime.py      slime-mould maze solver (discover, then thin to shortest)
+    holographic_vision.py     pixels -> features: HSV, edges, Hough, shapes, emergent classes
+    holographic_scene.py      compositional scenes: per-object tags, resonator factoring
+    holographic_uri.py        content addresses: S3-style keyspace + bi-level buckets
     holographic_extras.py     residue arithmetic, SDF regions, predictive filter
     holographic_field.py      scalar field abstraction (one field, many roles)
     holographic_diffusion.py  two-timescale double diffusion
@@ -715,7 +791,7 @@ The app and tour:
     tour.py       command-line tour of every subsystem
     run.bat       Windows launcher
 
-Tests (162 total):
+Tests (192 total):
 
     test_holographic.py           core engine (bind/bundle/memory/reflex/drift)
     test_holographic_image.py     image store / WHT / quantisation
@@ -728,18 +804,29 @@ Tests (162 total):
     test_holographic_tree.py      capacity curve, RP-tree + forest recall
     test_holographic_uri.py       S3-style keyspace, prefixes, bi-level buckets
     test_holographic_navigator.py learned data-tree navigator vs fixed beam
-    test_holographic_mind.py      universal encoder + classify / recall / decide
+    test_holographic_mind.py      universal encoder + modality self-discovery + index regime
     test_holographic_moe.py       learned gate routes to specialists, beats single
     test_holographic_organizer.py self-organizing + autonomous reorg (no thresholds)
     test_holographic_text.py      word learning, language ID, topic sort, generate, scale, hard, multilingual
+    test_holographic_schema.py    schema discovery across text / CODE / IMAGES + the gates
+    test_holographic_slime.py     slime maze solving + tube thinning
+    test_holographic_orchestrator.py  typed tool chains, circuit-breakers
+    test_holographic_graph_memory.py  routed descent -- pins the recorded negative
     test_holographic_brain.py     self-maintaining, autonomous, hard-shift recovery
-    test_holographic_unified.py   top level: one memory across modalities, recall, decide
+    test_holographic_unified.py   top level: one memory across modalities, self-discovery,
+                                  absorb, named schemas routed by the compression gate
+    test_app_creature.py          the app's creature endpoint round-trip
 
-Research / provenance (run from this folder, e.g. `python exp_wht.py`):
+Research / provenance -- one-off scripts whose results are recorded above and in
+`figures/`; none is imported by the library, the app, or the tests. They were
+moved out of the root into `archive/` to keep the working set readable, and each
+adds the repo root to its own import path so it still runs from anywhere:
 
-    exp_*.py, bench_vs_jpeg.py (add --fig for the corruption figure),
-    bench_sprites.py, benchmark_holographic.py, stress_holographic.py,
-    make_test_image.py
+    archive/exp_*.py, archive/bench_vs_jpeg.py (add --fig for the corruption figure),
+    archive/bench_batch.py, archive/bench_sprites.py, archive/bench_fig.py,
+    archive/make_test_image.py        (e.g. `python archive/exp_wht.py`)
+    benchmark_holographic.py, stress_holographic.py    (still at the root: these are
+                                       the live measurement suites, not one-offs)
     figures/   rendered results
 
 ---

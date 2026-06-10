@@ -1,9 +1,11 @@
 """Tests for holographic_mind: the universal encoder lands every modality in one
-space, and the Mind assembles the right machine for classify / recall / decide."""
+space, names the modality it would use (self-discovery), and the recall index
+stays exact until the store is genuinely big. (The old Mind facade this file
+used to test was retired in favour of UnifiedMind -- see holographic_unified.)"""
 
 import numpy as np
 
-from holographic_mind import UniversalEncoder, Mind, assemble
+from holographic_mind import UniversalEncoder, _Index
 
 
 def test_universal_encoder_is_consistent_and_similarity_preserving():
@@ -27,53 +29,68 @@ def test_universal_encoder_is_consistent_and_similarity_preserving():
     assert float(vb @ vn) > float(vb @ vf)
 
 
-def test_mind_classifies_text_and_records():
-    m = Mind(seed=1)
-    for s in ["happy joy wonderful", "great love delight", "awful hate terrible",
-              "sad gloom misery"]:
-        m.teach(s, "pos" if s[0] in "hg" else "neg")
-    # (the four above split pos/neg by first letter h/g vs a/s -- fix labels)
-    m = Mind(seed=1)
-    pos = ["happy joy wonderful", "great love delight", "joy happy great"]
-    neg = ["awful hate terrible", "sad gloom misery", "hate awful sad"]
-    for s in pos: m.teach(s, "pos")
-    for s in neg: m.teach(s, "neg")
-    assert m.classify("joy and delight")[0] == "pos"
-    assert m.classify("terrible misery")[0] == "neg"
-
-    r = Mind(seed=2)
-    for rec, lab in [({"cover": "feathers", "fly": "yes"}, "bird"),
-                     ({"cover": "scales", "fly": "no"}, "fish"),
-                     ({"cover": "fur", "fly": "no"}, "mammal")]:
-        r.teach(rec, lab)
-    assert r.classify({"cover": "feathers", "fly": "yes"})[0] == "bird"
+def test_infer_names_the_modality_for_every_type():
+    enc = UniversalEncoder(dim=256, seed=0)
+    assert enc.infer("a sentence") == "text"
+    assert enc.infer(3.5) == "number"
+    assert enc.infer(7) == "number"
+    assert enc.infer(True) == "category"          # bool is an int -- must not be a number
+    assert enc.infer({"k": 1}) == "record"
+    assert enc.infer(np.ones((8, 8))) == "image"
+    assert enc.infer(np.ones(8)) == "vector"
+    assert enc.infer([1, "two", 3.0]) == "sequence"
 
 
-def test_mind_recall_returns_right_payload():
-    m = Mind(seed=3)
-    facts = {"paris": "France", "tokyo": "Japan", "cairo": "Egypt"}
-    for k, v in facts.items():
-        m.store(k, v)
-    ans, score = m.recall("tokyo")
-    assert ans == "Japan" and score > 0.9
+def test_infer_treats_token_lists_as_text_not_sequence():
+    # The measured bug: a list of tokens falling into the order-sensitive sequence
+    # encoder silently wrecks topic similarity. Inference must send it to the
+    # order-insensitive text bundle -- and the encoding must agree with the tag.
+    enc = UniversalEncoder(dim=512, seed=0)
+    toks = ["holographic", "memory", "engine"]
+    assert enc.infer(toks) == "text"
+    assert np.allclose(enc.encode(toks), enc.encode(toks, "text"))
+    # order-insensitive: a shuffled token list encodes to the same bundle
+    assert np.allclose(enc.encode(toks), enc.encode(list(reversed(toks)), "text"))
+    # an explicit sequence is still order-SENSITIVE -- the escape hatch works
+    s1 = enc.encode(toks, "sequence")
+    s2 = enc.encode(list(reversed(toks)), "sequence")
+    assert not np.allclose(s1, s2)
 
 
-def test_mind_decide_learns_contextual_bandit():
-    m = Mind(seed=4).actions(["a", "b"])
+def test_encode_and_infer_cannot_disagree():
+    # encode(x) with no declared modality must equal encode(x, infer(x)) for every
+    # type -- the single-source-of-truth property that routing depends on.
+    enc = UniversalEncoder(dim=256, seed=3)
+    for x in ["words here", 2.5, {"a": 1}, np.ones((4, 4)), np.ones(6),
+              ["tok", "list"], [1, 2, 3], True]:
+        assert np.allclose(enc.encode(x), enc.encode(x, enc.infer(x)))
+
+
+def test_index_recall_is_exact_below_the_forest_crossover():
+    # the recall index must do an exact scan in the small/medium regime (the
+    # forest there was measured to cost MORE wall-clock for LESS accuracy)
     rng = np.random.default_rng(0)
-    best = {"x": "a", "y": "b"}
-    for _ in range(120):
-        c = "x" if rng.random() < 0.5 else "y"
-        act = m.act({"c": c}, explore=True, epsilon=0.3)
-        m.reinforce({"c": c}, act, 1.0 if act == best[c] else 0.0)
-    hits = np.mean([m.act({"c": c}) == best[c] for c in ("x", "y") for _ in range(20)])
-    assert hits >= 0.9
+    idx = _Index(128)
+    vecs = rng.standard_normal((500, 128))
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    for i, v in enumerate(vecs):
+        idx.add(v, i)
+    assert idx._forest is None                    # no forest built in this regime
+    for i in (0, 123, 499):
+        q = vecs[i] + 0.2 * rng.standard_normal(128)
+        payload, _ = idx.recall(q / np.linalg.norm(q))
+        assert payload == int((vecs @ (q / np.linalg.norm(q))).argmax())
+    assert idx._forest is None                    # still exact after recalls
 
 
-def test_assemble_infers_the_task():
-    clf = assemble([("good nice", "pos"), ("bad awful", "neg")])
-    assert clf.classify("nice")[0] in ("pos", "neg")          # built a classifier
-    idx = assemble(["alpha", "beta", "gamma"])
-    assert idx.recall("alpha")[0] == "alpha"                  # built an index
-    dec = assemble([({"c": "x"}, "a", 1.0), ({"c": "x"}, "b", 0.0)] * 20)
-    assert dec.act({"c": "x"}) in ("a", "b")                  # built a brain
+def test_code_modality_encodes_like_text_not_opaque_symbol():
+    # The pinned foot-gun: a declared "code" modality used to fall through to the
+    # opaque-symbol path, so two nearly identical snippets encoded ORTHOGONALLY
+    # (measured cosine 0.04). Code must encode like text -- bag of token vectors --
+    # with the distinct name existing only for routing.
+    enc = UniversalEncoder(dim=512, seed=0)
+    a = enc.encode("def foo(x): return x + 1", "code")
+    b = enc.encode("def foo(x): return x + 2", "code")
+    assert float(a @ b) > 0.6                       # near-identical snippets are near
+    t = enc.encode("def foo(x): return x + 1", "text")
+    assert np.allclose(a, t)                        # same encoding, different routing tag

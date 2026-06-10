@@ -185,6 +185,22 @@ k0, recs0 = list(store.flat.items())[0]
 derived = uri.address_from_content(recs0[0]['vec'], coder)
 print(f"  resonator computes the URI from content: '{derived}' ({'matches' if derived == k0 else 'differs'})")
 
+# 13. One mind on top (self-assembly across modalities) ---------------------
+title("13. UnifiedMind  (one encoder, one memory, one brain -- self-assembled)")
+from holographic_unified import UnifiedMind, _patterns
+from holographic_text import TOPICS, _content
+rng3 = np.random.default_rng(0)
+pile = [(_content(s), topic) for topic, ss in TOPICS.items() for s in ss]
+pile += [(_patterns(k, rng3), f"img:{k}") for k in ("rows", "check") for _ in range(12)]
+um = UnifiedMind(dim=1024, seed=0).absorb(pile)     # modalities DISCOVERED, not declared
+t_ok = um.classify(_content("the striker scored a goal in the match"))[0]
+i_ok = um.classify(_patterns("rows", rng3))[0]
+print(f"  absorb() built a working mind from a bare pile of (input, label) pairs")
+print(f"  an untagged sentence classifies as : '{t_ok}'  (modality self-discovered)")
+print(f"  an untagged image classifies as    : '{i_ok}'")
+um.learn_sequence(" ".join(s for ss in TOPICS.values() for s in ss).lower())
+print(f"  and the same mind generates        : \"{um.generate('the ', 60, 0.4)[:58]}\"")
+
 print("\n" + "-" * 66)
-print("  All twelve subsystems ran on the same vector substrate. Wired up.")
+print("  All thirteen subsystems ran on the same vector substrate. Wired up.")
 print("-" * 66 + "\n")

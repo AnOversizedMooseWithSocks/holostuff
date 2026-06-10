@@ -32,9 +32,13 @@ class UnifiedMind:
     """Perceive once, into one space; remember, organize, recall, and decide over it.
 
       read(corpus)                     -- let perception pre-learn word co-occurrence
-      learn(x, label, modality)        -- file a perception into the one memory (any modality)
-      classify(x, modality)            -- 'what is this?'  (nearest self-organized prototype)
-      recall(x, modality)              -- 'what's like this?' (nearest stored individual)
+      absorb(examples)                 -- SELF-ASSEMBLY: build a working mind from a pile
+                                          of (input, label[, modality]) examples
+      learn(x, label[, modality])      -- file a perception into the one memory; the
+                                          modality is discovered if not declared
+      classify(x[, modality])          -- 'what is this?'  (nearest self-organized prototype,
+                                          routed within the discovered/declared modality)
+      recall(x[, modality])            -- 'what's like this?' (nearest stored individual)
       actions(names) / decide / reinforce  -- choose actions over the same space
 
     The memory maintains itself: with maintain='auto' it periodically reorganizes (the
@@ -42,6 +46,12 @@ class UnifiedMind:
     class into sub-prototypes only when held-out accuracy says it earns its keep. The
     decision brain maintains itself the same way.
     """
+
+    # modalities whose inputs are strings/token-lists: type inference alone cannot
+    # tell them apart (code and prose are both str), so classify resolves between
+    # them by CONTENT -- the compression gate (see _resolve_text_like)
+    _TEXT_LIKE = ("text", "code")
+    _FORMAT_CORPUS_CAP = 40000     # chars per sub-format kept for fitting the gate
 
     def __init__(self, dim=1024, seed=0, number_range=(-4.0, 4.0), maintain='auto',
                  check_every=60, text_window=2):
@@ -61,6 +71,11 @@ class UnifiedMind:
         self._taught = 0
         self._label_modality = {}    # which modality each label came from (for routing)
         self._gen = None             # sequence generator (lazy)
+        # sub-format discovery state: raw samples of each TEXT-LIKE modality (capped),
+        # and a lazily fitted compression-gate schema per modality (see classify)
+        self._format_corpus = {}     # modality -> accumulated raw chars
+        self._format_gate = None     # modality -> fitted SchemaGenerator
+        self._format_fitted_at = {}  # modality -> corpus size when its schema was fit
 
     # -- perception (the single front door) --------------------------------
     def read(self, corpus):
@@ -75,28 +90,124 @@ class UnifiedMind:
 
     # -- one memory: classification + organization -------------------------
     def learn(self, x, label, modality=None):
+        # SELF-DISCOVERY: if the caller does not name the modality, the encoder
+        # infers it from the input itself (encoder.infer is the single source of
+        # truth, so the tag recorded here always matches the encoding used).
+        # Without this, untagged learning stored modality=None and the routing
+        # safeguard in classify() silently vanished for those labels.
+        if modality is None:
+            modality = self.encoder.infer(x)
         v = self.perceive(x, modality)
         self.memory.observe_vector(v, label)        # aggregate into self-organized prototypes
         self._index(v, (label, x))                  # AND keep the individual for recall
         self._label_modality[label] = modality      # remember which modality this label is
+        if modality in self._TEXT_LIKE:
+            # keep a bounded sample of each text-like sub-format's raw characters --
+            # the corpus the classify-time compression gate is fitted on. Capped so
+            # the gate's schema fit stays a few seconds, never grows with the mind.
+            cur = self._format_corpus.get(modality, "")
+            if len(cur) < self._FORMAT_CORPUS_CAP:
+                raw = x if isinstance(x, str) else " ".join(str(t) for t in x)
+                self._format_corpus[modality] = (cur + " " + raw)[:self._FORMAT_CORPUS_CAP]
         self._taught += 1
         if self.maintain == 'auto' and self._taught % self.check_every == 0:
             self.memory.auto_reorganize()
         return self
 
     def classify(self, x, modality=None, route=True):
-        """Nearest self-organized prototype. If the modality is known and `route` is on,
-        the query competes only against that modality's concepts -- a cheap router that
-        removes the cross-modal interference a single flat store can otherwise suffer (a
-        text query mistaken for an image). When the modality is unknown the query ranges
-        over everything; inferring it instead would be the learned MoE gate's job, which
-        (per the mixture-of-experts study) only beats this trivial routing when the
-        experts are miscalibrated."""
+        """Nearest self-organized prototype. If `route` is on, the query competes only
+        against its own modality's concepts -- a cheap router that removes the
+        cross-modal interference a single flat store can otherwise suffer (a text
+        query mistaken for an image). The modality may be declared or, when it is
+        not, DISCOVERED from the input -- in two stages:
+
+        * TYPE inference (`encoder.infer`): measured to score identically to
+          caller-declared tags on the mixed-modality demo (97.5% both ways).
+        * CONTENT inference, only where type goes blind: code and prose are both
+          `str`, so when the mind holds text-like sub-formats a string query is
+          resolved by the compression gate fitted on the mind's own learned
+          samples. This is a CORRECTNESS fix, not a booster -- measured on a
+          docs-vs-code set with heavy shared vocabulary, plain type inference
+          routed every code query into a pool that EXCLUDED the code labels
+          (24% accuracy, 66% cross-pool leakage, worse than no routing at all),
+          while the gate identified the sub-format on 100% of held-out queries
+          and recovered declared-tag accuracy (61%) exactly. Routing's GAIN over
+          a flat scan stayed zero on that data (the bag-of-token vectors already
+          separate docs from code) -- the safeguard story again, now one level
+          down."""
+        if modality is None:
+            modality = self.encoder.infer(x)
+            if modality == "text":
+                modality = self._resolve_text_like(x)
         among = None
-        if route and modality is not None:
+        if route:
             among = {lab for lab, m in self._label_modality.items() if m == modality}
             among = among or None
         return self.memory.classify_vector(self.perceive(x, modality), among=among)
+
+    def _resolve_text_like(self, x):
+        """Which text-like sub-format is this string? Type inference can only say
+        'text'; if the mind has learned other text-like sub-formats (code), decide by
+        the compression gate over schemas fitted on the mind's OWN learned samples --
+        whoever compresses the query best understands it."""
+        present = {m for m in self._label_modality.values() if m in self._TEXT_LIKE}
+        if not present or present == {"text"}:
+            return "text"                       # nothing to disambiguate
+        if len(present) == 1:
+            return next(iter(present))          # only code was learned: a string means code
+        gens = self._format_schemas(present)
+        if not gens or len(gens) < 2:
+            return "text"                       # no corpus to gate with -- fall back safely
+        from holographic_schema import compression_gate
+        raw = x if isinstance(x, str) else " ".join(str(t) for t in x)
+        return compression_gate(raw, gens)[0][1]
+
+    def _format_schemas(self, modalities):
+        """Fit (and cache) one small schema per text-like sub-format from the raw
+        samples learn() accumulated. Refit only when a corpus has grown by more than
+        a third since its schema was fitted, so steady-state classify pays nothing."""
+        from holographic_schema import SchemaGenerator
+        if self._format_gate is None:
+            self._format_gate = {}
+        for m in modalities:
+            corpus = self._format_corpus.get(m, "")
+            if len(corpus) < 200:                # too little to characterise a format
+                continue
+            fitted_at = self._format_fitted_at.get(m, 0)
+            if m not in self._format_gate or len(corpus) > 1.34 * fitted_at:
+                self._format_gate[m] = SchemaGenerator(m if m == "code" else "text",
+                                                       cuts=(0, 60, 150)).fit(corpus)
+                self._format_fitted_at[m] = len(corpus)
+        return {m: g for m, g in self._format_gate.items() if m in modalities}
+
+    # -- self-assembly: a working mind straight from a pile of examples -----
+    def absorb(self, examples, maintain=True):
+        """SELF-ASSEMBLY: hand the mind a pile of `(input, label)` or
+        `(input, label, modality)` examples and it builds itself -- discovers each
+        item's modality, pre-reads whatever text it sees (so word vectors carry
+        co-occurrence meaning BEFORE any text is filed; learning text into the
+        memory with cold word vectors throws information away), learns everything
+        into the one memory, and runs one maintenance pass.
+
+        This is the one good idea of the retired `assemble()` facade, done on the
+        real self-organizing machinery instead of a toy reimplementation. It is
+        sugar over read()/learn()/maintain_now() -- deliberately, so there is
+        nothing here to drift out of sync with the long-hand path."""
+        examples = [(e if len(e) == 3 else (e[0], e[1], None)) for e in examples]
+        examples = [(x, lab, m if m is not None else self.encoder.infer(x))
+                    for x, lab, m in examples]
+        # first pass: read everything text-LIKE so co-occurrence is learned before
+        # filing -- code included, since code encodes through the same word-vector
+        # path and its tokens (self, def, bind...) carry co-occurrence meaning too
+        text = [x for x, _, m in examples if m in self._TEXT_LIKE]
+        if text:
+            self.read(text)
+        # second pass: file everything into the one memory
+        for x, lab, m in examples:
+            self.learn(x, lab, m)
+        if maintain:
+            self.maintain_now()
+        return self
 
     # -- the same data, a recall view (nearest individual) -----------------
     def _index(self, v, payload):
@@ -105,6 +216,16 @@ class UnifiedMind:
         self._recall.add(v, payload)
 
     def recall(self, x, modality=None):
+        """Nearest stored individual. The index does an exact scan until the store is
+        genuinely big, then switches to the recursive HoloForest (the crossover is
+        measured -- see _Index.recall). A NEGATIVE worth recording here: wiring the
+        learned adaptive navigator (holographic_navigator) into this path was tried
+        and lost badly on the mind's own store -- 48% recall@1 at ~130 comparisons,
+        where the forest at beam 2 gets 89% within ~512. The navigator's margin
+        senses were tuned on UNIFORM random vectors; the unified store is clustered
+        (many near-duplicates per class), which miscalibrates the arrive/keep-moving
+        instinct. So recall keeps the dumb-but-honest index, and the navigator stays
+        a study of adaptive access, not a default."""
         if self._recall is None:
             raise RuntimeError("nothing learned yet -- call learn() first")
         return self._recall.recall(self.perceive(x, modality))
@@ -129,7 +250,7 @@ class UnifiedMind:
         return self
 
     # -- generation: predict the next symbol over the same space ------------
-    def learn_sequence(self, text, n=6, hierarchical=True):
+    def learn_sequence(self, data, n=6, hierarchical=True, modality="text", name=None):
         """Learn to continue a sequence.
 
         Two engines, picked by `hierarchical`:
@@ -144,30 +265,65 @@ class UnifiedMind:
 
         * The flat holographic n-gram (`hierarchical=False`): the original engine, kept because
           it exposes `next_symbol` and an exact context key, and because the boundary between
-          where the substrate helps and where it doesn't is measured here, not assumed."""
+          where the substrate helps and where it doesn't is measured here, not assumed.
+
+        Two consolidations, both backward compatible:
+
+        * `modality` passes through to the fractal coder, so the mind can learn to
+          continue CODE, not just prose -- the same compress-by-merging schema was
+          measured to discover code structure from scratch (held-out bits/char 2.98
+          -> 2.28 on this project's own source, with `def __init__` and indentation
+          idioms among the unlabeled emergent chunks).
+        * `name` lets the mind hold MANY sequence schemas at once. Unnamed calls keep
+          the old single-slot behaviour (each call replaces); named calls accumulate,
+          and generate() with no name picks the schema by the compression gate -- the
+          one routing primitive used everywhere else in the stack. That is
+          content-level self-discovery, needed exactly where TYPE-level inference
+          goes blind: code and prose are both `str`."""
         if hierarchical:
             from holographic_schema import SchemaGenerator
-            self._gen = SchemaGenerator(modality="text").fit(text)
-            self._gen_kind = "hierarchical"
+            gen, kind = SchemaGenerator(modality=modality).fit(data), "hierarchical"
         else:
             from holographic_text import HolographicNGram
-            if not isinstance(self._gen, HolographicNGram) or self._gen.n != n:
-                self._gen = HolographicNGram(dim=self.dim, n=n, seed=0)
-            self._gen.fit(text)
-            self._gen_kind = "flat"
+            gen = HolographicNGram(dim=self.dim, n=n, seed=0).fit(data)
+            kind = "flat"
+        key = name if name is not None else "default"
+        if not hasattr(self, "_gens"):
+            self._gens = {}
+        self._gens[key] = {"gen": gen, "kind": kind, "modality": modality}
+        self._gen, self._gen_kind = gen, kind        # most-recent alias (compat)
         return self
 
-    def next_symbol(self, context):
-        if self._gen is None:
+    def _pick_gen(self, name=None, seed_text=""):
+        """Resolve which sequence schema a call means. Named -> that one. One schema
+        -> it. Several and unnamed -> route the SEED by the compression gate: whoever
+        compresses the seed best is the schema that understands it. The honest
+        boundary: only hierarchical schemas expose bits_per_char, so flat engines
+        never compete in the gate -- name them explicitly."""
+        gens = getattr(self, "_gens", {})
+        if not gens:
             raise RuntimeError("nothing learned to continue -- call learn_sequence() first")
-        if getattr(self, "_gen_kind", "flat") != "flat":
-            raise RuntimeError("next_symbol needs the flat engine: learn_sequence(text, hierarchical=False)")
-        return self._gen.next_char(context)
+        if name is not None:
+            if name not in gens:
+                raise KeyError(f"no sequence schema named {name!r} -- have {sorted(gens)}")
+            return gens[name]
+        if len(gens) == 1:
+            return next(iter(gens.values()))
+        from holographic_schema import compression_gate
+        gated = {k: g["gen"] for k, g in gens.items() if g["kind"] == "hierarchical"}
+        if not gated or not seed_text:
+            raise RuntimeError("several schemas are loaded -- name one, or give a seed "
+                               "the gate can route (flat engines must be named)")
+        return gens[compression_gate(seed_text, gated)[0][1]]
 
-    def generate(self, seed_text, length=160, temperature=0.5):
-        if self._gen is None:
-            raise RuntimeError("nothing learned to continue -- call learn_sequence() first")
-        return self._gen.generate(seed_text, length, temperature)
+    def next_symbol(self, context, name=None):
+        g = self._pick_gen(name, context)
+        if g["kind"] != "flat":
+            raise RuntimeError("next_symbol needs the flat engine: learn_sequence(text, hierarchical=False)")
+        return g["gen"].next_char(context)
+
+    def generate(self, seed_text, length=160, temperature=0.5, name=None):
+        return self._pick_gen(name, seed_text)["gen"].generate(seed_text, length, temperature)
 
     # -- self-maintenance across the whole model ---------------------------
     def maintain_now(self):
@@ -185,10 +341,14 @@ class UnifiedMind:
             parts.append(f"a recall index of {len(self._recall.vecs)} items")
         if self._brain is not None:
             parts.append(f"a decision brain over {self._actions}")
-        if self._gen is not None:
-            kind = getattr(self, "_gen_kind", "flat")
-            detail = f"order {self._gen.n}" if kind == "flat" else "fractal cross-level coder"
-            parts.append(f"a sequence generator ({detail})")
+        if getattr(self, "_gens", None):
+            descs = []
+            for key, g in sorted(self._gens.items()):
+                detail = (f"order {g['gen'].n}" if g["kind"] == "flat"
+                          else f"fractal coder, {g['modality']}")
+                descs.append(f"{key}: {detail}")
+            plural = "s" if len(self._gens) > 1 else ""
+            parts.append(f"sequence schema{plural} ({'; '.join(descs)})")
         return "UnifiedMind: " + "; ".join(parts)
 
 
