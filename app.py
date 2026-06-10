@@ -688,7 +688,7 @@ def _make_world(mode, layout_seed):
     if cfg["maze"]:
         n = cfg.get("size", 7)
         return GridWorld(n, n, maze=True, fixed_seed=layout_seed,
-                         braid=cfg.get("braid", 0.0), start_energy=cfg.get("energy", 100))
+                         braid=cfg.get("braid", 0.0), start_energy=cfg.get("energy", 300))
     return GridWorld(7, 7, n_poison=cfg["npois"], n_walls=cfg["walls"], seed=layout_seed)
 
 def _slime_rollout(seed):

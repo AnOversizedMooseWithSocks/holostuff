@@ -93,7 +93,17 @@ real corpus on request -- Reuters categories, Brown genres, Gutenberg authors, o
 languages, downloaded via NLTK from GitHub, the same place the test data came from --
 trains one `UnifiedMind` on it, and lets you classify, recall the nearest stored item,
 watch the memory organize itself into sub-prototypes, and generate new text in the
-corpus's style, all against the one trained mind.
+corpus's style, all against the one trained mind. A fifth dataset needs no network at
+all and is the inception option: **"This project's own source"** -- the mind learns its
+own code, classifies which subsystem a pasted snippet belongs to (held-out ~62% over
+five subsystems sharing heavy vocabulary, vs 20% chance), and generates code in the
+project's style. Getting that number honest transferred an old lesson to a new format:
+pure-punctuation tokens are code's stopwords -- shared by every module, they dilute the
+bag exactly like prose stopwords dilute topics, and dropping them lifted held-out
+accuracy from 42% to 70% in the controlled comparison (generation keeps its punctuation;
+code without parentheses is not code). Queries in this dataset also keep their case
+(`HoloTree` is not `holotree`) and run untagged, so the mind self-discovers what it is
+being shown.
 
 **Self-discovery and self-assembly** were the next two gaps, and closing them surfaced
 one re-measured trap and two clean negatives -- all kept. *Self-discovery:* the routing
@@ -222,13 +232,13 @@ in, and a Labyrinth mode has it learn the way out of a maze -- all on a prototyp
 **Test suite** (runs the full pytest suite), **Query & recall** (the interactive image demo - degrade an
 image, optionally destroy part of the plate, watch it get recalled), **Recall by description**
 (cross-modal recall - describe an image in words and get the matching one back from the tag address space),
-**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (194 at last count; five skip without the optional NLTK corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
+**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (210 at last count; five skip without the optional NLTK corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
 
 ### From the command line
     python tour.py                    # guided tour of all subsystems (~20s)
     python holographic_creature.py    # any module runs its own demo
     python holographic_encoders.py    # numbers / text / records demos
-    pytest -q                         # the whole test suite (194 tests)
+    pytest -q                         # the whole test suite (210 tests)
 
 ---
 
@@ -319,14 +329,127 @@ forest in the *decision* loop dropped maze escapes from 93% to 0% (approximate
 recall loses neighbours the value estimate needs). Deepening the working-memory
 window to crack a 9x9 maze did not work (0% at both shallow and deep memory) and
 at depth 10 it ballooned the prototype set to ~23k by making every state unique,
-so generalization collapsed -- the 9x9 aliasing is a real ceiling for an
-egocentric brain, not a tuning miss. Averaging an *ensemble* of independently
+so generalization collapsed. We recorded that as "a real ceiling for an
+egocentric brain, not a tuning miss" -- and the revision of that claim is part of
+the record now: it was not a tuning miss, but it WAS a framing miss (see the
+maze gauntlet below; the ceiling fell to 100% without changing the brain, the
+senses, or the memory -- only WHERE decisions are spent). Averaging an *ensemble* of independently
 trained minds was worse than picking the best single one (their policies differ
 too much to average), which is why the UI trains several candidate minds and
-keeps the best -- a branching search over policies that beats voting. The net:
+keeps the best -- a branching search over policies that beats voting. And the
+newest entry: **schema-discovered macro-actions** -- letting the compress-by-merging
+schema read a *trained* creature's own trajectories (episodes joined by unique
+separators so merges never cross a boundary) and handing the discovered idioms to a
+fresh learner as extra actions. The discovery itself works perfectly -- the emergent
+chunks are exactly the straight-line runs (`E+E+E`, `W+W+W+W`) a forager's behavior
+contains -- but using them LOSES, robustly: open-loop macros drop the clean world
+from 9.9 to 6.8 stars and the poison world from 6.3 to a catastrophic 2.5 (blind
+commitment walks into poison); making them interruptible (stop on a star or sensed
+danger) rescues the catastrophe but still loses everywhere (5.7 and 5.5), across
+three seeds. The why is principled: a reactive policy that senses every step can
+already produce `EEE` by deciding `E` three times -- the chunk only adds value where
+deciding is expensive or perception is poor, and here it throws away exactly what
+the per-step sense-decide loop provides, while doubling the action set thins the
+exploration statistics. Same lesson as the curation controller: discovered
+structure must beat what the substrate already does, and here it does not. The net:
 the toolkit lives in the creature where it belongs (a classifier and layered
 superpositions for the memory, a recursive branching partition to index it), and
-stays out of the one place it hurts.
+stays out of the places it hurts.
+
+**The maze gauntlet -- gamified debugging.** The mazes are now designed to mirror
+challenges the system itself faced, on the principle that a puzzle the creature cracks
+without cheating usually carries a lesson back to the brain -- and the first lessons ran
+the other way, system to creature. The 9x9 maze ceiling is ALIASING in a costume:
+far-apart corridors look identical through egocentric senses, exactly as code and prose
+both look like "text". Two system cures were tried, three seeds each, same senses,
+nothing global. The COMPRESSION cure (a decaying bundled trace of past actions, the
+anti-23k-prototypes move) is a clean negative at every decay tried -- 0% even on the 7x7
+that exact mem=4 solves at 97%, because permute-by-age ORDER is precisely the
+information that breaks aliasing and bundling erases it; compression must preserve the
+distinctions the task needs (the nearest-key-generation lesson again). The
+DECIDE-ONLY-AT-CHOICES cure won completely: a corridor reflex (`run_episode(...,
+corridor_reflex=True)`) auto-walks forced cells using nothing but the wall senses, so
+the brain spends decisions and credit only at junctions. The diagnosis is quantitative:
+per-step framing discounted a 26-step exit to gamma^26 ~ 0.07 at the first decision --
+nearly invisible -- while junction granularity puts it near 0.4, learnable. Escapes:
+9x9 0% -> 100%, 11x11 100%, 13x13 67% (and training runs ~10x faster, since an episode
+is ~8 decisions instead of 90). The honest control is pinned in the tests: corridor-
+following with RANDOM junction choices already escapes easy mazes (73% at 9x9 -- a
+perfect maze has a small junction graph), so the gauntlet requires the brain to BEAT
+that control, which it does at every size and triples at 13x13 (15% random vs 67%
+trained). The transferable lesson runs both ways: where the system spends its
+machinery only at real choice points, the brain must spend its decisions the same way
+-- and the credit-horizon arithmetic says WHY ceilings appear when it does not.
+`test_creature_gauntlet.py` holds all of it in place.
+
+The gauntlet's second round added LOOPS and HAZARDS, and its first catch was a bug in
+the first round's winner. **Braided mazes** (a fraction of dead-ends opened, so multiple
+valid routes exist -- the maze costume of competing reorganization candidates) are where
+corridor-following can cycle and the brain must add real routing on top: measured at
+11x11 braid=0.5, the no-reflex baseline escapes 0%, reflex+brain 100%, and the
+reflex-with-random control 50% -- the brain doubles the control. **The poisoned fork**
+(braided maze plus hazards, each placed only if a poison-free route to the exit still
+exists, so the maze stays honest: solvable, but one arm of some fork is lethal and looks
+like the safe one) mirrors confusable classes with asymmetric cost -- and designing it
+exposed that the corridor reflex would auto-walk the creature into poison it could
+*see*: the fast path had no anomaly handoff. Measured, naive reflex with a trained
+brain: 7% deaths, 93% escapes; with a one-line danger yield (the reflex returns control
+to the brain when the way forward is sensed as danger): 0% deaths, 100% escapes, three
+seeds -- while the random control with the same yield died 88% of the time, so the
+brain's contribution stays enormous. The lesson is the flux guard's, running in both
+directions: every fast path in the system -- the reflex cache, the format gate, and now
+the corridor reflex -- must hand back control at anomalies, and the gauntlet is where
+that class of bug gets caught in costume before it gets caught in production.
+
+**The 16x16 room, any seed.** The escalation demanded reliability with no cherry-picked
+maze and no map knowledge -- the creature only ever has its senses, learning each maze
+the way a rat does, by living in it. Three walls fell, each one a system lesson. First,
+ENERGY: a 16x16 maze's optimal path runs 80-108 steps against the then-default battery
+of 100, so starvation beat intelligence on most seeds -- the budget must match the world
+before the brain even gets a vote. That finding raised the creature's default battery to
+300, and the whole any-seed sweep re-validated at the new default (same worst 95%, mean
+99%) with no explicit energy override anywhere. Second, the CREDIT HORIZON arithmetic struck again one level
+up: at gamma=0.9 the training is bimodal -- runs land at ~100% or collapse to 0% with
+nothing between, the brain committing early to a wrong junction policy and then greedily
+cycling it to death; gamma=0.97 took the failing maze/brain combinations from 1% to 98%
+mean, and IMPROVED the smaller gauntlet mazes too (13x13: 67% -> 100%); epsilon floors
+and longer training did nothing -- the horizon was the lever. Third, the stray collapse
+that remained (15-run grid: mean 93%, worst 0%) is closed by SPECULATE-MEASURE-ADOPT
+over whole policies: `learn_maze()` trains a candidate, probes its real escape rate over
+a few greedy lives, and restarts with a different brain seed if it measures incompetent
+-- the organizer's rule applied to training runs, and the same train-several-keep-the-
+best pattern the UI already uses. Validated across 8 maze seeds: worst 95%, mean 99%,
+with the restart visibly rescuing the nastiest seed. The honest frontier is recorded
+with it: ZERO-SHOT transfer -- one mind trained across 30 mazes, dropped into 10 it
+never saw -- measured 41% against a 36% random-junction control, i.e. no real
+competence transfers; the learned junction policy is maze-specific. Earned per maze,
+reliable on any seed; portable across mazes is the open problem.
+
+**Survival foraging -- fair, and harsh on purpose.** Foraging and obstacle worlds now run
+until the creature DIES (poison or starvation; `max_steps=None`), with the score being
+stars collected in a life -- the energy arithmetic keeps every life finite (stars +3,
+moves -1, average star ~4.7 steps away, so even a perfect forager runs a slow deficit
+from its 300 battery). The fairness is in the baselines, which use the creature's exact
+senses: a naive greedy chaser, and a danger-aware greedy chaser that is the bar learning
+must clear. The harshness did its job immediately, three findings deep. FIRST, the
+bombshell: the trained brain -- whose poison avoidance looked solid in every 50-step test
+-- died on poison in 67-73% of full lives (a ~0.6%/step residual risk that short caps
+simply cannot see; risks COMPOUND), collecting 13-25 stars where the two-line
+danger-aware reflex collected 136 with zero deaths. Fixed by the danger reflex: lethal
+moves are vetoed BELOW the brain (`decide` gained `among`, the routing lesson applied to
+actions -- compete only within the survivable pool), because irreversible mistakes are
+reflex business, not learned preference (the corridor reflex's danger yield and
+auto_maintain's asymmetric-cost rule, a third time). Deaths: 0%. An honest negative on
+the way: blinding the brain to the danger senses it no longer needs did NOT recover
+efficiency (and got worse with training). SECOND, the real thief was DITHERING: the
+memoryless forager spent a measured 60% of its steps stepping back where it stood two
+steps before, starving at 28 stars; working memory (mem=3) cuts dithering to 10% and
+lifts it to ~121 stars -- 89% of the danger-aware reflex's ceiling, the same ratio it
+achieves in the clean world, so what remains is chase efficiency, not poison. THIRD, the
+open problem, recorded with its diagnosis: cluttered worlds (walls + poison) resist both
+cures -- dithering stays ~70% even at memory depth 5, wall pockets trapping the forager
+in oscillations that working memory does not break, so it collects ~5-8 stars per life
+against the reflex's ~20. The gauntlet found it; the fix is still owed.
 
 **The creature, repurposed: a navigator over the data.** The grid was always a
 testbed for a mind that perceives, decides, learns from what happened, and
@@ -811,7 +934,7 @@ The app and tour:
     tour.py       command-line tour of every subsystem
     run.bat       Windows launcher
 
-Tests (194 total):
+Tests (210 total):
 
     test_holographic.py           core engine (bind/bundle/memory/reflex/drift)
     test_holographic_image.py     image store / WHT / quantisation
@@ -835,6 +958,8 @@ Tests (194 total):
     test_holographic_brain.py     self-maintaining, autonomous, hard-shift recovery
     test_holographic_unified.py   top level: one memory across modalities, self-discovery,
                                   absorb, named schemas routed by the compression gate
+    test_holographic_relations.py meaning as the recovered relationship: explain/name/map/chain
+    test_creature_gauntlet.py     the maze gauntlet: gamified debugging, system lessons in mazes
     test_app_creature.py          the app's creature endpoint round-trip
 
 Research / provenance -- one-off scripts whose results are recorded above and in
@@ -861,3 +986,45 @@ adds the repo root to its own import path so it still runs from anywhere:
   learning and experimenting, not a tuned production system. The text corpus is
   tiny, the creature world is small, and the vectors are modest. It is built to be
   understood and extended.
+
+## Design notes
+
+- **Relations -- meaning as the recovered relationship** (`holographic_relations.py`,
+  `UnifiedMind.explain()`): similarity says THAT two things are alike; these
+  operations say WHY and HOW. Over role-bound records (what the encoder already
+  builds from dicts): EXPLAIN decodes the per-role verdict ("france is like
+  belgium BECAUSE currency/language/continent match; UNLIKE because the capitals
+  differ" -- 4/4), NAME recovers how a filler relates ("paris relates to france
+  AS capital" -- 100%), MAP answers "what is the dollar of mexico?" (100%), and
+  CHAIN composes hops ("the language of the country with the currency of the
+  country whose capital is X" -- exact through three hops). The measured law
+  that shaped the API: meaning survives composition only when it touches
+  SYMBOLS between steps -- the direct algebraic relation vector scores ~94%,
+  its failures are pure HRR noise, and dimension does not save it (96/94/90% at
+  1024/2048/4096), while routing each hop through a cleanup is exact: the
+  discrete vocabulary is the error correction that makes chained meaning
+  reliable. Pinned in test_holographic_relations.py.
+- **Projection consolidation** (`HolographicMind.consolidate()`): the brain's
+  thousands of 512-D prototypes are shadows of one low-rank object (the span of
+  its sense-atom vocabulary -- measured: 99.9% of their energy in 22-24
+  dimensions), so the memory is re-stored as coefficients in the SVD-discovered
+  subspace: **21x smaller, ~5x faster decisions, at behavioural parity** (forage
+  122 -> 120 stars, 16x16 maze 90% -> 95%). The measured hazard ships with its
+  cure: a shadow hides new structure (a poison-free consolidation left the
+  danger sense at 4% in-basis energy -- nearly invisible), so a residual guard
+  tracks out-of-basis energy and EXPANDS the basis when the world grows
+  structure the shadow cannot show (measured under a shift: rank 9 -> 13,
+  danger 4% -> 100% visible). Compress when stable, grow at anomaly -- the
+  flux-guard pattern's fourth appearance. Pinned in test_holographic_brain.py.
+- **`NOTES_concepts.md`** records natural-process analogies (double diffusion /
+  salt fingering, surface tension, gravity lensing, flocking, prism/spectral
+  decomposition, demoscene) considered as possible improvements, and what honest
+  measurement said about each. Two were tested to clean negatives -- the
+  salt-finger variance pre-screen is mathematically unavailable at 512-d
+  (separation decays from 3.9 sigma at dim 8 to noise by dim 128), and
+  flocking-style local policy consensus loses to measured best-pick when
+  candidates disagree -- and a third (prism) had its premise refuted cheaply
+  before it was built (wall-pocket dithering is not caused by state fusion). The
+  value is the recorded reasoning: the analogies generated hypotheses, the
+  measurements killed the wrong ones early, and the elimination sharpened the
+  real open problem (a value-estimate trap, not a representation one).

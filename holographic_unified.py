@@ -229,6 +229,46 @@ class UnifiedMind:
             self._recall = _Index(self.dim)
         self._recall.add(v, payload)
 
+    def explain(self, x1, x2):
+        """WHY are two records similar -- not just a cosine, but the per-role
+        verdict. Both dicts are encoded exactly as absorb()/classify() would
+        encode them (bundle of bind(role, filler) via the one encoder), then each
+        shared role is unbound from both and cleaned up against the values the
+        two records actually contain -- self-contained: the candidates come from
+        the inputs themselves, no external vocabulary needed.
+
+        Returns a list of (role, value_in_x1, value_in_x2, shared, confidence),
+        e.g. explain({'capital':'paris','currency':'franc'}, {'capital':
+        'brussels','currency':'franc'}) -> capital differs, currency SHARED.
+        Built on holographic_relations, where the operations are measured:
+        per-role explanation 4/4, role naming 100%, symbol-routed mapping
+        360/360, chains exact through three hops. The law learned there holds
+        here too: every readout cleans up to a SYMBOL, because meaning survives
+        composition only when it touches symbols between steps."""
+        from holographic_ai import bind, involution, cosine
+        if not (isinstance(x1, dict) and isinstance(x2, dict)):
+            raise TypeError("explain() takes two record dicts")
+        rec1 = self.encoder.encode(x1, "record")
+        rec2 = self.encoder.encode(x2, "record")
+        values = sorted({str(v) for v in list(x1.values()) + list(x2.values())})
+        val_vecs = {v: self.encoder.encode(v) for v in values}
+
+        def clean(vec):
+            best, score = None, -2.0
+            for v, vv in val_vecs.items():
+                s = cosine(vec, vv)
+                if s > score:
+                    best, score = v, s
+            return best, float(score)
+
+        out = []
+        for role in sorted(set(x1) & set(x2), key=str):
+            inv = involution(self.encoder._roles.get(str(role)))
+            f1, c1 = clean(bind(rec1, inv))
+            f2, c2 = clean(bind(rec2, inv))
+            out.append((str(role), f1, f2, f1 == f2, min(c1, c2)))
+        return out
+
     def recall(self, x, modality=None):
         """Nearest stored individual. The index does an exact scan until the store is
         genuinely big, then switches to the recursive HoloForest (the crossover is

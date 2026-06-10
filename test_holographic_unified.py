@@ -291,3 +291,19 @@ def test_absorb_with_sequences_assembles_a_complete_mind():
     # and the same mind still classifies untagged across the sub-format line
     assert mind.classify("v = m @ x ; return v")[0] == "code:lib"
     assert mind.classify("the memory keeps each leaf inside capacity")[0] == "doc:lib"
+
+
+def test_unified_app_self_dataset_builds_and_classifies():
+    # The inception dataset: the app's build() learns this project's own source and
+    # classifies which subsystem a snippet is from -- offline, no NLTK. Pins the
+    # punctuation-as-stopwords lesson (content tokens lifted 5-way held-out accuracy
+    # from 42% to ~70% in the controlled comparison) at a conservative floor.
+    import unified_app as ua
+    res = ua.build("self")
+    assert res["ok"] and len(res["labels"]) == 5
+    assert res["accuracy"] >= 45                    # well above the 20% chance floor
+    mind = ua.STATE["mind"]
+    q = " ".join(ua._code_content("leaf = self . tree . _route ( key , beam )".split()))
+    assert mind.classify(q)[0] == "code:tree"
+    out = mind.generate("def recall ( self", length=50, temperature=0.4)
+    assert len(out) > 25

@@ -20,6 +20,7 @@ first time); everything degrades gracefully and tells you what to install.
 """
 
 import io
+import os
 from collections import defaultdict
 
 import numpy as np
@@ -114,7 +115,50 @@ def load_europarl():
     return items, " ".join(raw), "Europarl -- five languages; classify the language, generate in it"
 
 
+def _code_content(tokens):
+    """The stopword lesson, transferred to code: pure-punctuation tokens are shared
+    by EVERY module and dilute the bag exactly like prose stopwords dilute topics.
+    Dropping them lifted held-out subsystem classification from 42% to 70% --
+    one move, the same principle. (Generation keeps punctuation: code without
+    parentheses is not code.)"""
+    return [t for t in tokens if any(c.isalnum() or c == "_" for c in t)]
+
+
+def load_self():
+    """INCEPTION, and the only dataset that needs no network: the system learns its
+    own source code. Snippets (docstrings/comments stripped, so it is pure code) are
+    labeled by subsystem; the held-out question is 'which subsystem is this code
+    from?', and generation continues code in the project's own style."""
+    import io, tokenize
+    mods = [("holographic_image.py", "code:image"), ("holographic_creature.py", "code:creature"),
+            ("holographic_tree.py", "code:tree"), ("holographic_text.py", "code:text"),
+            ("holographic_ai.py", "code:engine")]
+    items, raw = [], []
+    here = os.path.dirname(os.path.abspath(__file__))
+    for fname, lab in mods:
+        lines, line = [], []
+        src = open(os.path.join(here, fname), encoding="utf-8").read()
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type in (tokenize.COMMENT, tokenize.STRING):
+                continue
+            if tok.type in (tokenize.NEWLINE, tokenize.NL):
+                if line:
+                    lines.append(" ".join(line)); line = []
+            elif tok.type not in (tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER):
+                line.append(tok.string)
+        if line:
+            lines.append(" ".join(line))
+        # classification snippets: content tokens only (see _code_content)
+        toks = _code_content(" ".join(lines).split())
+        for k in range(0, len(toks) - 24, 24):
+            items.append((" ".join(toks[k:k + 24]), lab, "code"))
+        raw.append("\n".join(lines))               # generation keeps punctuation
+    return items, "\n".join(raw), ("This project's own source -- classify which subsystem a "
+                                   "snippet is from; generate code in its style (no download needed)")
+
+
 DATASETS = {
+    "self": ("This project's own source", [], load_self),
     "reuters": ("Reuters categories", ["reuters"], load_reuters),
     "brown": ("Brown genres", ["brown"], load_brown),
     "gutenberg": ("Gutenberg authors", ["gutenberg"], load_gutenberg),
@@ -131,18 +175,19 @@ def build(dataset_id):
     for p in pkgs:
         _ensure(p)
     items, raw, desc = loader()
+    items = [(i if len(i) == 3 else (i[0], i[1], "text")) for i in items]
 
     # split each label 70/30 for an honest held-out accuracy number
     by = defaultdict(list)
-    for toks, lab in items:
-        by[lab].append(toks)
+    for x, lab, mod in items:
+        by[lab].append((x, mod))
     rng = np.random.default_rng(0)
     train, test = [], []
     for lab, docs in by.items():
         docs = list(docs); rng.shuffle(docs)
         cut = int(len(docs) * 0.7)
-        train += [(d, lab) for d in docs[:cut]]
-        test += [(d, lab) for d in docs[cut:]]
+        train += [(x, lab, mod) for x, mod in docs[:cut]]
+        test += [(x, lab, mod) for x, mod in docs[cut:]]
     rng.shuffle(train)
 
     # SELF-ASSEMBLY: absorb() is the one way to build a mind from examples -- it
@@ -153,10 +198,14 @@ def build(dataset_id):
     # from drifting.
     mind = UnifiedMind(dim=1024, seed=0, text_window=3)
     mind.absorb(train)                              # classification + recall, one memory
-    mind.learn_sequence(raw[:160000], n=6)          # generation, same space
+    seq_mod = "code" if any(m == "code" for _, _, m in train) else "text"
+    mind.learn_sequence(raw[:160000], n=6, modality=seq_mod)   # generation, same space
 
-    acc = sum(mind.classify(toks, "text")[0] == lab for toks, lab in test) / max(1, len(test))
-    STATE.update({"mind": mind, "dataset": name, "labels": sorted(by),
+    # scoring is UNTAGGED on purpose: the mind must self-discover each query's
+    # modality (type inference, then the content gate where type goes blind)
+    acc = sum(mind.classify(x)[0] == lab for x, lab, _ in test) / max(1, len(test))
+    test = [(x, lab) for x, lab, _ in test]
+    STATE.update({"mind": mind, "dataset": name, "labels": sorted(by), "is_code": seq_mod == "code",
                   "test": test, "raw_len": len(raw), "desc": desc})
     return {
         "ok": True, "dataset": name, "desc": desc,
@@ -184,7 +233,7 @@ def datasets():
     out = []
     have_nltk = importlib.util.find_spec("nltk") is not None
     for did, (name, pkgs, _) in DATASETS.items():
-        out.append({"id": did, "name": name, "available": have_nltk})
+        out.append({"id": did, "name": name, "available": (have_nltk or not pkgs)})
     return jsonify({"datasets": out, "nltk": have_nltk})
 
 
@@ -210,12 +259,20 @@ def classify():
     if _need_mind():
         return jsonify({"error": "load a dataset first"})
     text = (request.json.get("text") or "").lower()
-    toks = _content(text.split())
+    # code keeps every token -- stopword stripping would gut it of its keywords
+    # (for, in, if, return are all English "stopwords"); prose keeps the content
+    # words it was trained on. Classification is UNTAGGED: the mind discovers
+    # the query's modality itself (type inference, then the content gate).
+    if STATE.get("is_code"):
+        text = request.json.get("text") or ""        # code keeps its case (HoloTree != holotree)
+        toks = _code_content(text.split())           # ...and drops punctuation, like training did
+    else:
+        toks = _content(text.split())
     if not toks:
         return jsonify({"error": "type some words the model might know"})
     mind = STATE["mind"]
-    label, score = mind.classify(toks, "text")
-    (rlabel, _), rscore = mind.recall(toks, "text")
+    label, score = mind.classify(toks)
+    (rlabel, _), rscore = mind.recall(toks)
     return jsonify({"label": label, "score": round(float(score), 3),
                     "recall": {"label": rlabel, "score": round(float(rscore), 3)}})
 

@@ -168,3 +168,72 @@ def test_autonomous_brain_refreshes_and_recovers_on_a_hard_noisy_shift():
     assert aa >= pa + 0.25                       # by a wide margin over the plain brain
     assert refreshed_after_shift >= 1            # it committed to a refresh, not just folds
     assert auto.prototype_count() < plain.prototype_count()   # and stayed lean
+
+
+def test_consolidate_projects_memory_at_behavioral_parity():
+    # PROJECTION: thousands of 512-D prototypes are shadows of one low-rank
+    # object (the span of the sense-atom vocabulary -- the overlap between
+    # concepts is the registration mark). consolidate() discovers the subspace
+    # by SVD and re-stores the memory in it. Measured at dim 512: rank ~24
+    # (21x smaller), decide() ~5x faster, forage 122 -> 120 stars and 16x16
+    # maze 90% -> 95% (parity). Fast pinned version at dim 256.
+    import numpy as np
+    from holographic_creature import (HolographicMind, CreatureEncoder,
+                                      GridWorld, run_episode)
+    dim = 256
+    enc = CreatureEncoder(dim, seed=1)
+    mind = HolographicMind(dim, GridWorld.ACTIONS, k=15, epsilon=0.45,
+                           novelty_bonus=0.2, memory_cap=12000, seed=2)
+    world = GridWorld(7, 7, n_poison=0, seed=3)
+    for ep in range(120):
+        mind.epsilon = max(0.05, 0.45 * (1 - ep / 120))
+        run_episode(world, enc, mind, learn=True, explore=True, max_steps=80)
+
+    def stars(n=8):
+        out = []
+        for _ in range(n):
+            w = GridWorld(7, 7, n_poison=0, seed=3)
+            run_episode(w, enc, mind, learn=False, explore=False,
+                        eval_epsilon=0.05, max_steps=200)
+            out.append(w.stars)
+        return float(np.mean(out))
+
+    before = stars()
+    r = mind.consolidate()
+    assert r is not None and r <= dim // 4          # genuinely low-rank
+    after = stars()                                  # raw states in; perceive projects
+    assert after >= 0.8 * before                     # behavioural parity floor
+
+
+def test_consolidate_guard_expands_when_the_world_grows_structure():
+    # THE SHADOW HAZARD, pinned: a brain consolidated in a poison-free world
+    # leaves the danger sense nearly invisible (measured 4% in-basis energy) --
+    # so the residual guard MUST trip when poison appears, grow the basis, and
+    # make danger visible again (measured 4% -> 100%). The flux-guard pattern's
+    # fourth appearance: compress when stable, expand at anomaly.
+    import numpy as np
+    from holographic_creature import (HolographicMind, CreatureEncoder,
+                                      GridWorld, run_episode)
+    dim = 256
+    enc = CreatureEncoder(dim, seed=1)
+    mind = HolographicMind(dim, GridWorld.ACTIONS, k=15, epsilon=0.45,
+                           novelty_bonus=0.2, memory_cap=12000, seed=2)
+    world = GridWorld(7, 7, n_poison=0, seed=3)
+    for ep in range(100):
+        mind.epsilon = max(0.05, 0.45 * (1 - ep / 100))
+        run_episode(world, enc, mind, learn=True, explore=True, max_steps=80)
+    r0 = mind.consolidate()
+    danger = enc.encode({"danger_N": "yes"})
+    inb0 = float(np.linalg.norm(danger @ mind._basis) ** 2
+                 / np.linalg.norm(danger) ** 2)
+    assert inb0 < 0.5                                # the shadow really hides it
+
+    poison_world = GridWorld(7, 7, n_poison=2, seed=3)
+    for ep in range(40):                             # live where the new structure is
+        mind.epsilon = 0.2
+        run_episode(poison_world, enc, mind, learn=True, explore=True,
+                    max_steps=80, danger_reflex=True)
+    inb1 = float(np.linalg.norm(danger @ mind._basis) ** 2
+                 / np.linalg.norm(danger) ** 2)
+    assert mind._basis.shape[1] > r0                 # the basis grew
+    assert inb1 > 0.9                                # danger is visible again

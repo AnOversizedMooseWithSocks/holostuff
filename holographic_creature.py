@@ -108,6 +108,106 @@ class HolographicMind:
         self._ret = [np.zeros(0) for _ in range(n)]
         self._cnt = [np.zeros(0) for _ in range(n)]
         self.experiences = 0                # total raw experiences absorbed (compression stat)
+        # PROJECTION consolidation (see consolidate()): once set, every incoming
+        # state is projected into this shared low-rank basis -- with a residual
+        # guard that grows the basis when the world develops structure the
+        # current shadow cannot show.
+        self._basis = None                  # dim x r orthonormal basis (None = raw)
+        self._oob = 0.0                     # EMA of out-of-basis state energy
+        self._raw_ring = []                 # small ring of recent RAW states (for expansion)
+        self.expand_at = 0.05               # guard threshold on _oob
+
+    def perceive_vec(self, v):
+        """Route any incoming state through the projection, if one is set.
+
+        After consolidate(), the memory lives in a low-rank subspace -- the one
+        ~22-D object all those 512-D prototypes were shadows of. A raw state is
+        projected to its coefficients (cosines are preserved because everything
+        meaningful lies in the basis). THE GUARD: the energy a state carries
+        OUTSIDE the basis is tracked as a slow EMA, because a shadow hides new
+        structure -- measured, a brain consolidated in a poison-free world left a
+        danger sense with only 4% of its energy inside the basis, i.e. poison was
+        nearly invisible. When out-of-basis energy grows past `expand_at`, the
+        basis is EXPANDED from a small ring of recent raw states (new orthogonal
+        directions appended; old prototypes get zero coefficients there, which is
+        correct -- they truly had no such component). Compress when the world is
+        stable, grow when it is not: the flux-guard pattern, fourth appearance."""
+        v = np.asarray(v, float)
+        if self._basis is None or v.shape[-1] != self._basis.shape[0]:
+            return v                                  # raw mode, or already projected
+        self._raw_ring.append(v.copy())
+        if len(self._raw_ring) > 240:
+            self._raw_ring.pop(0)
+        c = v @ self._basis
+        tot = float(v @ v)
+        if tot > 1e-12:
+            res = 1.0 - float(c @ c) / tot
+            self._oob += 0.02 * (res - self._oob)
+            if self._oob > self.expand_at:
+                self._expand_basis()
+                c = v @ self._basis                   # re-project in the grown basis
+        return c
+
+    def consolidate(self, energy=0.999):
+        """PROJECTION: discover the low-rank subspace the stored prototypes share
+        (SVD over all of them -- the overlap between concepts IS the registration
+        mark that they are shadows of one object) and re-store the whole memory as
+        coefficients in it. Measured on trained brains: 99.9% of prototype energy
+        sits in ~22-24 of 512 dimensions (the span of the sense-atom vocabulary),
+        giving ~21x smaller memory and ~5x faster decide() at behavioural parity
+        (forage 122 -> 120 stars; 16x16 maze 90% -> 95% escapes). Returns the rank."""
+        V, _, _ = self.prototypes()
+        if len(V) < 2:
+            return None
+        _, s, Vt = np.linalg.svd(V, full_matrices=False)
+        e = np.cumsum(s ** 2) / np.sum(s ** 2)
+        r = int(np.searchsorted(e, energy)) + 1
+        B = Vt[:r].T
+        for a in range(len(self.actions)):
+            if len(self._unit[a]):
+                C = np.asarray(self._unit[a]) @ B
+                n = np.linalg.norm(C, axis=1, keepdims=True)
+                self._unit[a] = C / np.where(n == 0, 1, n)
+                self._sum[a] = np.asarray(self._sum[a]) @ B
+            else:
+                self._unit[a] = np.zeros((0, r))
+                self._sum[a] = np.zeros((0, r))
+        # the recent-experience buffer must live in the same space
+        self._buf = [((np.asarray(s_, float) @ B), a_, r_) for s_, a_, r_ in self._buf]
+        self._basis = B
+        self._oob = 0.0
+        self._raw_ring = []
+        return r
+
+    def _expand_basis(self):
+        """Grow the basis with the directions the recent raw states carry outside
+        it (Gram-Schmidt via SVD of the residuals). Existing coefficient banks get
+        zero columns for the new directions."""
+        if not self._raw_ring:
+            self._oob = 0.0
+            return
+        R = np.stack(self._raw_ring)
+        resid = R - (R @ self._basis) @ self._basis.T
+        _, s, Vt = np.linalg.svd(resid, full_matrices=False)
+        if not len(s) or s[0] <= 1e-9:
+            self._oob = 0.0
+            return
+        e = np.cumsum(s ** 2) / np.sum(s ** 2)
+        add = max(1, int(np.searchsorted(e, 0.9)) + 1)        # capture 90% of residual
+        add = min(add, self._basis.shape[0] - self._basis.shape[1])
+        if add <= 0:
+            self._oob = 0.0
+            return
+        newdirs = Vt[:add].T
+        self._basis = np.hstack([self._basis, newdirs])
+        for a in range(len(self.actions)):                    # zero-pad old coefficients
+            if len(self._unit[a]):
+                z = np.zeros((len(self._unit[a]), add))
+                self._unit[a] = np.hstack([self._unit[a], z])
+                self._sum[a] = np.hstack([self._sum[a], z])
+        self._buf = [(np.concatenate([s_, np.zeros(add)]), a_, r_)
+                     for s_, a_, r_ in self._buf]
+        self._oob = 0.0
 
     def value(self, state_vec, action_idx):
         """Estimate the value of an action in a state.
@@ -131,7 +231,7 @@ class HolographicMind:
             return 0.0, 0.0
         return float((weights * rets).sum() / total), float(sims.max())
 
-    def decide(self, state_vec, explore=True, epsilon=None):
+    def decide(self, state_vec, explore=True, epsilon=None, among=None):
         """Choose an action. Mostly greedy on value, with two sources of
         exploration: an epsilon chance of a random move, and (while exploring) a
         novelty bonus that favours actions rarely tried in situations like this.
@@ -140,21 +240,30 @@ class HolographicMind:
         even at evaluation time (e.g. 0.05) is worth keeping: a purely greedy,
         memoryless reactive agent can get trapped oscillating between two
         opposite moves, and an occasional random step shakes it loose.
-        """
+
+        'among' restricts the choice to a subset of action indices -- the same
+        routing move classify() uses for labels (compete only within the
+        legitimate pool), here for actions. Its load-bearing use is the danger
+        reflex in run_episode: lethal moves are vetoed BELOW the brain, so the
+        value estimate picks the best among the survivable options. Exploration
+        respects the restriction too -- a random move is random among the
+        allowed, never a coin-flip into poison."""
+        state_vec = self.perceive_vec(state_vec)
+        idxs = list(range(len(self.actions))) if among is None else list(among)
         eps = epsilon if epsilon is not None else (self.epsilon if explore else 0.0)
         if self.rng.random() < eps:
-            return int(self.rng.integers(len(self.actions)))
-        scores = np.zeros(len(self.actions))
-        for a in range(len(self.actions)):
+            return int(idxs[int(self.rng.integers(len(idxs)))])
+        scores = np.full(len(self.actions), -np.inf)
+        for a in idxs:
             v, support = self.value(state_vec, a)
             bonus = self.novelty_bonus * (1.0 - support) if explore else 0.0
             scores[a] = v + bonus
-        scores += self.rng.normal(0, 1e-6, scores.shape)   # random tie-break
+        scores[idxs] += self.rng.normal(0, 1e-6, len(idxs))   # random tie-break
         return int(np.argmax(scores))
 
     def remember(self, states, action_idxs, returns):
         """Fold one episode's experiences into the prototype memory."""
-        states = np.asarray(states, float)
+        states = np.asarray([self.perceive_vec(s) for s in states], float)
         action_idxs = np.asarray(action_idxs, dtype=int)
         returns = np.asarray(returns, dtype=float)
         for s, a, r in zip(states, action_idxs, returns):
@@ -446,7 +555,9 @@ class GridWorld:
     The creature runs on an energy battery -- the survival mechanic that gives
     the foraging a point:
 
-      * it starts each life with START_ENERGY (100),
+      * it starts each life with START_ENERGY (300 by default -- raised from
+        100 when the 16x16 gauntlet showed optimal paths of 80-108 steps,
+        i.e. the old battery starved the creature even on a perfect run),
       * every move drains MOVE_ENERGY (1), so it is slowly dying just by living,
       * reaching a star refills it by STAR_ENERGY (3) and the star respawns,
       * stepping onto poison empties the battery at once -- instant death.
@@ -484,9 +595,9 @@ class GridWorld:
 
     def __init__(self, width=7, height=7, n_poison=2, seed=0,
                  step_cost=-0.01, food_reward=1.0, poison_reward=-1.0,
-                 start_energy=100, move_energy=1, star_energy=3,
+                 start_energy=300, move_energy=1, star_energy=3,
                  vision_radius=None, n_walls=0, maze=False, exit_reward=3.0,
-                 fixed_seed=None, braid=0.0):
+                 fixed_seed=None, braid=0.0, maze_poison=0):
         self.w, self.h, self.n_poison = width, height, n_poison
         self.STEP, self.FOOD, self.POISON = step_cost, food_reward, poison_reward
         self.EXIT = exit_reward               # reward for reaching the maze exit
@@ -498,6 +609,7 @@ class GridWorld:
         self.n_walls = n_walls                # random obstacles in forage mode
         self.maze = maze                      # carve a labyrinth instead?
         self.braid = braid                    # fraction of dead-ends to open (0 = perfect maze)
+        self.maze_poison = maze_poison        # hazards in a BRAIDED maze (safe route kept)
         # When set, every reset() rebuilds the SAME layout (we reseed the world's
         # rng from it). That is how the creature gets to LEARN one fixed maze over
         # many tries -- the classic rat-in-a-maze setup -- instead of facing a new
@@ -519,7 +631,26 @@ class GridWorld:
             self.cx, self.cy = start
             dist = self._bfs_dist(start)     # exit = the deepest cell in the maze
             self.fx, self.fy = max(free, key=lambda c: dist.get(c, -1))
-            self.poison = set()              # a labyrinth is about navigation, not hazards
+            # THE POISONED FORK: hazards in a maze make sense only when an
+            # alternative route exists (in a PERFECT maze every corridor is the
+            # only way somewhere, so poison would simply make it unsolvable).
+            # With braiding on, maze_poison cells are placed one at a time and
+            # each is kept only if a poison-free route from start to exit still
+            # exists -- the maze stays honest: solvable, but one arm of some fork
+            # is deadly and looks just like the safe one.
+            self.poison = set()
+            if self.maze_poison > 0 and self.braid > 0:
+                exit_c = (self.fx, self.fy)
+                near_start = {(self.cx + dx, self.cy + dy)
+                              for dx, dy in self.MOVES.values()} | {start}
+                cand = [c for c in free if c != exit_c and c not in near_start]
+                self.rng.shuffle(cand)
+                for c in cand:
+                    if len(self.poison) >= self.maze_poison:
+                        break
+                    trial = self.poison | {c}
+                    if self._route_exists(start, exit_c, blocked=trial):
+                        self.poison = trial
         else:
             self._scatter_walls(self.n_walls)
             self.poison = set()
@@ -528,6 +659,7 @@ class GridWorld:
             self.cx, self.cy = self._random_cell(avoid=self.poison)
             self._spawn_food()
         self.energy = self.start_energy      # battery starts full
+        self.age = 0                         # steps lived this life
         self.stars = 0                       # stars collected (or 1 once escaped)
         self.alive = True                    # poison or an empty battery ends it
         return self.senses()
@@ -549,6 +681,24 @@ class GridWorld:
         """Every passable (non-wall) cell."""
         return [(x, y) for x in range(self.w) for y in range(self.h)
                 if (x, y) not in self.walls]
+
+    def _route_exists(self, a, b, blocked=()):
+        """Is there a passable route a -> b that avoids `blocked` cells?"""
+        from collections import deque
+        blocked = set(blocked)
+        seen, q = {a}, deque([a])
+        while q:
+            x, y = q.popleft()
+            if (x, y) == b:
+                return True
+            for dx, dy in self.MOVES.values():
+                nxt = (x + dx, y + dy)
+                if (0 <= nxt[0] < self.w and 0 <= nxt[1] < self.h
+                        and nxt not in self.walls and nxt not in blocked
+                        and nxt not in seen):
+                    seen.add(nxt)
+                    q.append(nxt)
+        return False
 
     def _bfs_dist(self, start):
         """Breadth-first step-distances from `start` over passable cells."""
@@ -715,6 +865,7 @@ class GridWorld:
         dx, dy = self.MOVES[action_name]
         nx, ny = self.cx + dx, self.cy + dy
         reward = self.STEP                                # cost of living
+        self.age += 1                        # one more step lived
         self.energy -= self.move_energy                   # moving drains the battery
 
         if not (0 <= nx < self.w and 0 <= ny < self.h) or (nx, ny) in self.walls:
@@ -773,32 +924,113 @@ class GridWorld:
 # 4. THE LOOP  (live an episode; optionally learn from it)
 # ---------------------------------------------------------------------------
 
+OPPOSITE = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+
+def _forced_dir(senses, last_action):
+    """If the creature stands in a CORRIDOR -- exactly two open directions, one of
+    them where it just came from -- return the only way forward, else None. Uses
+    nothing but the wall senses the brain already gets.
+
+    One override, found by the poisoned-fork gauntlet: if the way forward is
+    sensed as DANGER, the reflex yields and hands control back to the brain.
+    Without it the auto-walk can march the creature into poison it can see --
+    measured on the poisoned fork (braided 11x11, 3 hazards, safe route exists):
+    the naive reflex with a trained brain still died in 7% of evaluations and
+    escaped 93%; with the yield, deaths 0% and escapes 100%, three seeds. The
+    system lesson runs in both directions here: a fast path must hand back
+    control at anomalies (the reflex cache's flux guard, the gate falling back
+    when it has no corpus), and so must this one."""
+    opens = [d for d in GridWorld.ACTIONS if f"wall_{d}" not in senses]
+    fwd = [d for d in opens if d != OPPOSITE.get(last_action)]
+    if len(opens) == 2 and len(fwd) == 1 and f"danger_{fwd[0]}" not in senses:
+        return fwd[0]
+    return None
+
+
 def run_episode(world, encoder, mind, learn=True, explore=True,
-                eval_epsilon=None, gamma=0.9, max_steps=50, mem=0):
+                eval_epsilon=None, gamma=0.9, max_steps=50, mem=0,
+                corridor_reflex=False, danger_reflex=False):
     """Live one episode; return (total_reward, stars_collected).
 
-    The episode ends at max_steps OR the moment the creature dies (steps on
-    poison, or its battery hits empty) -- whichever comes first. 'stars' is the
-    honest success metric: how many stars it reached before its life ended.
+    max_steps=None is SURVIVAL MODE: the life runs until the creature dies --
+    poison or an empty battery -- with no step cap (a hard safety ceiling of
+    10,000 steps guards against a truly immortal loop). This is the harsh
+    framing for foraging: collect as many stars as possible without dying.
+    The energy arithmetic makes every life finite anyway (stars give +3, moves
+    cost 1, and the average star is ~4.7 steps away on a 7x7, so even a perfect
+    forager runs a slow deficit) -- and it surfaces what short caps mask:
+    per-step risks COMPOUND over a long life, so a policy with a 1%% chance per
+    step of touching poison looks fine in a 50-step test and is dead by ~300.
+
+    The episode otherwise ends at max_steps OR the moment the creature dies --
+    whichever comes first. 'stars' is the honest success metric: how many stars
+    it reached before its life ended.
 
     'mem' is the working-memory depth: how many recent moves the creature folds
     into its state (0 = purely reactive). If learning, fold the experience back
     in afterward using Monte-Carlo returns (each action credited with the
-    discounted reward that actually followed it -- simple, no bootstrapping)."""
+    discounted reward that actually followed it -- simple, no bootstrapping).
+
+    'corridor_reflex' is the DECIDE-ONLY-AT-CHOICES lesson, imported from the
+    rest of the system (exact scan below the crossover, the gate only where type
+    goes blind -- machinery only where there is a real choice). When on, corridor
+    cells are auto-walked by a pure sense-driven reflex arc and the BRAIN spends
+    its decisions -- and its credit -- only at junctions and dead ends. This is
+    what broke the 9x9 maze ceiling: per-step framing discounted a 26-step exit
+    to gamma^26 ~ 0.07 at the first decision (nearly invisible), while junction
+    granularity puts it near 0.4 (learnable). Measured, 3 seeds each: 9x9 escapes
+    went 0% -> 100%, 11x11 100%, 13x13 67% -- against an honest control of the
+    reflex with RANDOM junction choices (73% / 67% / 15%), so the brain's
+    contribution is real at every size and triples the hardest one. Default off:
+    foraging worlds are open space, and the reflex is a maze-shaped prior."""
+    if max_steps is None:
+        max_steps = 10000                                # survival: death decides
     senses = world.reset()
     recent = []                                          # recent actions, newest first
     state = encoder.build_state(senses, recent, mem)
     states, actions, rewards = [], [], []
     stars = 0
+    steps = 0
+    last = None
 
-    for _ in range(max_steps):
-        a = mind.decide(state, explore=explore, epsilon=eval_epsilon)
-        senses, r, ate, done = world.step(mind.actions[a])
+    while steps < max_steps:
+        # THE DANGER REFLEX: lethal moves are vetoed BELOW the brain. Found by
+        # the survival bench: a brain whose poison avoidance looked solid in
+        # 50-step tests died on poison in 67-73% of full LIVES (a ~0.6%%/step
+        # residual risk compounds), collecting 13-25 stars where a two-line
+        # danger-aware reflex collected 136 with zero deaths. Irreversible
+        # mistakes belong to reflexes, not learned preferences -- the corridor
+        # reflex's danger yield and auto_maintain's asymmetric-cost rule, again.
+        # The brain still does all the foraging; the veto only removes suicide
+        # from the menu (decide's `among` -- the routing lesson, for actions).
+        among = None
+        if danger_reflex:
+            safe = [i for i, nm in enumerate(mind.actions)
+                    if f"danger_{nm}" not in senses]
+            among = safe or None                     # fully surrounded: brain's call
+        a = mind.decide(state, explore=explore, epsilon=eval_epsilon, among=among)
+        name = mind.actions[a]
+        senses, r, ate, done = world.step(name)
         stars += int(ate)
+        steps += 1
+        recent = [name] + recent                         # remember this move
+        last = name
+        r_total = r
+        if corridor_reflex:
+            while not done and steps < max_steps:
+                fwd = _forced_dir(senses, last)
+                if fwd is None:                          # junction/dead end: brain's turn
+                    break
+                senses, r, ate, done = world.step(fwd)   # forced cell: reflex walks it
+                stars += int(ate)
+                steps += 1
+                recent = [fwd] + recent
+                last = fwd
+                r_total += r
         states.append(state)
         actions.append(a)
-        rewards.append(r)
-        recent = [mind.actions[a]] + recent              # remember this move
+        rewards.append(r_total)                          # the DECISION earns the segment
         state = encoder.build_state(senses, recent, mem)
         if done:                                         # poison death or empty battery
             break
@@ -839,6 +1071,24 @@ def _evaluate(world, encoder, mind, n=40, mem=0, max_steps=50):
                        eval_epsilon=0.05, mem=mem, max_steps=max_steps)
            for _ in range(n)]
     return np.mean([r for r, _ in out]), np.mean([f for _, f in out])
+
+
+def _survive(world, encoder, mind, n=15, mem=0, danger_reflex=True):
+    """SURVIVAL evaluation: each life runs until the creature DIES (poison or
+    empty battery), and the score is stars collected in a life. This is the
+    harsh framing that exposed what 50-step caps mask -- per-step risks
+    compound: a policy with a ~0.6%/step chance of touching poison looked fine
+    capped and died in 67-73% of full lives. Returns (mean stars, mean
+    lifespan, poison-death rate)."""
+    stars, ages, pdeaths = [], [], 0
+    for _ in range(n):
+        run_episode(world, encoder, mind, learn=False, explore=False,
+                    eval_epsilon=0.05, mem=mem, max_steps=None,
+                    danger_reflex=danger_reflex)
+        stars.append(world.stars)
+        ages.append(world.age)
+        pdeaths += ((world.cx, world.cy) in world.poison)
+    return float(np.mean(stars)), float(np.mean(ages)), pdeaths / n
 
 
 def _baseline(world, encoder, n=30, seed=9, mem=0, max_steps=50):
@@ -890,6 +1140,26 @@ def demo_creature():
           f"(baseline {base_r:+.2f}, {base_f:.1f})")
     print("  Stars collected is the honest success metric: poison is now lethal,")
     print("  so a single wrong step ends the life -- learning to avoid it matters.")
+
+    # THE SURVIVAL TEST -- forage until the battery dies, no step cap. This
+    # framing found two real problems the capped test masked: (1) compounding
+    # poison risk (the capped-trained brain died on poison in 67-73% of full
+    # lives) -- fixed by the danger reflex, lethal moves vetoed below the brain;
+    # (2) DITHERING -- a memoryless forager spent a measured 60% of its steps
+    # oscillating back where it was two steps before, starving at 28 stars;
+    # working memory (mem=3) cuts dithering to 10% and lifts it to ~121 stars,
+    # 89% of the danger-aware greedy reflex's 136 -- the same ratio it achieves
+    # in the clean world, so the remaining gap is the chase itself, not poison.
+    enc_s = CreatureEncoder(dim, seed=1)
+    mind_s = HolographicMind(dim, GridWorld.ACTIONS, k=15, epsilon=0.45,
+                             novelty_bonus=0.2, memory_cap=12000, seed=2)
+    for ep in range(180):
+        mind_s.epsilon = max(0.05, 0.45 * (1.0 - ep / 180))
+        run_episode(world, enc_s, mind_s, learn=True, explore=True, mem=3,
+                    max_steps=100, danger_reflex=True)
+    s, a, pd = _survive(world, enc_s, mind_s, mem=3)
+    print(f"\n  SURVIVAL (life ends only at death; mem=3 + danger reflex):")
+    print(f"    stars per life {s:.0f}, lifespan {a:.0f} steps, poison deaths {pd*100:.0f}%")
 
     # Avoidance reflex over all four directions (honest aggregate, not one
     # cherry-picked probe): does it head for a clear star, and turn away when
@@ -998,6 +1268,24 @@ def demo_obstacles(seeds=(2, 7, 11), episodes=240):
           f"stars among the walls -- the same tool that helps when blind also helps\n"
           f"    when the straight line is blocked.")
 
+    # SURVIVAL framing, honestly reported: with the danger reflex the creature
+    # never dies on poison here, but cluttered worlds remain the recorded OPEN
+    # inefficiency -- measured dithering stays ~70% even at memory depth 5 (wall
+    # pockets trap the forager in oscillations that working memory does not
+    # break), so it collects ~5-8 stars per life where the danger-aware greedy
+    # reflex collects ~20. The gauntlet found it; the fix is still owed.
+    enc_s = CreatureEncoder(dim, seed=1)
+    mind_s = HolographicMind(dim, GridWorld.ACTIONS, k=15, epsilon=0.45,
+                             novelty_bonus=0.2, memory_cap=12000, seed=2)
+    world_s = GridWorld(7, 7, n_poison=2, n_walls=8, seed=3)
+    for ep in range(180):
+        mind_s.epsilon = max(0.05, 0.45 * (1.0 - ep / 180))
+        run_episode(world_s, enc_s, mind_s, learn=True, explore=True, mem=3,
+                    max_steps=100, danger_reflex=True)
+    s, a, pd = _survive(world_s, enc_s, mind_s, mem=3)
+    print(f"\n    SURVIVAL among walls: stars {s:.0f}/life, lifespan {a:.0f}, "
+          f"poison deaths {pd*100:.0f}% (open problem: see README)")
+
     # (b) a fixed labyrinth the creature learns to escape ----------------------
     print("\n(b) A fixed 7x7 perfect maze (one route between any two cells). The")
     print("    creature starts in a corner and must find the EXIT, learning this")
@@ -1021,9 +1309,12 @@ def demo_obstacles(seeds=(2, 7, 11), episodes=240):
         escapes.append(got / 20.0)
     print(f"  optimal escape = {optimal} steps. Escape rate per seed = "
           f"{[round(e * 100) for e in escapes]}%  mean {np.mean(escapes) * 100:.0f}%")
-    print("\n  Honest limit: a 7x7 maze it nails, but a 9x9 (a ~28-step solution)")
-    print("  is mostly beyond this brain -- far-apart corridors look identical")
-    print("  through its egocentric senses, so it cannot always tell them apart.")
+    print("\n  Honest limit, revised: a 9x9 used to be beyond this brain -- far-apart")
+    print("  corridors look identical through its egocentric senses. That ceiling")
+    print("  fell (0% -> 100%) without changing the brain or the senses: with")
+    print("  corridor_reflex=True decisions are spent only at junctions, so the")
+    print("  exit's credit survives the discount. See test_creature_gauntlet.py;")
+    print("  the new frontier is 13x13 (67% vs a 15% reflex-with-random control).")
 
 
 def demo_introspect(episodes=240, seed=7):
@@ -1090,6 +1381,61 @@ def demo_introspect(episodes=240, seed=7):
     print("    approximation drops enough of it to hurt (it wrecks the maze policy),")
     print("    so deciding still uses the exact scan -- which the compression above")
     print("    already made cheap. Tested-and-kept-out, not overlooked.")
+
+
+def learn_maze(world_factory, dim=256, episodes=240, gamma=0.97, mem=4,
+               max_steps=500, candidates=3, probe=6, accept=2/3, seed=2):
+    """Learn to escape a maze reliably -- the rat-in-a-maze protocol, hardened for
+    big mazes and ANY maze seed. Returns (encoder, mind, measured_probe_rate).
+
+    Two lessons are baked in, both measured on 16x16 mazes (optimal paths 80-108
+    steps against the old default battery of 100, which starved the creature
+    even on a perfect run -- the default is now 300, and bigger worlds may
+    still need start_energy raised to match):
+
+    * gamma=0.97, NOT the foraging default of 0.9. The credit-horizon arithmetic
+      that broke the per-step framing strikes again one level up: a 16x16 needs
+      enough junction decisions that 0.9 starves the exit signal (0.9^20 ~ 0.12)
+      and training turns BIMODAL -- runs land at ~100% or collapse to 0% with
+      nothing between, the brain committing early to a wrong junction policy and
+      then greedily cycling it. At 0.97 the same failing maze/brain combinations
+      went 1% -> 98% mean, and the smaller gauntlet mazes IMPROVED too (13x13
+      67% -> 100%). Epsilon floors and longer training did not help; the
+      horizon was the lever.
+
+    * SPECULATE-MEASURE-ADOPT over whole policies, the organizer's rule applied
+      to training runs: even at gamma=0.97 a stray combination still collapsed
+      (15-run grid: grand mean 93%, worst run 0%). So this function trains a
+      candidate, PROBES its real escape rate over a few greedy lives, adopts it
+      if it measures competent, and otherwise restarts with a different brain
+      seed. No map knowledge is involved -- the creature is simply allowed to
+      notice it has not learned to escape and start over, which is the same
+      self-measurement discipline the rest of the system runs on (and the same
+      train-several-keep-the-best pattern the UI already uses for foraging)."""
+    best = (None, None, -1.0)
+    for c in range(candidates):
+        enc = CreatureEncoder(dim, seed=1)
+        mind = HolographicMind(dim, GridWorld.ACTIONS, k=15, epsilon=0.5,
+                               novelty_bonus=0.2, memory_cap=12000,
+                               seed=seed + 97 * c)
+        world = world_factory()
+        for ep in range(episodes):
+            mind.epsilon = max(0.05, 0.5 * (1.0 - ep / episodes))
+            run_episode(world, enc, mind, learn=True, explore=True, mem=mem,
+                        corridor_reflex=True, max_steps=max_steps, gamma=gamma)
+        got = 0
+        world = world_factory()
+        for _ in range(probe):
+            run_episode(world, enc, mind, learn=False, explore=False,
+                        eval_epsilon=0.05, mem=mem, corridor_reflex=True,
+                        max_steps=max_steps)
+            got += world.escaped
+        rate = got / probe
+        if rate > best[2]:
+            best = (enc, mind, rate)
+        if rate >= accept:
+            break                          # measured competent: adopt and stop
+    return best
 
 
 def demo_self_maintaining(dim=256, seed=0):
