@@ -25,3 +25,42 @@ def test_labyrinth_is_braided_slime_discovery_finding_shortest():
     assert tuple(after["route"][0]) == (1, 1)       # starts at the entrance
     discovered = {tuple(c) for c in after["explore"]}
     assert all(tuple(c) in discovered for c in after["route"])   # route only uses reached tiles
+
+
+def test_labyrinth_left_pane_is_the_learned_brain():
+    # THE SWEEP'S CATCH: the app's labyrinth pane carried a stale "no reactive
+    # brain can hold a 16x16 maze" early-return from before the gauntlet broke
+    # that ceiling -- the breakthrough lived only in tests. Now the left pane
+    # is the BRAIN that learned the maze via learn_maze (corridor reflex +
+    # gamma 0.97 + restart protocol), playing through _rollout's mirrored
+    # corridor reflex, with its thinking decoded per junction. Pinned on a
+    # smaller maze config so the test stays quick; same code path.
+    import io, contextlib
+    import app as A
+    saved = dict(A._MODES["maze"])
+    A._MODES["maze"] = dict(saved, size=9, episodes=120, layout=5)
+    A._CREATURE.pop("maze", None)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            b = A._build_creature("maze")
+        assert b["mind"] is not None and b["probe_rate"] >= 2 / 3
+        roll = A._rollout(lambda: A._make_world("maze", 5), b["enc"], b["mind"],
+                          steps=70, mem=A._MODES["maze"]["mem"], corridor=True)
+        assert roll["escaped"] is True
+        says = [f["say"] for f in roll["frames"] if f.get("say")]
+        assert says and "senses" in says[0]          # the thinking line is live
+    finally:
+        A._MODES["maze"] = saved
+        A._CREATURE.pop("maze", None)
+
+
+def test_unified_decide_passes_senses_to_the_brain():
+    # The unified brain gets the model's safety reflexes through the same
+    # mechanism as every other caller: decide(senses=...) vetoes flagged moves.
+    from holographic_unified import UnifiedMind
+    m = UnifiedMind(dim=512, seed=0)
+    m.actions(["N", "S", "E", "W"])
+    state = {"temp": "hot"}
+    senses = {"danger_N": "yes", "wall_E": "yes", "danger_S": "yes"}
+    for _ in range(25):                              # only W survives the vetoes
+        assert m.decide(state, senses=senses, epsilon=0.5) == "W"

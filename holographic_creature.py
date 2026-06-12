@@ -231,7 +231,8 @@ class HolographicMind:
             return 0.0, 0.0
         return float((weights * rets).sum() / total), float(sims.max())
 
-    def decide(self, state_vec, explore=True, epsilon=None, among=None):
+    def decide(self, state_vec, explore=True, epsilon=None, among=None,
+               senses=None, avoid=("danger", "wall")):
         """Choose an action. Mostly greedy on value, with two sources of
         exploration: an epsilon chance of a random move, and (while exploring) a
         novelty bonus that favours actions rarely tried in situations like this.
@@ -241,15 +242,30 @@ class HolographicMind:
         memoryless reactive agent can get trapped oscillating between two
         opposite moves, and an occasional random step shakes it loose.
 
+        'senses' puts the SAFETY REFLEXES inside the brain itself: when the
+        current senses dict is passed, any action whose direction is flagged by
+        a prefix in `avoid` is vetoed below the value estimate. Both vetoes are
+        measured: the danger veto ended the compounding-poison deaths the
+        survival bench exposed (67-73% of full lives -> 0%), and the wall veto
+        -- named by the brain's own introspection, which caught it choosing E at
+        value +0.43 while sensing wall_E=yes -- solved the cluttered-world open
+        problem (stars 5.1 -> 19.8, dither 79% -> 43%). Putting them HERE means
+        every caller of the brain (episode runner, demos, the showcase app's
+        own loop) gets the same safety by passing what the creature senses;
+        callers that pass nothing are byte-for-byte unchanged.
+
         'among' restricts the choice to a subset of action indices -- the same
         routing move classify() uses for labels (compete only within the
-        legitimate pool), here for actions. Its load-bearing use is the danger
-        reflex in run_episode: lethal moves are vetoed BELOW the brain, so the
-        value estimate picks the best among the survivable options. Exploration
-        respects the restriction too -- a random move is random among the
-        allowed, never a coin-flip into poison."""
+        legitimate pool). When both `among` and `senses` are given the vetoes
+        intersect. If everything is vetoed (fully surrounded), the restriction
+        lifts: the brain's call. Exploration respects the restriction too -- a
+        random move is random among the allowed, never a coin-flip into poison."""
         state_vec = self.perceive_vec(state_vec)
         idxs = list(range(len(self.actions))) if among is None else list(among)
+        if senses is not None:
+            ok = [i for i in idxs
+                  if not any(f"{p}_{self.actions[i]}" in senses for p in avoid)]
+            idxs = ok or idxs                        # fully surrounded: brain's call
         eps = epsilon if epsilon is not None else (self.epsilon if explore else 0.0)
         if self.rng.random() < eps:
             return int(idxs[int(self.rng.integers(len(idxs)))])
@@ -260,6 +276,48 @@ class HolographicMind:
             scores[a] = v + bonus
         scores[idxs] += self.rng.normal(0, 1e-6, len(idxs))   # random tie-break
         return int(np.argmax(scores))
+
+    def describe(self, vec, encoder, floor=0.18):
+        """INTROSPECTION: decode a state or prototype back into SENSE terms.
+
+        The states are role-bound bundles (bind(sense, value)), so each role the
+        encoder has ever seen is unbound from the vector and cleaned up against
+        the values experience registered (encoder.seen) -- the relations decode,
+        turned on the brain's own memory. A role whose best value scores below
+        `floor` is reported absent (senses are sparse, so most roles ARE absent
+        from most states; the floor separates real membership from cross-term
+        noise, and the measurement that set it is in the tests). Works on
+        consolidated minds too: coefficient vectors are lifted back through the
+        basis before unbinding. Returns {role: (value, confidence)}."""
+        v = np.asarray(vec, float)
+        if self._basis is not None and v.shape[-1] == self._basis.shape[1]:
+            v = self._basis @ v                       # lift the shadow back up
+        from holographic_ai import bind, involution, cosine
+        out = {}
+        for role, values in sorted(encoder.seen.items()):
+            est = bind(v, involution(encoder.vocab.get(role)))
+            best, score = None, -2.0
+            for val in values:
+                s = cosine(est, encoder.vocab.get(val))
+                if s > score:
+                    best, score = val, s
+            if score >= floor:
+                out[role] = (best, float(score))
+        return out
+
+    def why_differ(self, vec_a, vec_b, encoder, floor=0.18):
+        """Why did two situations deserve different treatment? The per-role
+        verdict between two states/prototypes, in the creature's own sense
+        vocabulary: [(role, value_a, value_b, shared)] where None means the role
+        is absent from that state. The same explain operation the unified mind
+        runs on its records, turned inward on the policy's memory."""
+        da, db = self.describe(vec_a, encoder, floor), self.describe(vec_b, encoder, floor)
+        out = []
+        for role in sorted(set(da) | set(db)):
+            va = da.get(role, (None,))[0]
+            vb = db.get(role, (None,))[0]
+            out.append((role, va, vb, va == vb))
+        return out
 
     def remember(self, states, action_idxs, returns):
         """Fold one episode's experiences into the prototype memory."""
@@ -513,12 +571,19 @@ class CreatureEncoder:
     def __init__(self, dim, seed=1):
         self.vocab = Vocabulary(dim, seed)               # sense symbols
         self.actions = Vocabulary(dim, seed + 100)       # one vector per action
+        # SELF-DISCOVERY: the encoder remembers which roles and values its own
+        # experience has contained -- this becomes the cleanup vocabulary that
+        # lets the brain DESCRIBE its prototypes back in sense terms (see
+        # HolographicMind.describe). Never declared, only observed.
+        self.seen = {}                                   # role -> set of values
 
     def encode(self, senses):
         """Senses dict -> one unit vector (zero vector if the creature senses
         nothing at all, e.g. blind in open space)."""
         if not senses:
             return np.zeros(self.vocab.dim)
+        for role, value in senses.items():
+            self.seen.setdefault(role, set()).add(value)
         tokens = [bind(self.vocab.get(role), self.vocab.get(value))
                   for role, value in sorted(senses.items())]
         return bundle(tokens)
@@ -950,7 +1015,7 @@ def _forced_dir(senses, last_action):
 
 def run_episode(world, encoder, mind, learn=True, explore=True,
                 eval_epsilon=None, gamma=0.9, max_steps=50, mem=0,
-                corridor_reflex=False, danger_reflex=False):
+                corridor_reflex=False, danger_reflex=False, wall_reflex=False):
     """Live one episode; return (total_reward, stars_collected).
 
     max_steps=None is SURVIVAL MODE: the life runs until the creature dies --
@@ -1004,12 +1069,17 @@ def run_episode(world, encoder, mind, learn=True, explore=True,
         # reflex's danger yield and auto_maintain's asymmetric-cost rule, again.
         # The brain still does all the foraging; the veto only removes suicide
         # from the menu (decide's `among` -- the routing lesson, for actions).
-        among = None
-        if danger_reflex:
-            safe = [i for i, nm in enumerate(mind.actions)
-                    if f"danger_{nm}" not in senses]
-            among = safe or None                     # fully surrounded: brain's call
-        a = mind.decide(state, explore=explore, epsilon=eval_epsilon, among=among)
+        # The safety reflexes (danger and wall vetoes) live in the BRAIN now
+        # (see HolographicMind.decide's `senses`/`avoid` -- both measured: the
+        # danger veto ended compounding poison deaths 67-73% -> 0%, the wall
+        # veto -- named by the brain's own introspection -- solved the
+        # cluttered-world open problem, stars 5.1 -> 19.8). These flags just
+        # translate to the model-level mechanism, so every other caller of the
+        # brain gets identical safety by passing what the creature senses.
+        avoid = tuple([p for p, on in (("danger", danger_reflex),
+                                       ("wall", wall_reflex)) if on])
+        a = mind.decide(state, explore=explore, epsilon=eval_epsilon,
+                        senses=(senses if avoid else None), avoid=avoid)
         name = mind.actions[a]
         senses, r, ate, done = world.step(name)
         stars += int(ate)
@@ -1050,30 +1120,38 @@ def run_episode(world, encoder, mind, learn=True, explore=True,
 # ---------------------------------------------------------------------------
 
 def _train(world, encoder, mind, episodes, eps_start=0.35, block=25, label="",
-           mem=0, max_steps=50):
+           mem=0, max_steps=50, danger_reflex=False, wall_reflex=False):
     """Train for some episodes with decaying exploration, printing the average
-    reward of each block so the learning curve is visible."""
+    reward of each block so the learning curve is visible. The reflex flags
+    pass through to run_episode (and so to the brain's own senses-based veto)
+    -- training WITH the vetoes matters as much as playing with them: the
+    cluttered-world fix measured 19.8 vs 5.1 stars precisely because the veto
+    shaped the experience the brain learned from, not just the final moves."""
     rewards = []
     print(f"Training{label} (avg reward per {block}-episode block):")
     for ep in range(episodes):
         mind.epsilon = max(0.05, eps_start * (1.0 - ep / episodes))
         r, _ = run_episode(world, encoder, mind, learn=True, explore=True,
-                           mem=mem, max_steps=max_steps)
+                           mem=mem, max_steps=max_steps,
+                           danger_reflex=danger_reflex, wall_reflex=wall_reflex)
         rewards.append(r)
         if (ep + 1) % block == 0:
             print(f"  episodes {ep - block + 2:3d}-{ep + 1:3d}:  "
                   f"{np.mean(rewards[-block:]):+.2f}")
 
 
-def _evaluate(world, encoder, mind, n=40, mem=0, max_steps=50):
+def _evaluate(world, encoder, mind, n=40, mem=0, max_steps=50,
+              danger_reflex=False, wall_reflex=False):
     """Run greedily (tiny eval epsilon to avoid oscillation, no learning)."""
     out = [run_episode(world, encoder, mind, learn=False, explore=False,
-                       eval_epsilon=0.05, mem=mem, max_steps=max_steps)
+                       eval_epsilon=0.05, mem=mem, max_steps=max_steps,
+                       danger_reflex=danger_reflex, wall_reflex=wall_reflex)
            for _ in range(n)]
     return np.mean([r for r, _ in out]), np.mean([f for _, f in out])
 
 
-def _survive(world, encoder, mind, n=15, mem=0, danger_reflex=True):
+def _survive(world, encoder, mind, n=15, mem=0, danger_reflex=True,
+             wall_reflex=False):
     """SURVIVAL evaluation: each life runs until the creature DIES (poison or
     empty battery), and the score is stars collected in a life. This is the
     harsh framing that exposed what 50-step caps mask -- per-step risks
@@ -1084,7 +1162,7 @@ def _survive(world, encoder, mind, n=15, mem=0, danger_reflex=True):
     for _ in range(n):
         run_episode(world, encoder, mind, learn=False, explore=False,
                     eval_epsilon=0.05, mem=mem, max_steps=None,
-                    danger_reflex=danger_reflex)
+                    danger_reflex=danger_reflex, wall_reflex=wall_reflex)
         stars.append(world.stars)
         ages.append(world.age)
         pdeaths += ((world.cx, world.cy) in world.poison)
@@ -1268,12 +1346,12 @@ def demo_obstacles(seeds=(2, 7, 11), episodes=240):
           f"stars among the walls -- the same tool that helps when blind also helps\n"
           f"    when the straight line is blocked.")
 
-    # SURVIVAL framing, honestly reported: with the danger reflex the creature
-    # never dies on poison here, but cluttered worlds remain the recorded OPEN
-    # inefficiency -- measured dithering stays ~70% even at memory depth 5 (wall
-    # pockets trap the forager in oscillations that working memory does not
-    # break), so it collects ~5-8 stars per life where the danger-aware greedy
-    # reflex collects ~20. The gauntlet found it; the fix is still owed.
+    # SURVIVAL framing -- and the cluttered-world open problem, SOLVED by the
+    # system's own introspection: describe() on a caught dither revealed the
+    # brain valuing moves into walls it could sense (the 'oscillation' was
+    # wall-bumping in place). The wall reflex (veto wall moves through the same
+    # `among` mechanism as danger) took stars from 5.1 to 19.8 -- the
+    # danger-aware reflex's ceiling -- with dither 79% -> 43% and deaths 0%.
     enc_s = CreatureEncoder(dim, seed=1)
     mind_s = HolographicMind(dim, GridWorld.ACTIONS, k=15, epsilon=0.45,
                              novelty_bonus=0.2, memory_cap=12000, seed=2)
@@ -1281,10 +1359,10 @@ def demo_obstacles(seeds=(2, 7, 11), episodes=240):
     for ep in range(180):
         mind_s.epsilon = max(0.05, 0.45 * (1.0 - ep / 180))
         run_episode(world_s, enc_s, mind_s, learn=True, explore=True, mem=3,
-                    max_steps=100, danger_reflex=True)
-    s, a, pd = _survive(world_s, enc_s, mind_s, mem=3)
-    print(f"\n    SURVIVAL among walls: stars {s:.0f}/life, lifespan {a:.0f}, "
-          f"poison deaths {pd*100:.0f}% (open problem: see README)")
+                    max_steps=100, danger_reflex=True, wall_reflex=True)
+    s, a, pd = _survive(world_s, enc_s, mind_s, mem=3, wall_reflex=True)
+    print(f"\n    SURVIVAL among walls (wall reflex on): stars {s:.0f}/life, "
+          f"lifespan {a:.0f}, poison deaths {pd*100:.0f}%")
 
     # (b) a fixed labyrinth the creature learns to escape ----------------------
     print("\n(b) A fixed 7x7 perfect maze (one route between any two cells). The")
@@ -1381,6 +1459,26 @@ def demo_introspect(episodes=240, seed=7):
     print("    approximation drops enough of it to hurt (it wrecks the maze policy),")
     print("    so deciding still uses the exact scan -- which the compression above")
     print("    already made cheap. Tested-and-kept-out, not overlooked.")
+
+    # (c) INTROSPECTION: the brain DESCRIBES its own memory in sense terms.
+    # Prototypes are role-bound sense bundles, so describe() decodes them back
+    # (measured: present roles 373/373, absent roles silent 427/427) -- and
+    # why_differ() gives the per-role verdict between two situations. Below,
+    # the most- and least-valuable prototype for one action, in the creature's
+    # own vocabulary -- the same machinery whose first real outing articulated
+    # (and thereby solved) the wall-bumping open problem.
+    print("\n(c) The brain describes its own memory (introspection)")
+    V, acts, rets = mind.prototypes()
+    a0 = 0                                            # action "N"
+    rows = [(i, rets[i]) for i in range(len(V)) if acts[i] == a0]
+    if len(rows) >= 2:
+        best = max(rows, key=lambda z: z[1])
+        worst = min(rows, key=lambda z: z[1])
+        print(f"    action '{mind.actions[a0]}': best prototype (return "
+              f"{best[1]:+.2f}) vs worst ({worst[1]:+.2f}) -- its own verdict:")
+        for role, va, vb, same in mind.why_differ(V[best[0]], V[worst[0]], enc):
+            print(f"      {role:10s}: {str(va):8s} vs {str(vb):8s}  "
+                  f"{'same' if same else 'DIFFERS'}")
 
 
 def learn_maze(world_factory, dim=256, episodes=240, gamma=0.97, mem=4,
@@ -1505,3 +1603,163 @@ if __name__ == "__main__":
     demo_obstacles()
     demo_introspect()
     demo_self_maintaining()
+
+
+def capture_route(world_factory, encoder, mind, mem=2, max_steps=300, trials=8):
+    """Run a trained maze brain and capture its successful escape routes as
+    ordered cell-sequences (the corridor reflex walks forced cells, so a route is
+    the junction-to-junction path the brain actually took). Returns a list of
+    routes, each a list of 'rYcX' cell names in visit order -- ready to hand to
+    UnifiedMind.learn_sequences so the brain can DISCOVER and PROVE the canonical
+    structure of its own successful behaviour. Acting, then understanding the
+    structure of the action: the sequence machinery turned on the creature."""
+    routes = []
+    for _ in range(trials):
+        w = world_factory()
+        senses = w.reset()
+        recent = []
+        cells = [f"r{w.cy}c{w.cx}"]
+        state = encoder.build_state(senses, recent, mem)
+        last = None
+        for _ in range(max_steps):
+            a = mind.decide(state, explore=False, epsilon=0.05, senses=senses)
+            senses, r, ate, done = w.step(GridWorld.ACTIONS[a])
+            last = GridWorld.ACTIONS[a]
+            cells.append(f"r{w.cy}c{w.cx}")
+            recent = [last] + recent
+            while not done:                            # corridor reflex
+                fwd = _forced_dir(senses, last)
+                if fwd is None:
+                    break
+                senses, r, ate, done = w.step(fwd)
+                last = fwd
+                cells.append(f"r{w.cy}c{w.cx}")
+                recent = [fwd] + recent
+            state = encoder.build_state(senses, recent, mem)
+            if done:
+                if w.escaped:
+                    routes.append(cells)
+                break
+    return routes
+
+
+def replay_plan(world, route, reset=True):
+    """Drive navigation from a DISCOVERED route plan instead of re-deciding every
+    step -- and VALIDATE each move honestly. The creature steps toward each next
+    cell in the plan; if a move fails to advance (a wall blocks it), the plan has
+    hit the boundary of its validity and that break point is REPORTED, not papered
+    over. Returns (status, step_index, blocked_from, intended_cell) where status
+    is 'escaped', 'dead', 'broke' (the maze differs from where the plan was
+    learned -- the informative case), or 'ran_out'.
+
+    This is the discovered-plan machinery composed with action: a proven plan
+    knows where it stops applying, so a creature can replay what it learned and
+    detect exactly where reality has changed -- the seam at which it would need to
+    re-learn only the changed segment, not the whole maze."""
+    def _cell(name):
+        r = int(name[1:name.index('c')])
+        c = int(name[name.index('c') + 1:])
+        return c, r
+    w = world
+    if reset:
+        w.reset()                       # NB: without fixed_seed a reset re-carves a
+                                        # NEW maze; pass reset=False to drive an
+                                        # already-prepared (e.g. mutated) world as-is
+    for i, nxt in enumerate(route[1:]):
+        tx, ty = _cell(nxt)
+        ox, oy = w.cx, w.cy
+        if w.cx < tx:
+            a = "E"
+        elif w.cx > tx:
+            a = "W"
+        elif w.cy < ty:
+            a = "S"
+        elif w.cy > ty:
+            a = "N"
+        else:
+            continue
+        senses, r, ate, done = w.step(a)
+        if (w.cx, w.cy) == (ox, oy):                  # blocked: plan broke here
+            return ("broke", i, (ox, oy), nxt)
+        if done:
+            return ("escaped" if w.escaped else "dead", i, None, None)
+    return ("ran_out", len(route), None, None)
+
+
+class WorldView:
+    """The creature's world as a COUNTABLE, DIFFABLE composite -- the scene
+    machinery applied to perception. Every visible thing (exit, poison cell,
+    wall cell) is an object = bind(type, position); the view is their
+    unnormalised superposition. Two properties fall out of the algebra:
+
+      * COUNT: round(||view||^2) is the number of visible things (the same
+        norm-counting as SceneCoder.count_objects -- near-orthogonal unit
+        products).
+      * CHANGE: the DIFFERENCE of two views is itself a composite of the
+        changes -- appeared objects sit in it positively, vanished ones
+        negatively. round(||diff||^2) counts the changes, and peeling the diff
+        (positively for appeared, negatively for vanished) NAMES each one.
+        Termination is count-driven: we peel exactly as many objects as the
+        diff's own norm says changed -- no confidence threshold, the data's own
+        scale.
+
+    So the creature can notice 'something changed', know HOW MUCH changed, and
+    say WHAT changed, all from vector algebra on two snapshots -- perception-
+    level change detection nearly for free."""
+
+    TYPES = ("exit", "poison", "wall")
+
+    def __init__(self, dim=2048, width=16, height=16, seed=0):
+        from holographic_ai import random_vector
+        rng = np.random.default_rng(seed)
+        self.dim = dim
+        self._t = {t: random_vector(dim, rng) for t in self.TYPES}
+        self._p = {(x, y): random_vector(dim, rng)
+                   for x in range(width) for y in range(height)}
+
+    def _obj(self, typ, pos):
+        from holographic_ai import bind
+        return bind(self._t[typ], self._p[pos])
+
+    def view(self, world):
+        """Encode a GridWorld's current contents as one composite vector."""
+        objs = [("exit", (world.fx, world.fy))]
+        objs += [("poison", p) for p in getattr(world, "poison", ())]
+        objs += [("wall", w) for w in getattr(world, "walls", ())]
+        if not objs:
+            return np.zeros(self.dim)
+        return np.sum([self._obj(t, p) for t, p in objs], axis=0)
+
+    def count(self, view_vec):
+        return int(round(float(np.linalg.norm(view_vec)) ** 2))
+
+    def _best(self, vec):
+        from holographic_ai import cosine
+        best, bs = None, -2.0
+        for t in self.TYPES:
+            for pos in self._p:
+                s = cosine(vec, self._obj(t, pos))
+                if s > bs:
+                    bs, best = s, (t, pos)
+        return best, bs
+
+    def changes(self, view_old, view_new):
+        """What changed between two snapshots? Returns (appeared, vanished) as
+        lists of (type, position). The diff's norm COUNTS the changes; we peel
+        exactly that many, each time taking whichever sign (appeared vs
+        vanished) currently explains the residual better -- count-driven, no
+        threshold."""
+        diff = np.asarray(view_new, float) - np.asarray(view_old, float)
+        n = self.count(diff)
+        appeared, vanished = [], []
+        resid = diff.copy()
+        for _ in range(n):
+            (ta, pa), sa = self._best(resid)
+            (tv, pv), sv = self._best(-resid)
+            if sa >= sv:
+                appeared.append((ta, pa))
+                resid = resid - self._obj(ta, pa)
+            else:
+                vanished.append((tv, pv))
+                resid = resid + self._obj(tv, pv)
+        return appeared, vanished

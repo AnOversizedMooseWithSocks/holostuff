@@ -431,7 +431,71 @@ def _scene_compose():
 
 @app.route("/api/scene", methods=["POST"])
 def api_scene():
-    return jsonify(_scene_tags() if request.form.get("demo") == "tags" else _scene_compose())
+    demo = request.form.get("demo")
+    if demo == "tags":
+        return jsonify(_scene_tags())
+    if demo == "blend":
+        return jsonify(_scene_blend())
+    return jsonify(_scene_compose())
+
+
+def _scene_blend():
+    """PROJECTION AT THE SCENE LEVEL: two source scenes are factored into objects
+    by the resonator, then one factor (colour) is projected across -- scene A's
+    forms wearing scene B's palette -- and recomposed into a NOVEL scene that
+    exists in neither source. Drawn side by side: A, B, and the synthesized blend,
+    with the blend's recovered tags proving it holds the hybrid coherently."""
+    coder = scn.SceneCoder(dim=2048, seed=0)
+    A = [{"colour": "red", "shape": "circle", "texture": "smooth"},
+         {"colour": "cyan", "shape": "rectangle", "texture": "busy"},
+         {"colour": "green", "shape": "triangle", "texture": "smooth"}]
+    B = [{"colour": "blue", "shape": "line", "texture": "vertical"},
+         {"colour": "magenta", "shape": "circle", "texture": "horizontal"},
+         {"colour": "yellow", "shape": "rectangle", "texture": "busy"}]
+    vecBlend, blended = coder.blend_scenes(coder.encode_scene(A), coder.encode_scene(B),
+                                           len(A), project="colour")
+    recovered = coder.factor_scene(vecBlend, len(A), sweeps=2)
+
+    # the morph SEQUENCE: A's forms gradually adopt B's palette, one object per
+    # frame -- a continuous control parameter driving discrete coherent frames
+    # (the cleanup law forbids a smooth attribute blend, so the honest morph is an
+    # ordered sequence, each frame factoring exactly).
+    morph = coder.morph_scenes(coder.encode_scene(A), coder.encode_scene(B),
+                               len(A), project="colour")
+    morph_exact = []
+    for fr in morph:
+        rec = coder.factor_scene(coder.encode_scene(fr), len(fr), sweeps=2)
+        got = sorted((o["colour"], o["shape"], o["texture"]) for o in rec)
+        want = sorted((o["colour"], o["shape"], o["texture"]) for o in fr)
+        morph_exact.append(got == want)
+
+    def draw(ax, objs, title):
+        img = scn.make_scene([(o["shape"] if o["shape"] != "line" else "rectangle",
+                               o["colour"]) for o in objs], S=120, seed=2)
+        ax.imshow(img); ax.axis("off")
+        ax.set_title(title, color="#c8d3e6", fontsize=11)
+
+    fig, axes = plt.subplots(1, 3, figsize=(11, 4)); fig.patch.set_alpha(0)
+    draw(axes[0], A, "scene A (forms kept)")
+    draw(axes[1], B, "scene B (palette taken)")
+    draw(axes[2], blended, "A's forms + B's colours")
+
+    # morph strip: one panel per frame
+    mfig, maxes = plt.subplots(1, len(morph), figsize=(2.4 * len(morph), 2.6))
+    mfig.patch.set_alpha(0)
+    for ax, fr, i in zip(np.atleast_1d(maxes), morph, range(len(morph))):
+        draw(ax, fr, f"frame {i}")
+
+    return {"demo": "blend", "fig": _fig_uri(fig), "morph_fig": _fig_uri(mfig),
+            "scene_a": [[o["colour"], o["shape"], o["texture"]] for o in A],
+            "scene_b": [[o["colour"], o["shape"], o["texture"]] for o in B],
+            "blended": [[o["colour"], o["shape"], o["texture"]] for o in blended],
+            "recovered": [[o["colour"], o["shape"], o["texture"]] for o in recovered],
+            "morph_exact": morph_exact,
+            # cardinality is SELF-MEASURED: round(||v||^2) is the object count
+            "counts": {"a": coder.count_objects(coder.encode_scene(A)),
+                       "b": coder.count_objects(coder.encode_scene(B)),
+                       "blend": coder.count_objects(vecBlend)}}
 
 
 # --- scaling: the recursive holographic tree ----------------------------
@@ -714,7 +778,7 @@ def _slime_rollout(seed):
                 escaped=(path[-1] == (w.fx, w.fy)),
                 start_energy=w.start_energy, energy=w.start_energy - steps)
 
-def _rollout(make_world, encoder, mind, steps=80, mem=0, eps=0.05):
+def _rollout(make_world, encoder, mind, steps=80, mem=0, eps=0.05, corridor=False):
     """Live one life on a freshly-built world and record it frame-by-frame for
     the animation.
 
@@ -740,19 +804,53 @@ def _rollout(make_world, encoder, mind, steps=80, mem=0, eps=0.05):
                "ate": False, "energy": w.energy, "dead": False}]
     rng = np.random.default_rng(123)
     for _ in range(steps):
+        say = ""
         if mind is None:
             a = int(rng.integers(4))
         else:
-            a = mind.decide(state, explore=False, epsilon=eps)
+            # the brain's built-in safety reflexes: passing the senses vetoes
+            # moves into seen poison or walls (measured in the creature module;
+            # the showcase creature no longer suicides or wall-bumps on camera)
+            a = mind.decide(state, explore=False, epsilon=eps, senses=senses)
+            # INTROSPECTION ON CAMERA: the brain's own account of this moment --
+            # describe() decodes the state back into sense terms (measured
+            # 373/373 present / 427/427 silent), and the chosen move's value
+            # comes from the same prototypes that earned it
+            told = mind.describe(state, encoder)
+            v, _ = mind.value(mind.perceive_vec(state), a)
+            senses_txt = ", ".join(f"{k}={val}" for k, (val, _) in
+                                   sorted(told.items())[:4]) or "nothing notable"
+            say = f"senses {senses_txt} &rarr; {GridWorld.ACTIONS[a]} (value {v:+.2f})"
         senses, r, ate, done = w.step(GridWorld.ACTIONS[a])
-        recent = [GridWorld.ACTIONS[a]] + recent
-        state = encoder.build_state(senses, recent, mem)
+        last = GridWorld.ACTIONS[a]
+        recent = [last] + recent
         frames.append({"x": w.cx, "y": w.cy, "fx": w.fx, "fy": w.fy,
-                       "ate": bool(ate), "energy": w.energy, "dead": not w.alive and not w.escaped})
-        if not w.alive and not w.escaped and (w.cx, w.cy) in w.poison:
-            hits = 1                                          # died by stepping on poison
+                       "ate": bool(ate), "energy": w.energy, "say": say,
+                       "dead": not w.alive and not w.escaped})
         if ate:
             eaten.append((w.cx, w.cy))
+        if corridor and mind is not None:
+            # the corridor reflex, mirrored from run_episode: a maze brain is
+            # TRAINED to decide only at junctions (the credit-horizon lesson),
+            # so at play time the reflex walks forced cells and hands the brain
+            # the next real choice -- every walked cell still gets a frame, so
+            # the animation shows the whole route
+            from holographic_creature import _forced_dir
+            while not done:
+                fwd = _forced_dir(senses, last)
+                if fwd is None:
+                    break
+                senses, r, ate, done = w.step(fwd)
+                last = fwd
+                recent = [fwd] + recent
+                frames.append({"x": w.cx, "y": w.cy, "fx": w.fx, "fy": w.fy,
+                               "ate": bool(ate), "energy": w.energy,
+                               "dead": not w.alive and not w.escaped})
+                if ate:
+                    eaten.append((w.cx, w.cy))
+        state = encoder.build_state(senses, recent, mem)
+        if not w.alive and not w.escaped and (w.cx, w.cy) in w.poison:
+            hits = 1                                          # died by stepping on poison
         if done:
             break
     return dict(poison=list(w.poison), walls=list(w.walls), optimal=optimal,
@@ -826,47 +924,75 @@ def _build_creature(mode):
     import contextlib
     cfg = _MODES[mode]
     if mode == "maze":
-        # No reactive brain can hold a 16x16 maze, so there is nothing to train here:
-        # the slime-mold colony solves it directly. We keep an encoder only for the
-        # random-walker baseline shown on the left.
+        # TWO SOLVERS, ONE SUBSTRATE. The old comment here said "no reactive
+        # brain can hold a 16x16 maze" -- TRUE once, STALE now: the maze
+        # gauntlet broke that ceiling (corridor reflex + gamma 0.97 +
+        # learn_maze's restart-on-incompetence protocol; 16x16 any-seed
+        # measured 95-99%). So the left pane shows the BRAIN that learned the
+        # maze, and the right pane keeps the slime-mold colony computing the
+        # shortest tube -- learning vs morphological computation, same engine.
+        from holographic_creature import learn_maze, capture_route
+        with contextlib.redirect_stdout(io.StringIO()):
+            enc2, mind, rate = learn_maze(lambda: _make_world(mode, cfg["layout"]),
+                                          dim=256, episodes=cfg["episodes"],
+                                          mem=cfg["mem"])
+            # SEQUENCE DISCOVERY on the creature's OWN behaviour: capture the
+            # brain's successful escape routes and let the unified mind discover
+            # and PROVE their canonical structure -- acting, then understanding
+            # the structure of the action, on the latest sequence machinery.
+            route_info = None
+            try:
+                routes = capture_route(lambda: _make_world(mode, cfg["layout"]),
+                                       enc2, mind, mem=cfg["mem"], trials=8)
+                if len(routes) >= 3:
+                    from holographic_unified import UnifiedMind
+                    um = UnifiedMind(dim=1024, seed=0)
+                    um.learn_sequences([(r, "route") for r in routes])
+                    verdicts = um.discover_sequential()
+                    rv = verdicts.get("route")
+                    z = rv[0] if isinstance(rv, tuple) else rv
+                    if "route" in um._seq_mem().seqs:
+                        canon = um._seq_mem().seqs["route"][1]
+                        ok, _ = um.prove_executable(routes)
+                        route_info = {"z": round(float(z), 1), "length": len(canon),
+                                      "executable": ok, "n_routes": len(routes)}
+            except Exception:
+                route_info = None
         return {"maze_after": _slime_rollout(cfg["layout"]),
-                "enc": CreatureEncoder(256, seed=1), "rolls": None}
+                "enc": enc2, "mind": mind, "probe_rate": rate, "rolls": None,
+                "route_info": route_info}
     enc = CreatureEncoder(256, seed=1)
     best = None
     for ms in cfg["mind_seeds"]:
         mind = HolographicMind(256, GridWorld.ACTIONS, k=15, epsilon=cfg["eps0"],
                                novelty_bonus=cfg["novelty"], memory_cap=cfg["cap"], seed=ms)
         with contextlib.redirect_stdout(io.StringIO()):
+            # training WITH the safety reflexes (measured: the wall veto in
+            # training is the difference between 5.1 and 19.8 stars in the
+            # cluttered world -- the veto shapes the experience learned from)
             _train(_make_world(mode, cfg["layout"]), enc, mind, episodes=cfg["episodes"],
-                   eps_start=cfg["eps0"], mem=cfg["mem"], max_steps=cfg["tsteps"])
+                   eps_start=cfg["eps0"], mem=cfg["mem"], max_steps=cfg["tsteps"],
+                   danger_reflex=True, wall_reflex=True)
 
-        if mode == "maze":
-            # Score a maze brain by how reliably it escapes the (fixed) labyrinth.
-            rolls = [_rollout(lambda: _make_world(mode, cfg["layout"]), enc, mind,
-                              steps=cfg["steps"], mem=cfg["mem"]) for _ in range(5)]
-            escapes = sum(r["escaped"] for r in rolls)
-            cand = {"score": escapes, "mind": mind, "rolls": rolls,
-                    "perfect": escapes == len(rolls)}
+        rolls = [_rollout(lambda s=s: _make_world(mode, s), enc, mind,
+                          steps=cfg["steps"], mem=cfg["mem"]) for s in range(6)]
+        stars = sum(r["stars"] for r in rolls); clean = sum(r["hits"] == 0 for r in rolls)
+        if mode == "poison":
+            # A reactive (mem=0) brain can be probed with one-shot senses, but
+            # that synthetic reflex correlates only loosely with real play -- a
+            # great forager can still lunge at a star in the artificial probe.
+            # So we select on what the demo actually SHOWS: stars gathered and
+            # lives survived, with the reflex as a gentle tie-breaking nudge.
+            seek, avoid, reflex = _reflex(enc, mind)
+            cand = {"score": stars + 5 * clean + 8 * (seek + avoid), "mind": mind,
+                    "rolls": rolls, "seek": seek, "avoid": avoid, "reflex": reflex,
+                    "perfect": False}
         else:
-            rolls = [_rollout(lambda s=s: _make_world(mode, s), enc, mind,
-                              steps=cfg["steps"], mem=cfg["mem"]) for s in range(6)]
-            stars = sum(r["stars"] for r in rolls); clean = sum(r["hits"] == 0 for r in rolls)
-            if mode == "poison":
-                # A reactive (mem=0) brain can be probed with one-shot senses, but
-                # that synthetic reflex correlates only loosely with real play -- a
-                # great forager can still lunge at a star in the artificial probe.
-                # So we select on what the demo actually SHOWS: stars gathered and
-                # lives survived, with the reflex as a gentle tie-breaking nudge.
-                seek, avoid, reflex = _reflex(enc, mind)
-                cand = {"score": stars + 5 * clean + 8 * (seek + avoid), "mind": mind,
-                        "rolls": rolls, "seek": seek, "avoid": avoid, "reflex": reflex,
-                        "perfect": False}
-            else:
-                # The walls brain is trained WITH working memory, so the memoryless
-                # reflex probe would not match how it actually thinks -- we score it
-                # by what matters here instead: stars gathered and lives survived.
-                cand = {"score": 5 * clean + stars, "mind": mind, "rolls": rolls,
-                        "perfect": False}
+            # The walls brain is trained WITH working memory, so the memoryless
+            # reflex probe would not match how it actually thinks -- we score it
+            # by what matters here instead: stars gathered and lives survived.
+            cand = {"score": 5 * clean + stars, "mind": mind, "rolls": rolls,
+                    "perfect": False}
         if best is None or cand["score"] > best["score"]:
             best = cand
         if cand["perfect"]:
@@ -895,18 +1021,32 @@ def api_creature():
 
     if mode == "maze":
         after = b["maze_after"]
-        before = _rollout(lambda: _make_world(mode, cfg["layout"]), enc, None,
-                          steps=cfg["steps"], mem=cfg["mem"])
+        # the LEFT pane is the holographic BRAIN that LEARNED this maze --
+        # learn_maze's speculate/measure/adopt protocol (corridor reflex +
+        # gamma 0.97, measured to break the size ceilings); the old random
+        # walker is retired, its lesson kept in the caption
+        before = _rollout(lambda: _make_world(mode, cfg["layout"]), enc, b["mind"],
+                          steps=cfg["steps"], mem=cfg["mem"], corridor=True)
         opt = after["opt"]
-        cap = (f"a braided 16&times;16 maze &mdash; loops everywhere, so there are MANY ways out, and the "
-               f"job is to find the SHORTEST. The slime-mold colony floods it with walkers that know "
-               f"NOTHING about where the exit is (no compass, no precomputed route): a tile only gets a "
-               f"trail after a walker reaches it, shorter successful routes lay down more pheromone per "
-               f"step, and the tube network thins until the shortest connecting tube survives &mdash; "
-               f"just like Physarum. Watch it explore ({after['cells']} reachable cells), then the "
-               f"shortest tube emerge ({after['steps']} steps; the true optimum is {opt}). A random "
-               f"walker (left) never gets out.")
-        out.update(before=pack(before), after=after, caption=cap)
+        cap = (f"a braided 16&times;16 maze &mdash; loops everywhere, so there are MANY ways out. TWO "
+               f"SOLVERS, ONE SUBSTRATE. Left: the holographic BRAIN that LEARNED the maze "
+               f"(learn_maze's protocol: train a candidate policy, probe its escapes, restart if "
+               f"incompetent &mdash; with the two measured lessons baked in, deciding only at junctions "
+               f"and a 0.97 credit horizon; this brain probed {b.get('probe_rate', 0)*100:.0f}% escapes, "
+               f"where a random walker never gets out and an unaided reactive brain measured 0% before "
+               f"the gauntlet broke that ceiling). It escapes in {pack(before)['steps']} steps here. "
+               f"Right: the slime-mold colony COMPUTING the route morphologically &mdash; walkers with "
+               f"no compass, trails only on visited tiles, shorter routes laying more pheromone, the "
+               f"tube network thinning to the shortest connecting tube ({after['steps']} steps; the "
+               f"true optimum is {opt}). Learning vs morphological computation, same vector engine.")
+        ri = b.get("route_info")
+        if ri:
+            cap += (f" And the brain then UNDERSTOOD its own behaviour: it captured "
+                    f"{ri['n_routes']} of its successful escapes and the sequence machinery "
+                    f"discovered their route is genuinely ordered (z={ri['z']} vs its own "
+                    f"shuffled null) and PROVED it executable &mdash; acting, then proving "
+                    f"the structure of the action, on the one substrate.")
+        out.update(before=pack(before), after=after, caption=cap, route_info=ri)
         return jsonify(out)
 
     # forage modes: poison and walls -----------------------------------------
@@ -1092,6 +1232,149 @@ def u_load():
                         "(if a corpus is missing, a network connection is needed the "
                         "first time to pull it from GitHub)"})
 
+# --- compare two sprites: the WHY, on real images --------------------------
+# A lazy relations mind over the whole sprite library: each sprite absorbed as
+# IMAGE + RECORD (colour/texture from pixels, family/facing/frame from the
+# name) under its own label. Built once on first use; measured at the library
+# level: find-by-attribute exact, role decode through the mixed image+record
+# prototypes 100% (750/750), SEE->SAY (classify the image, state the colour in
+# symbols) 96%.
+_COMPARE = {"mind": None, "recs": {}, "rgbs": {}}
+
+def _sprite_record(name, rgba):
+    import re as _re
+    from holographic_scene import auto_tags
+    rgb = rgba[..., :3].astype(float) / 255.0 if rgba.dtype == np.uint8 else rgba[..., :3]
+    mask = (rgba[..., 3] > 0) if rgba.shape[-1] == 4 else None
+    t = auto_tags(rgb, mask=mask)
+    rec = {"colour": t["colour"], "texture": t["texture"]}
+    m = _re.match(r"([a-z]+)(\d*)_([a-z]{2})(\d)\.gif", name)
+    if m:
+        rec.update(family=m.group(1), facing=m.group(3), frame=m.group(4))
+    return rec, rgb
+
+def _compare_mind():
+    if _COMPARE["mind"] is None:
+        from holographic_unified import UnifiedMind
+        # dim 2048 is the MEASURED configuration for the library (see->say 96%);
+        # at 1024 image classify starts confusing recoloured sibling variants
+        # (measured here first: amg1 matched amg2 and reported the wrong colour)
+        mind = UnifiedMind(dim=2048, seed=0)
+        examples = []
+        for name, rgba in SPRITES.items():
+            rec, rgb = _sprite_record(name, rgba)
+            _COMPARE["recs"][name], _COMPARE["rgbs"][name] = rec, rgb
+            examples += [(rgb, name, "image"), (rec, name, "record")]
+        mind.absorb(examples, maintain=False)
+        _COMPARE["mind"] = mind
+    return _COMPARE["mind"]
+
+@app.route("/api/sprite_names")
+def sprite_names():
+    return jsonify({"names": sorted(SPRITES)})
+
+# --- plan discovery: the full sequence pipeline on procedural data ----------
+# A standing demo set of noisy procedure observations across several recipe
+# types plus bag-shaped distractor classes, so the panel shows the mind
+# DISCOVERING which classes are ordered (permutation test), PROVING them
+# executable, recovering the canonical order, and EXECUTING with context.
+_PLAN_PROCS = {
+    "make_tea": ["fill_kettle", "boil_water", "warm_pot", "add_leaves",
+                 "pour_water", "steep", "strain", "serve"],
+    "send_email": ["open_client", "compose", "add_subject", "write_body",
+                   "attach_file", "proofread", "send"],
+    "do_laundry": ["sort_clothes", "load_machine", "add_detergent",
+                   "start_cycle", "transfer_dryer", "dry", "fold"],
+}
+_PLAN_BAGS = {
+    "spices": ["cumin", "paprika", "turmeric", "coriander", "pepper"],
+    "tools": ["hammer", "wrench", "pliers", "screwdriver", "drill"],
+}
+
+def _plan_mind():
+    if "mind" not in _PLAN_STATE:
+        import numpy as _np
+        from holographic_unified import UnifiedMind
+        rng = _np.random.default_rng(0)
+        examples = []
+        for name, canon in _PLAN_PROCS.items():
+            for _ in range(30):
+                s = list(canon)
+                for _ in range(rng.integers(0, 3)):       # drop up to 2 steps
+                    if len(s) > 2:
+                        s.pop(rng.integers(0, len(s)))
+                examples.append((s, name))
+        for name, pool in _PLAN_BAGS.items():
+            for _ in range(30):
+                examples.append((list(rng.permutation(pool))[:rng.integers(3, 6)], name))
+        rng.shuffle(examples)
+        m = UnifiedMind(dim=2048, seed=0)
+        m.absorb(examples, maintain=False)               # auto-discovers order
+        _PLAN_STATE["mind"] = m
+    return _PLAN_STATE["mind"]
+
+_PLAN_STATE = {}
+
+@app.route("/api/plan", methods=["POST"])
+def plan():
+    """Show the full sequence pipeline: which absorbed classes the mind
+    discovered to be ordered vs bags, each ordered class's proven canonical
+    order, and an execution trace (steps firing on preconditions, an
+    out-of-order attempt blocking)."""
+    m = _plan_mind()
+    classes = {}
+    for name in list(_PLAN_PROCS) + list(_PLAN_BAGS):
+        if name in m._seq_mem().seqs:
+            order = m._seq_mem().seqs[name][1]
+            ok, _viol = m.prove_executable(m._seq_members.get(name, []))
+            classes[name] = {"sequential": True, "order": order, "executable": ok}
+        else:
+            classes[name] = {"sequential": False}
+    # execute one discovered plan in order, and out of order, to show the contract
+    runs = {}
+    for name in _PLAN_PROCS:
+        if name in m._seq_mem().seqs:
+            order = m._seq_mem().seqs[name][1]
+            good = m.execute_plan(name)
+            bad_attempt = [order[-1]] + order[:-1]       # last step first -> blocks
+            bad = m.execute_plan(name, attempt_order=bad_attempt)
+            runs[name] = {"in_order": [{"step": s, "status": st} for s, st, _ in good],
+                          "out_of_order": [{"step": s, "status": st, "why": d}
+                                           for s, st, d in bad]}
+            break
+    return jsonify({"classes": classes, "execution": runs})
+
+
+@app.route("/api/compare", methods=["POST"])
+def compare():
+    """WHY are two sprites similar -- per-role verdict on real images, plus the
+    cross-modal loop: SEE each image (classify it, no name given), then SAY its
+    colour in symbols by decoding the matched prototype."""
+    if not SPRITES:
+        return jsonify({"error": "sprite asset not loaded"})
+    mind = _compare_mind()
+    names = sorted(SPRITES)
+    a = request.form.get("a", "").strip()
+    b = request.form.get("b", "").strip()
+    if not a or not b:                                # random DISTINCT pair
+        rng = np.random.default_rng()
+        a, b = (names[i] for i in rng.choice(len(names), 2, replace=False))
+    if a not in SPRITES or b not in SPRITES:
+        return jsonify({"error": "unknown sprite name", "names": names[:0]})
+    rows = mind.explain(_COMPARE["recs"][a], _COMPARE["recs"][b])
+    out_rows = [{"role": r, "a": va, "b": vb, "shared": bool(sh)}
+                for r, va, vb, sh, _ in rows]
+    seesay = {}
+    for name in (a, b):
+        lab, _ = mind.classify(_COMPARE["rgbs"][name], modality="image")
+        col, conf = mind.read_role(lab, "colour")
+        seesay[name] = {"matched": lab, "colour": col, "conf": round(float(conf), 2)}
+    return jsonify({"a": a, "b": b,
+                    "a_uri": to_data_uri(_COMPARE["rgbs"][a]),
+                    "b_uri": to_data_uri(_COMPARE["rgbs"][b]),
+                    "rows": out_rows, "seesay": seesay})
+
+
 @app.route("/api/unified/classify", methods=["POST"])
 def u_classify():
     if U_STATE["mind"] is None:
@@ -1111,8 +1394,12 @@ def u_organize():
         return jsonify({"error": "load a dataset first"})
     mind = U_STATE["mind"]
     choice = mind.maintain_now()
+    # the mind's own narration of the event (journal) -- the same story the
+    # standalone console shows; this embedded panel had missed the propagation
+    story = mind.journal[-1]["story"] if mind.journal else ""
     return jsonify({"after": mind.memory.live.counts_by_label(),
                     "choice": (choice[0] if choice else "keep"),
+                    "story": story,
                     "note": "each label may hold several sub-prototypes when the memory found "
                             "it multi-modal; one each means it stayed simple."})
 
@@ -1121,7 +1408,7 @@ def u_generate():
     if U_STATE["mind"] is None or U_STATE["mind"]._gen is None:
         return jsonify({"error": "load a dataset first"})
     j = request.json
-    seed = (j.get("seed") or "the ").lower()
+    seed = j.get("seed") or "The "
     length = max(20, min(int(j.get("length", 220)), 600))
     temp = max(0.1, min(float(j.get("temperature", 0.45)), 1.2))
     return jsonify({"text": U_STATE["mind"].generate(seed, length, temp)})
@@ -1257,7 +1544,7 @@ PAGE = r"""
 
   <div class="panel">
     <h2>Creature</h2>
-    <p class="muted" style="margin:-8px 0 12px">a grid-world forager with a holographic mind (no neural net) &mdash; teal line is its path, the gold &#9733; is the star/exit it's after (green marks ones collected), red cells are poison, grey cells are solid walls, and in the forage worlds the faint dashed line is the <em>optimal</em> route (shortest path). It runs on energy: starts at 100, each step costs 1, every star gives +3, and poison empties it &mdash; instant death. The <em>Labyrinth</em> is different: a braided 16&times;16 maze (loops everywhere, so many routes out) solved by a slime-mold colony that you watch <em>discover</em> the way and then thin its tubes down to the <em>shortest</em> one &mdash; no precomputed guide, no exit compass, trails laid only on tiles a walker has already reached. Pick a world:</p>
+    <p class="muted" style="margin:-8px 0 12px">a grid-world forager with a holographic mind (no neural net) &mdash; teal line is its path, the gold &#9733; is the star/exit it's after (green marks ones collected), red cells are poison, grey cells are solid walls, and in the forage worlds the faint dashed line is the <em>optimal</em> route (shortest path). It runs on energy: each step costs 1, every star gives +3, and poison empties it &mdash; instant death. The <em>Labyrinth</em> shows two solvers on one substrate: the holographic <em>brain</em> that learned the maze (the gauntlet protocol &mdash; junction-level decisions, 0.97 credit horizon, restart-on-incompetence) escaping on the left, and the slime-mold colony on the right <em>discovering</em> the way and thinning its tubes down to the <em>shortest</em> route &mdash; no precomputed guide, no exit compass, trails laid only on tiles a walker has already reached. Pick a world:</p>
     <button onclick="runCreature('poison')">Forage</button>
     <button onclick="runCreature('walls')">Obstacles</button>
     <button onclick="runCreature('maze')">Labyrinth</button>
@@ -1340,6 +1627,28 @@ PAGE = r"""
   </div>
 
   <div class="panel">
+  <div class="panel">
+    <h2>Plan discovery (order, proven &amp; executed)</h2>
+    <p class="muted" style="margin:-8px 0 12px">The mind absorbs noisy observations of several procedures mixed with bag-shaped distractor classes, and &mdash; with no labels telling it which is which &mdash; <em>discovers</em> which classes are genuinely ordered (a permutation test against each class's own shuffled null), <em>proves</em> the winners executable (no precedence cycle), recovers their canonical order, and <em>executes</em> them under an honest contract: a step fires only when its preconditions have fired, else it blocks. Structure measured into existence, proven, and acted upon.</p>
+    <div style="margin-bottom:10px"><button onclick="runPlan()">Discover &amp; run plans &rarr;</button>
+      <span id="plansum" class="spin" style="margin-left:12px;display:none">discovering&hellip;</span></div>
+    <div id="planout"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Compare two sprites (the WHY)</h2>
+    <p class="muted" style="margin:-8px 0 12px">not just <em>how similar</em> &mdash; <em>why</em>. Two sprites become role-bound records (colour/texture read from the pixels, family/facing/frame from the name), and the per-role verdict is decoded holographically. Below the table, the cross-modal loop: the mind is shown each <em>image</em> with no name, classifies it against the whole library, and states the colour in symbols by decoding the matched prototype &mdash; SEE &rarr; SAY (measured 96% over the library). Leave the names blank for a random pair. The first run builds the relations memory over all 712 sprites (&sim;1 min); after that it is instant.</p>
+    <div style="margin-bottom:10px">
+      <input id="cmpA" list="spriteNames" placeholder="sprite A (blank = random)" style="width:200px">
+      <input id="cmpB" list="spriteNames" placeholder="sprite B (blank = random)" style="width:200px">
+      <datalist id="spriteNames"></datalist>
+      <button onclick="runCompare()">Compare &rarr;</button>
+      <span id="cmpsum" class="spin" style="margin-left:12px;display:none">comparing&hellip;</span>
+    </div>
+    <div id="cmpout" style="margin-top:14px"></div>
+  </div>
+
+  <div class="panel">
     <h2>Vision: colour, edges, shapes, emergent classes</h2>
     <p class="muted" style="margin:-8px 0 12px">the image is just numbers, so classical vision is just arithmetic &mdash; all numpy, no OpenCV. <b>Colour</b> splits RGB into perceptual HSV and pulls dominant colours. <b>Edges &amp; shapes</b> runs Sobel gradients then Hough voting to find lines and circles, and Harris to find corners. <b>Emergent classes</b> turns each image into a small feature vector, lets categories fall out by clustering with no labels, and then classifies held-out shapes with VSA prototypes (bundle + cosine cleanup) &mdash; honest about where each step's accuracy tops out.</p>
     <div class="seg" id="visSeg">
@@ -1357,6 +1666,7 @@ PAGE = r"""
     <div class="seg" id="scnSeg">
       <button data-d="tags" class="on">auto-tags (DCT)</button>
       <button data-d="compose">compositional vs holistic</button>
+      <button data-d="blend">projection blend</button>
     </div>
     <span id="scnsum" class="spin" style="display:none;margin-left:12px">computing&hellip;</span>
     <div id="scnout" style="margin-top:14px"></div>
@@ -1431,6 +1741,46 @@ async function runVault(){
 let visDemo="colour";
 document.querySelectorAll("#visSeg button").forEach(b=>b.onclick=()=>{
   visDemo=b.dataset.d; document.querySelectorAll("#visSeg button").forEach(x=>x.classList.remove("on")); b.classList.add("on"); runVision();});
+async function runPlan(){
+  const sum=document.getElementById("plansum"); sum.style.display="inline";
+  const r=await (await fetch("/api/plan",{method:"POST"})).json();
+  sum.style.display="none";
+  const out=document.getElementById("planout");
+  const cls=Object.entries(r.classes).map(([name,info])=>{
+    if(info.sequential){
+      const steps=info.order.map(s=>`<span class="badge ok" style="margin:1px 2px">${s}</span>`).join("&rarr;");
+      return `<div style="margin:6px 0"><b style="color:#7dd87d">${name}</b> <span class="muted">ordered, ${info.executable?"proven executable":"NOT executable"}</span><div style="margin-top:3px">${steps}</div></div>`;
+    }
+    return `<div style="margin:6px 0"><b class="muted">${name}</b> <span class="muted">&mdash; bag (no order discovered)</span></div>`;
+  }).join("");
+  let exec="";
+  for(const [name,run] of Object.entries(r.execution)){
+    const inorder=run.in_order.map(s=>`<span class="badge ok" style="margin:1px">${s.step}&check;</span>`).join(" ");
+    const ooo=run.out_of_order.map(s=>s.status==="blocked"
+      ?`<span class="badge" style="margin:1px;background:#5a2a2a;color:#f0a0a0">${s.step}&#10007;</span>`
+      :`<span class="badge ok" style="margin:1px">${s.step}&check;</span>`).join(" ");
+    exec=`<div style="margin-top:10px"><div class="muted">executing <b>${name}</b> in order (all fire):</div><div style="margin:3px 0">${inorder}</div>
+      <div class="muted" style="margin-top:6px">attempting last step first (it blocks &mdash; preconditions unmet):</div><div style="margin:3px 0">${ooo}</div></div>`;
+  }
+  out.innerHTML=cls+exec;
+}
+async function runCompare(){
+  const sum=document.getElementById("cmpsum"); sum.style.display="inline";
+  const fd=new FormData();
+  fd.append("a",document.getElementById("cmpA").value);
+  fd.append("b",document.getElementById("cmpB").value);
+  const r=await (await fetch("/api/compare",{method:"POST",body:fd})).json();
+  sum.style.display="none";
+  const out=document.getElementById("cmpout");
+  if(r.error){out.innerHTML=`<span class="muted">${r.error}</span>`;return;}
+  const img=u=>`<img src="${u}" style="width:96px;height:96px;image-rendering:pixelated;border:1px solid #2a3a55;border-radius:6px">`;
+  const rows=r.rows.map(e=>`<tr><td>${e.role}</td><td>${e.a}</td><td>${e.b}</td><td>${e.shared?'<b style="color:#7dd87d">SHARED</b>':'<span class="muted">differs</span>'}</td></tr>`).join("");
+  const say=n=>{const s=r.seesay[n];return `${s.matched===n?"recognised itself":"matched <b>"+s.matched+"</b>"} &rarr; says <b>${s.colour}</b>`;};
+  out.innerHTML=`<div style="display:flex;gap:18px;align-items:flex-start">
+    <div style="text-align:center">${img(r.a_uri)}<div class="muted" style="margin-top:4px">${r.a}</div><div style="font-size:13px;margin-top:4px">SEE&rarr;SAY: ${say(r.a)}</div></div>
+    <div style="text-align:center">${img(r.b_uri)}<div class="muted" style="margin-top:4px">${r.b}</div><div style="font-size:13px;margin-top:4px">SEE&rarr;SAY: ${say(r.b)}</div></div>
+    <table style="margin-top:4px"><tr><th>role</th><th>A</th><th>B</th><th></th></tr>${rows}</table></div>`;
+}
 async function runVision(){
   vissum.style.display="inline"; visout.innerHTML="";
   const fd=new FormData(); fd.append("demo",visDemo);
@@ -1465,6 +1815,18 @@ async function runScene(){
       <div>holistic colour tag: <b style="color:var(--coral)">${r.holistic}</b> &mdash; one label for the whole image, the other object is lost</div>
       <div style="margin-top:4px">segmented objects: <b style="color:var(--teal2)">${fmt(r.objects)}</b></div>
       <div style="margin-top:4px">resonator factors the scene vector back into: <b style="color:var(--teal2)">${fmt(r.recovered)}</b> ${match?'&#10003;':''}</div>
+    </div>`;
+  }else if(r.demo==="blend"){
+    const fmt=a=>a.map(o=>`${o[0]} ${o[1]} <span class="muted">(${o[2]})</span>`).join("  &middot;  ");
+    const match=JSON.stringify(r.blended.map(String).sort())===JSON.stringify(r.recovered.map(String).sort());
+    cap=`<div style="margin-top:10px;font-size:13px">
+      <div class="muted">projection at the scene level: factor both scenes into objects, project scene B's colours onto scene A's forms, recompose a NOVEL scene neither input contained.${r.counts?` Object counts are <b>self-measured</b> from each vector's norm (&#8214;v&#8214;&sup2;&asymp;n): A holds ${r.counts.a}, B holds ${r.counts.b}, the blend holds ${r.counts.blend} &mdash; nobody told the system how many.`:""}</div>
+      <div style="margin-top:6px">scene A forms: <b style="color:var(--teal2)">${fmt(r.scene_a)}</b></div>
+      <div style="margin-top:4px">scene B palette: <b style="color:var(--coral)">${fmt(r.scene_b)}</b></div>
+      <div style="margin-top:4px">synthesized blend: <b style="color:var(--teal2)">${fmt(r.blended)}</b></div>
+      <div style="margin-top:4px">resonator factors the novel scene back into: <b style="color:var(--teal2)">${fmt(r.recovered)}</b> ${match?'&#10003; held coherently':''}</div>
+      <div style="margin-top:12px" class="muted">the MORPH SEQUENCE &mdash; A's forms gradually adopt B's palette, one object per frame. A smooth attribute blend is impossible (the cleanup law snaps), so the honest morph is an ordered run of discrete coherent frames, each factoring exactly ${r.morph_exact&&r.morph_exact.every(x=>x)?'&#10003;':''}. Projection generates the frames; the sequence machinery confirms they are genuinely ordered (z&asymp;10).</div>
+      <img src="${r.morph_fig}" style="width:100%;border-radius:8px;margin-top:6px">
     </div>`;
   }else{
     cap=`<div class="muted" style="margin-top:8px;font-size:13px">top row: texture fields labelled by their DCT energy layout; bottom row: shapes labelled by colour and geometry. All tags come straight from the pixels.</div>`;
@@ -1712,6 +2074,15 @@ async function runCreature(mode){
     const g=build(svg,ep), fr=ep.frames, pts=[`${mid(fr[0].x)},${mid(fr[0].y)}`]; let k=0, dir="S", stars=0;
     g.trail.setAttribute("points",pts.join(" "));
     hud(hudNode,tally(0,0),fr[0].energy,ep.start_energy,false,false);
+    // the brain's own running account of what it senses and chooses --
+    // describe() decoded live, one line per decision (corridor steps stay quiet)
+    let sayNode=hudNode.nextElementSibling;
+    if(!sayNode||!sayNode.classList.contains("say")){
+      sayNode=document.createElement("div"); sayNode.className="say muted";
+      sayNode.style.cssText="font-size:12px;min-height:16px;margin-top:3px";
+      hudNode.after(sayNode);
+    }
+    sayNode.innerHTML="";
     const z=CS*0.92, off=(CS-z)/2;
     const id=setInterval(()=>{
       if(++k>=fr.length){clearInterval(id);return;}
@@ -1728,6 +2099,7 @@ async function runCreature(mode){
       g.food.setAttribute("x",mid(f.fx)); g.food.setAttribute("y",mid(f.fy));
       const escapedNow=MAZE&&f.ate;
       hud(hudNode,tally(k,stars),f.energy,ep.start_energy,f.dead,escapedNow);
+      if(f.say) sayNode.innerHTML="&#129504; "+f.say;
       if(escapedNow){                                                                    // reached the exit
         svg.appendChild(el("circle",{cx:mid(f.x),cy:mid(f.y),r:CS*0.46,fill:"none",stroke:"#3ddc97","stroke-width":3}));
       }
@@ -1819,6 +2191,8 @@ async function runTests(){
      <span class="${t.status==='PASSED'?'p':'f'}">${t.status}</span></div>`).join("");
 }
 loadGallery();
+(async()=>{const r=await (await fetch("/api/sprite_names")).json();
+  document.getElementById("spriteNames").innerHTML=r.names.map(n=>`<option value="${n}">`).join("");})();
 // --- unified brain ---------------------------------------------------------
 const uId=id=>document.getElementById(id);
 async function uPost(url,body){
@@ -1860,8 +2234,9 @@ async function uOrganize(){
   const r=await uPost("/api/unified/organize",{});
   if(r.error){uId("u_oout").innerHTML=`<span class="muted">${r.error}</span>`;return;}
   const pills=Object.entries(r.after).map(([l,n])=>`<span class="badge ok" style="margin:2px 4px 2px 0">${l}: ${n}</span>`).join("");
+  const story=r.story?`<div style="margin-top:8px;color:#e8c468">the mind's own account: ${r.story}</div>`:"";
   uId("u_oout").innerHTML=`reorganize decided: <b class="val">${r.choice}</b>
-     <div style="margin-top:8px">${pills}</div>
+     <div style="margin-top:8px">${pills}</div>${story}
      <div class="muted" style="margin-top:6px">${r.note}</div>`;
 }
 async function uGenerate(){

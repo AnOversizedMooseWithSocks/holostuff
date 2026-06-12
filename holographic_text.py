@@ -358,16 +358,22 @@ class HolographicNGram:
     bundle per context string -- which is the same partition-to-beat-capacity trick
     used elsewhere in this codebase."""
 
-    def __init__(self, dim=1024, n=3, seed=0):
+    def __init__(self, dim=1024, n=3, seed=0, fold_case=True):
         self.dim = dim
         self.n = n
         self.atoms = Vocabulary(dim, seed)
+        # fold_case=True (the default, and every pinned measurement) folds text
+        # to lowercase: a smaller alphabet, denser contexts. Setting it False
+        # preserves capitals -- measured on Austen with the hierarchical coder:
+        # true-cased text costs ~12% bits/char and ~8 points of word coherence,
+        # but the output reads as PROSE (capitals, punctuation, sentences).
+        self.fold_case = fold_case
         self.alphabet = set()
         self._mem = defaultdict(lambda: np.zeros(dim))   # context string -> sum of next-char atoms
         self._seen = defaultdict(Counter)                # context -> next-char counts (for sampling)
 
     def fit(self, text):
-        text = text.lower()
+        text = text.lower() if self.fold_case else text
         self.alphabet.update(text)
         # store the next character under contexts of EVERY length 1..n, so an unseen
         # long context can back off to a shorter one that was seen
@@ -396,7 +402,7 @@ class HolographicNGram:
 
     def generate(self, seed_text, length=160, temperature=0.5, rng=None):
         rng = rng or np.random.default_rng(0)
-        out = seed_text.lower()
+        out = seed_text.lower() if self.fold_case else seed_text
         for _ in range(length):
             dist = self._distribution(out[-self.n:])
             chars = list(dist)
@@ -409,7 +415,7 @@ class HolographicNGram:
     def predict_accuracy(self, text):
         """Top-1 next-character accuracy on held-out text -- how often the model's
         single best guess is right."""
-        text = text.lower()
+        text = text.lower() if self.fold_case else text
         ok = total = 0
         for i in range(len(text) - self.n):
             if self.next_char(text[i:i + self.n]) == text[i + self.n]:

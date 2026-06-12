@@ -94,6 +94,70 @@ for _ in range(6):
     ok += (si == s and ri == r and oi == o)
 print(f"  encoded subject(x)relation(x)object into ONE vector; recovered {ok}/6 facts exactly")
 
+# PROJECTION TO CREATE NEW THINGS: synthesize a novel entity by casting one
+# record's attributes onto another's frame -- the shadow that creates. A thing
+# that exists in no training data, held coherently, decoded back exactly.
+from holographic_relations import KnowledgeStore
+_ks = KnowledgeStore(dim=2048, seed=0)
+for _n, _a in {"france": {"capital": "paris", "currency": "euro", "language": "french", "continent": "europe"},
+               "japan": {"capital": "tokyo", "currency": "yen", "language": "japanese", "continent": "asia"}}.items():
+    _ks.add(_n, **_a)
+_v, _spec = _ks.blend("france", "japan", {"language", "currency"})
+_dec = _ks.decode_record(_v)
+print(f"  projection-creates: 'france with japan's language+currency' -> "
+      f"{_dec['capital']}/{_dec['language']}/{_dec['currency']} "
+      f"({'coherent novel entity' if _dec == _spec else 'BLURRED'})")
+
+# scene-level projection: factor two scenes, project one's palette onto the
+# other's forms, recompose a novel scene neither contained -- decompose/project/
+# recompose all through the resonator.
+from holographic_scene import SceneCoder as _SC
+_sc = _SC(dim=2048, seed=0)
+_sa = [{"colour": "red", "shape": "circle", "texture": "smooth"},
+       {"colour": "cyan", "shape": "rectangle", "texture": "busy"}]
+_sb = [{"colour": "blue", "shape": "triangle", "texture": "vertical"},
+       {"colour": "green", "shape": "line", "texture": "horizontal"}]
+_vb, _bl = _sc.blend_scenes(_sc.encode_scene(_sa), _sc.encode_scene(_sb), 2, project="colour")
+_rec = _sc.factor_scene(_vb, 2)
+_exact = sorted((o['colour'], o['shape'], o['texture']) for o in _rec) == \
+         sorted((o['colour'], o['shape'], o['texture']) for o in _bl)
+print(f"  scene-blend: A's forms + B's colours -> novel scene factors back "
+      f"{'exactly' if _exact else 'BLURRED'} ({len(_bl)} hybrid objects)")
+
+# morph sequence: continuous control sweeps A -> B as ordered coherent frames
+# (smooth attribute blend is impossible -- cleanup snaps -- so the honest morph
+# is a discrete ordered sequence, and it passes the sequentiality test)
+_frames = _sc.morph_scenes(_sc.encode_scene(_sa), _sc.encode_scene(_sb), 2, project="colour")
+_all_exact = all(
+    sorted((o['colour'], o['shape'], o['texture']) for o in _sc.factor_scene(_sc.encode_scene(_fr), 2))
+    == sorted((o['colour'], o['shape'], o['texture']) for o in _fr)
+    for _fr in _frames)
+print(f"  scene-morph: {len(_frames)} ordered frames A->B, each factors "
+      f"{'exactly' if _all_exact else 'BLURRED'} (projection generates, sequence-test confirms order)")
+
+# cardinality is SELF-MEASURED (round(||v||^2) = object count) and the scene
+# vector is ALGEBRAICALLY EDITABLE: remove = subtract a factored product, add =
+# add a product. The cardinality morph chains such edits, count discovered at
+# every frame, arriving exactly at the target scene.
+_sa3 = _sa + [{"colour": "grey", "shape": "triangle", "texture": "horizontal"}]
+_va3 = _sc.encode_scene(_sa3)
+_cframes = _sc.morph_cardinality(_va3, _sc.encode_scene(_sb))
+_ccounts = [_sc.count_objects(f) for f in _cframes]
+print(f"  cardinality-morph: counts per frame {_ccounts} -- self-measured from "
+      f"each vector's norm; the composite is edited algebraically, never re-encoded")
+
+# perception as composite: the creature's WORLD as a countable, diffable vector.
+# The diff of two snapshots IS the change-set -- its norm counts the changes,
+# count-driven peeling names them. A wall appears; perception says which.
+from holographic_creature import GridWorld as _GW, WorldView as _WV
+_w = _GW(width=9, height=9, maze=True, seed=5); _w.reset()
+_wv = _WV(dim=2048, width=9, height=9, seed=0)
+_v1 = _wv.view(_w)
+_w.walls.add((4, 3))
+_app, _van = _wv.changes(_v1, _wv.view(_w))
+print(f"  world-diff: a wall appears at (4,3); perception counts "
+      f"{_wv.count(_wv.view(_w) - _v1)} change and names {_app[0] if _app else None}")
+
 
 # 7. Creature --------------------------------------------------------------
 title("7. Creature  (learning to forage from scratch -- no neural net)")
@@ -200,6 +264,51 @@ print(f"  an untagged sentence classifies as : '{t_ok}'  (modality self-discover
 print(f"  an untagged image classifies as    : '{i_ok}'")
 print(f"  and the same mind generates        : \"{um.generate('the ', 60, 0.4)[:58]}\"")
 
+# 14. ORDER as a queryable property -- the PB&J problem. Some meaning lives only
+#     in the sequence: the same steps in the wrong order are not a worse recipe,
+#     they are not a recipe. The bag stores discard order (rightly, for topic);
+#     this recovers it where it matters.
+print("\n[14] sequence: order is structure the data alone cannot supply")
+um.learn_plan("pbj", ["bread", "peanut_butter", "jelly", "close", "cut"])
+ok_good, _ = um.validate_plan("pbj", [("jelly", "close"), ("close", "cut")])
+bad = ["bread", "cut", "peanut_butter", "jelly", "close"]
+ok_bad, viol = um.validate_plan(bad, [("jelly", "close"), ("close", "cut")])
+print(f"  step 2 of the recipe is            : '{um.step_at('pbj', 2)}'")
+print(f"  correct recipe satisfies its order : {ok_good}")
+print(f"  recipe that cuts too early is valid: {ok_bad}  (violated: {viol})")
+
+# recursive discovery: the SAME order-test applied fractally, unfolding a nested
+# plan the mind was never given the shape of -- and stopping honestly at leaves.
+import numpy as _np
+_rng = _np.random.default_rng(0)
+_sauce = ["heat_oil", "add_garlic", "add_tomato", "simmer"]
+_obs = [[("make_sauce", _sauce[:_rng.integers(3, 5)]), "plate", "serve"]
+        for _ in range(12)]
+um.learn_hierarchical("dinner", _obs)
+_tree = um.discover_hierarchy("dinner")
+_expanded = [k for k, v in _tree.items() if v is not None]
+_atomic = [k for k, v in _tree.items() if v is None]
+print(f"  nested plan discovered: '{_expanded[0]}' expands "
+      f"{list(_tree[_expanded[0]].keys()) if isinstance(_tree[_expanded[0]], dict) else _tree[_expanded[0]]}")
+print(f"  atomic steps (recursion stopped honestly): {_atomic}")
+
+# the closed loop: discover -> prove -> bind context -> EXECUTE. The same recipe,
+# now RUN: steps fire on their preconditions, a context slot binds, and an
+# out-of-order attempt blocks with a reason. Discovering structure, then acting.
+um.learn_sequences([(["bread", "pb", "jelly", "close", "cut"][:_rng.integers(4, 6)], "pbj_run")
+                    for _ in range(10)])
+um.discover_sequential()
+if "pbj_run" in um._seq_mem().seqs:
+    _tmpl = {"cut": (["cut", "into", "<_>", "pieces"], ["pieces"])}
+    _log = um.execute_plan("pbj_run", context={"pieces": "2"}, templates=_tmpl)
+    _fired = [s for s, st, d in _log if st == "fired"]
+    _cut = [d for s, st, d in _log if s == "cut" and d]
+    print(f"  plan EXECUTED: {len(_fired)} steps fired"
+          + (f", slot bound -> '{_cut[0]}'" if _cut else ""))
+    _blocked = um.execute_plan("pbj_run", context={}, templates=_tmpl)
+    _b = [s for s, st, d in _blocked if st == "blocked"]
+    print(f"  without context binding, blocked: {_b}  (honest -- no assumed success)")
+
 print("\n" + "-" * 66)
-print("  All thirteen subsystems ran on the same vector substrate. Wired up.")
+print("  All fourteen subsystems ran on the same vector substrate. Wired up.")
 print("-" * 66 + "\n")

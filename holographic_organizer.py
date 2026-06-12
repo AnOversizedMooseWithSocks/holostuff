@@ -82,6 +82,20 @@ class SubPrototypeMemory:
                 best_label, best_s = label, s
         return best_label, best_s
 
+    def label_scores(self, vec, among=None):
+        """The best score per LABEL (not just the winner) -- the full evidence
+        vector a single probe sees. Multi-probe (multi-ray) classification needs
+        this so several independent encodings of one query can be z-scored and
+        combined: one ray gives a label its score, the ensemble averages them."""
+        scores = {}
+        for label, _, unit, _ in self._p:
+            if among is not None and label not in among:
+                continue
+            s = float(unit @ vec)
+            if label not in scores or s > scores[label]:
+                scores[label] = s
+        return scores
+
     def labels(self):
         return {p[0] for p in self._p}
 

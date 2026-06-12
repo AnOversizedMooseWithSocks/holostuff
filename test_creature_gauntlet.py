@@ -247,3 +247,121 @@ def test_gauntlet_survival_foraging_poison():
     assert np.mean(stars) >= 60                          # measured ~121; harsh floor
     assert np.mean(stars) > np.mean(naive_stars) * 3     # crush the naive chaser
     assert np.mean(naive_deaths) > 0.5                   # ...which really does die
+
+
+def test_gauntlet_wall_reflex_solves_the_cluttered_open_problem():
+    # THE INTROSPECTION-NAMED FIX: describe() on a caught dither showed the
+    # brain choosing E at value +0.43 while its own senses said wall_E=yes --
+    # it was valuing moves into walls it could see. Vetoing wall moves through
+    # the same `among` mechanism as danger solved the recorded open problem:
+    # stars 5.1 -> 19.8 (the danger-aware reflex ceiling is ~20), dither
+    # 79% -> 43%, deaths 0%, three seeds. Pinned: one seed, both conditions,
+    # the fix must roughly double the stars and stay deathless.
+    import numpy as np
+
+    def bench(wall_reflex, n=8):
+        enc = CreatureEncoder(DIM, seed=1)
+        mind = HolographicMind(DIM, GridWorld.ACTIONS, k=15, epsilon=0.45,
+                               novelty_bonus=0.2, memory_cap=12000, seed=2)
+        world = GridWorld(7, 7, n_poison=2, n_walls=8, seed=3)
+        for ep in range(180):
+            mind.epsilon = max(0.05, 0.45 * (1 - ep / 180))
+            run_episode(world, enc, mind, learn=True, explore=True, mem=3,
+                        max_steps=100, danger_reflex=True, wall_reflex=wall_reflex)
+        stars, deaths = [], 0
+        for _ in range(n):
+            world = GridWorld(7, 7, n_poison=2, n_walls=8, seed=3)
+            run_episode(world, enc, mind, learn=False, explore=False,
+                        eval_epsilon=0.05, mem=3, max_steps=None,
+                        danger_reflex=True, wall_reflex=wall_reflex)
+            stars.append(world.stars)
+            deaths += ((world.cx, world.cy) in world.poison)
+        return float(np.mean(stars)), deaths
+
+    base, d0 = bench(wall_reflex=False)
+    fixed, d1 = bench(wall_reflex=True)
+    assert d1 == 0
+    assert fixed >= 12                                 # measured 19.8; harsh floor
+    assert fixed > base * 1.5                          # the fix must really be the fix
+
+
+def test_worldview_counts_and_names_changes():
+    # PERCEPTION AS COMPOSITE: the world's contents as a superposition of
+    # type(x)position products. The DIFF of two snapshots is a composite of the
+    # changes (appeared positive, vanished negative): round(||diff||^2) COUNTS
+    # them and count-driven peeling NAMES them -- no threshold, the diff's own
+    # norm says when to stop. Ground truth is the set difference of contents
+    # (mutations that cancel are correctly no-change).
+    import numpy as np
+    from holographic_creature import GridWorld, WorldView
+    rng = np.random.default_rng(0)
+    wv = WorldView(dim=2048, width=16, height=16, seed=0)
+
+    def contents(w):
+        s = {("exit", (w.fx, w.fy))}
+        s |= {("wall", c) for c in w.walls}
+        return s
+
+    ok = tot = 0
+    for trial in range(10):
+        w = GridWorld(width=16, height=16, maze=True, seed=int(rng.integers(100)))
+        w.reset()
+        before, v1 = contents(w), wv.view(w)
+        for _ in range(int(rng.integers(1, 4))):
+            if rng.random() < 0.5 and w.walls:
+                w.walls.discard(list(w.walls)[int(rng.integers(len(w.walls)))])
+            else:
+                free = [(x, y) for x in range(16) for y in range(16)
+                        if (x, y) not in w.walls and (x, y) != (w.fx, w.fy)
+                        and (x, y) != (w.cx, w.cy)]
+                w.walls.add(free[int(rng.integers(len(free)))])
+        after, v2 = contents(w), wv.view(w)
+        app, van = wv.changes(v1, v2)
+        ok += (sorted(app) == sorted(after - before)
+               and sorted(van) == sorted(before - after))
+        tot += 1
+    assert ok == tot                                  # measured 100%
+
+
+def test_perception_explains_plan_break():
+    # INTEGRATION: two systems on one substrate cross-validate. A wall dropped on
+    # the learned route makes replay_plan break at exactly that cell, and
+    # WorldView independently NAMES that wall as the change -- perception explains
+    # the plan failure. (replay_plan(reset=False) drives the mutated world as-is;
+    # a reset would re-carve a different maze since seed != fixed_seed.)
+    import io, contextlib
+    from holographic_creature import (GridWorld, WorldView, learn_maze,
+                                      capture_route, replay_plan)
+    from holographic_unified import UnifiedMind
+
+    def mk():
+        return GridWorld(width=9, height=9, maze=True, seed=5)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        enc, mind, rate = learn_maze(mk, dim=256, episodes=150, mem=2)
+        routes = capture_route(mk, enc, mind, mem=2, trials=8)
+    m = UnifiedMind(dim=2048, seed=0)
+    m.learn_sequences([(r, "route") for r in routes])
+    m.discover_sequential()
+    canon = m._seq_mem().seqs["route"][1]
+    wv = WorldView(dim=2048, width=9, height=9, seed=0)
+
+    agree = tot = 0
+    for trial in range(3):
+        w = mk(); w.reset()
+        v1 = wv.view(w)
+        cell = canon[3 + trial * 3]
+        r_, c_ = int(cell[1:cell.index('c')]), int(cell[cell.index('c') + 1:])
+        target = (c_, r_)
+        if target in ((w.fx, w.fy), (w.cx, w.cy)):
+            continue
+        w.walls.add(target)
+        v2 = wv.view(w)
+        status, where, _, intended = replay_plan(w, canon, reset=False)
+        app, _ = wv.changes(v1, v2)
+        agree += (status == "broke" and app == [("wall", target)])
+        tot += 1
+    assert tot >= 2 and agree == tot
+    # control: the unmutated maze still escapes under reset=False
+    w = mk(); w.reset()
+    assert replay_plan(w, canon, reset=False)[0] == "escaped"

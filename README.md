@@ -15,7 +15,7 @@ No neural-network framework, no pretrained models, no GPU - just numpy. (The UI,
 image I/O, tests, and plots use Flask / Pillow / pytest / matplotlib.)
 
 If you only read one thing: run it (below), click **Run full system tour**, and
-watch all thirteen subsystems work in ~30 seconds -- it now ends with the unified mind self-assembling from a bare pile of examples.
+watch all fourteen subsystems work in ~30 seconds -- it now ends with the unified mind self-assembling from a bare pile of examples.
 
 ### One model on top (`holographic_unified.py`)
 
@@ -232,13 +232,13 @@ in, and a Labyrinth mode has it learn the way out of a maze -- all on a prototyp
 **Test suite** (runs the full pytest suite), **Query & recall** (the interactive image demo - degrade an
 image, optionally destroy part of the plate, watch it get recalled), **Recall by description**
 (cross-modal recall - describe an image in words and get the matching one back from the tag address space),
-**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (210 at last count; five skip without the optional NLTK corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
+**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (266 at last count; up to five skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
 
 ### From the command line
     python tour.py                    # guided tour of all subsystems (~20s)
     python holographic_creature.py    # any module runs its own demo
     python holographic_encoders.py    # numbers / text / records demos
-    pytest -q                         # the whole test suite (210 tests)
+    pytest -q                         # the whole test suite (266 tests)
 
 ---
 
@@ -446,10 +446,17 @@ memoryless forager spent a measured 60% of its steps stepping back where it stoo
 steps before, starving at 28 stars; working memory (mem=3) cuts dithering to 10% and
 lifts it to ~121 stars -- 89% of the danger-aware reflex's ceiling, the same ratio it
 achieves in the clean world, so what remains is chase efficiency, not poison. THIRD, the
-open problem, recorded with its diagnosis: cluttered worlds (walls + poison) resist both
-cures -- dithering stays ~70% even at memory depth 5, wall pockets trapping the forager
-in oscillations that working memory does not break, so it collects ~5-8 stars per life
-against the reflex's ~20. The gauntlet found it; the fix is still owed.
+open problem -- recorded, then SOLVED by the system's own introspection. The brain
+gained describe()/why_differ() (the relations decode turned inward: its states are
+role-bound sense bundles, so a prototype reads back out in sense terms -- measured
+373/373 present roles decoded, 427/427 absent roles correctly silent). Pointed at a
+caught dither, the brain articulated its own bug with precision: the two 'oscillation'
+states were sense-IDENTICAL, and it was choosing E at value +0.43 while its own senses
+said wall_E=yes -- valuing moves into walls it could see, burning energy on no-ops. The
+articulation named the fix: walls join poison in the `among` veto (the wall reflex).
+Measured, three seeds: stars 5.1 -> 19.8 (the danger-aware reflex's ~20 ceiling),
+dither 79% -> 43%, deaths 0%. Found by introspection, fixed by one line, measured
+before believed.
 
 **The creature, repurposed: a navigator over the data.** The grid was always a
 testbed for a mind that perceives, decides, learns from what happened, and
@@ -788,7 +795,7 @@ rule already sits close to the pure best-k accuracy (80% vs 81%) at roughly half
 prototypes AND still picks one prototype per class on the easy topics, which pure best-k
 would over-split on noise. So unlike the two gates above, this one is not a hidden
 conservatism bug -- it is a deliberate accuracy-for-leanness trade that measurement says
-is already well placed, and it was left alone. The discipline is in checking, and in not
+is already well placed, and it was left alone. The rule has now outlasted a fourth challenger: FRACTAL recursive bisection (the same split applied self-similarly at every node, each accept measured) was a wash on hard uneven data and wins leanness only where accuracy saturates -- full numbers in the design notes; recursive self-similarity stays where it measurably pays, the HoloForest index. The discipline is in checking, and in not
 "fixing" what the data says is right.
 
 
@@ -934,7 +941,7 @@ The app and tour:
     tour.py       command-line tour of every subsystem
     run.bat       Windows launcher
 
-Tests (210 total):
+Tests (266 total):
 
     test_holographic.py           core engine (bind/bundle/memory/reflex/drift)
     test_holographic_image.py     image store / WHT / quantisation
@@ -1003,7 +1010,352 @@ adds the repo root to its own import path so it still runs from anywhere:
   its failures are pure HRR noise, and dimension does not save it (96/94/90% at
   1024/2048/4096), while routing each hop through a cleanup is exact: the
   discrete vocabulary is the error correction that makes chained meaning
-  reliable. Pinned in test_holographic_relations.py.
+  reliable. And the operations are CROSS-MODAL with zero new machinery
+  (`holographic_scene.explain_objects`): two raw images go through the existing
+  auto-tagger (colour/shape/texture), the tags become role-bound records, and
+  the system answers why one image is like another -- "shape SHARED (circle),
+  colour differs (red vs green)" -- measured end-to-end on generated shapes at
+  72/72 = 100% verdicts (the tagger itself is 36/36 on ground truth), with
+  chains working over image stores too ("the colour of the rectangle-shaped
+  object"). And the operations are UNIFIED, not a side library: the mind runs
+  them on its OWN memory -- find(role, filler) scans the records absorb()
+  already stored, read_role() decodes a role from a learned class prototype
+  against the filler vocabulary learn() registered from experience, ask()
+  chains multi-hop questions over the absorbed store, and explain() takes
+  either fresh dicts or two LEARNED labels. The measured payoff of unification:
+  classes built from six noisy, incomplete observations each (one random role
+  dropped per copy) still decode perfectly -- read 40/40, explain verdicts
+  180/180 over all pairs, 3-hop chains 100% -- because superposition linearity
+  reinforces the shared role-filler terms while the dropouts average out. The
+  mind explains concepts it LEARNED, not just records it is handed. And the
+  INCEPTION step: explain_splits()/explain_organization() turn the relations
+  decode on the mind's own memory ORGANIZATION -- when the organizer splits a
+  class, the sub-prototypes' roles are decoded and contrasted, naming what the
+  split separated ('A divided because one mode is colour=red/shape=circle, the
+  other blue/square'). Separation is judged by CONTRAST (each mode's winner
+  genuinely absent from the other: ~0.5 for real structure vs <=0.1 for
+  incidental skew), and the statistic's first outing caught the organizer
+  red-handed: one XOR label's split turned out to separate the NOISE role --
+  accuracy-sufficient, structurally arbitrary -- and the explanation reported
+  it honestly. The same introspection on the creature's brain
+  (describe()/why_differ()) articulated and SOLVED the cluttered-forager open
+  problem (see the survival section). And the capabilities live in the MAIN
+  MODELS, propagated to every consumer: the safety reflexes moved INSIDE the
+  brain (`HolographicMind.decide(senses=...)` vetoes moves into seen poison or
+  walls; run_episode's flags, the demos, and the showcase app's own creature
+  loop all route through the one mechanism -- the on-camera creature no longer
+  suicides or wall-bumps), and the unified mind keeps a JOURNAL: every road to
+  auto_reorganize narrates itself ("reorganized: 'A' went from 1 to 2
+  sub-prototypes, the modes differ in colour, shape"), maintain_now adds the
+  decision brain's measured keep/fold/refresh verdict to the same entry (the
+  whole self-maintenance story in one place -- and honestly: a brain that
+  self-maintained mid-stream reports "kept", because by maintenance time
+  nothing WAS stale), with the console's organize panel showing the mind's own
+  account verbatim. The operations now run on REAL data twice over: the
+  712-sprite library absorbs as image + auto-tag/name record per label (roles:
+  colour, texture, family, facing, frame), and the measured new result is that
+  role decode survives a MIXED prototype -- an image vector superposed with the
+  record -- at 100% (750/750), with the cross-modal loop closing at 96%: SEE a
+  sprite, classify it, SAY its colour in symbols. And the console gained a
+  'Countries (records)' dataset (ten countries from eight noisy observations
+  each, 97% held-out) plus a RELATIONS panel: explain two learned labels
+  per-role, find by attribute, chain a two-hop ask -- the mind answering WHY
+  over its own memory, in the browser -- the ask row takes arbitrary chains
+  ('capital>currency, currency>language'), each hop cleaned up to a symbol. PROVENANCE -- can a generated or pasted passage be traced to its sources?
+  The stores already hold the answer: the recall index keeps every absorbed item
+  with its payload (find() returns exact provenance), and the sequence model now
+  records, for every context->token transition, WHICH source documents taught it
+  (a doc-counter beside each count, zero cost when unused). attribute(text) ranks
+  the fitted sources by the transitions a passage actually uses -- and the
+  measurements drew a sharp, honest boundary. Attributing GIVEN text is the
+  well-posed question: 70% top-1 on a clean four-book Gutenberg split, 92% on
+  five, 8/9 windows localized in spliced text -- and the level matters
+  (coarsest-chunk-first measured 70% vs 42% atom-only and 48% all-levels,
+  because an author's characteristic multi-character chunks are the signal while
+  'th'->'e' is shared by everyone). Attributing freely-GENERATED low-order text
+  is NOT well-posed: after the seed it drifts into transitions every source
+  shares, so the ranking goes near-uniform -- and the UI says so rather than
+  faking confidence. An inverse-document-frequency refinement was tried and
+  measured a wash (the multi-order context already carries the distinctiveness),
+  so it was dropped. COHERENT RESOLUTION (the default) realizes a sharper
+  principle: a passage usually comes from ONE source, so a transition only one
+  source taught (the word 'fillet' in one book) is near-certain provenance while
+  a shared one ('butterfly' in three) is weak -- so each transition's vote is
+  weighted by its SPECIFICITY (inverse number of sources that taught it), and the
+  unique tokens PIN the source while the shared tokens confirm rather than smear.
+  Measured: lifts confidence on ambiguous short passages (+2-4 points top-1 at 60-100
+  chars, a wash where evidence already saturates) and sharpens the margin
+  (a Melville probe went 0.37 -> 0.68). A sequential RUNNING-PRIOR on top of this
+  (let the leader-so-far bias later tokens) was tried and measured a
+  wash-to-negative -- specificity already captures the insight, and a feedback
+  loop risks runaway commitment to an early wrong guess -- so it was kept out.
+  The console gained a provenance panel: generate then 'Trace sources', or paste
+  any passage and see the source ranking as weighted bars.
+
+  SEQUENCE ALIGNMENT then closed the gap the bag could not: it answers "whose
+  STYLE" but not "whose actual MATERIAL", and a sentence sharing every word with
+  sources of OPPOSITE message (a bullish vs bearish thesis differing only in
+  'up'/'down') is attributed by the bag to the wrong source. Meaning is in the
+  ORDERING, and nature solves this the way genome alignment does -- identify a
+  fragment by its longest contiguous verbatim match, not its token composition.
+  align() scores maximal verbatim spans by length x specificity; measured 100%
+  top-1 on verbatim-clause probes (bag 97%) at a ~3.5x margin, and it gets the
+  bull/bear theses BOTH right where the bag confidently picks wrong. trace()
+  reports STYLE and MATERIAL and leads with whichever is decisive (a long
+  verbatim span => quoted/assembled; none => paraphrase/original-in-style); the
+  console shows the verdict, its basis, the deciding span, and both rankings.
+
+  SEQUENCE / ORDER / TIME as a first-class property (holographic_sequence.py).
+  A sweep prompted by a sharp observation -- the same steps of a peanut-butter
+  sandwich in the wrong order are not a worse recipe, they are not a recipe --
+  found the stack treats most things as order-FREE, rightly (topic = bag of
+  words, class = bundle of examples, record = set of bindings; "what is this
+  about" does not depend on order). But some meaning lives ONLY in the sequence
+  (plans, recipes, proofs, protocols, timelines), and nothing could QUERY order.
+  SequenceMemory fixes that with the same primitives (bind/bundle/permute): each
+  step rotated by its position, order recoverable. Measured 100%: step(i) reads
+  the i-th step, position_of(x) finds where x occurs, precedes(a, b) answers
+  whether a precedes b, and validate(constraints) runs the PB&J test -- does
+  every 'a before b' rule hold? -- naming exactly which step is out of order.
+  (A what-comes-next encoding measured ~64%, the bundle-capacity ceiling the
+  scaling work charted, so next-step is left to the exact list; this memory owns
+  the ORDER RELATIONS no bag store can answer.) Wired into the unified mind
+  (learn_plan/step_at/precedes/validate_plan) over the SHARED symbol space. The
+  encoder already made the right call elsewhere: a word-list infers as an
+  order-free bag for classification (97.5% vs 93.8% via the sequence path) --
+  order is restored where it carries meaning, not blanket-applied.
+
+  SELF-DISCOVERED SEQUENTIALITY -- the organizer learning, without being told
+  and without a magic number, that a class is ORDERED. The honest test is a
+  permutation test against the data's OWN shuffle: does the real order of a
+  class's members predict the next element better than the same members with
+  order destroyed? A transition model is built leave-one-out and scored by how
+  much higher the true next element ranks than the others (a graded margin, not
+  argmax -- argmax saturates on small step vocabularies); the baseline is the
+  mean over shuffled copies, so the class is its own null hypothesis. The result
+  is a z-score (signal in units of the null's own spread), and z>2 -- the
+  standard 'two sigma above noise' bar, a statement not a tuned constant --
+  calls a class sequential. Measured: ~+16 for genuinely ordered classes, ~0 for
+  an order-free bag of the same elements (real order indistinguishable from
+  shuffled), degrading gracefully through partial noise (still strong at 30%
+  scrambled, at the boundary near 50%, silent once order is gone). A class that
+  passes gets its canonical order SELF-ASSEMBLED from the members by a pairwise-
+  precedence vote -- the mind reconstructs a sequence it was never shown whole,
+  exactly, even from drop-one partial observations -- and gains order queries
+  (precedes/validate). The mind absorbs sequential and bag classes mixed,
+  discovers which is which, and acts only on the real structure: order as a
+  DISCOVERED organizational property, measured into existence, not declared.
+
+  RECURSIVE / FRACTAL discovery -- the same order-test applied at every layer.
+  Once a class proves sequential, each of its steps is tested for its OWN
+  internal order (where the data provides sub-observations), and the structure
+  unfolds into a tree the mind was never given the shape of: a nested recipe's
+  top order is recovered, its expandable steps (make_sauce, prep) recurse into
+  their sub-recipes, and the recursion STOPS honestly -- at atomic steps with no
+  sub-observations, and (the real test) at steps that HAVE sub-observations but
+  in unordered form (a garnish whose ingredients carry no order is correctly
+  NOT expanded, told from an ordered sub-recipe by the permutation test alone).
+  No depth is declared, no shape assumed; each layer is measured into existence
+  by the same z>2 bar, and self-assembly recovers each layer's canonical order.
+  Sequence discovery made fractal: structure all the way down, until the data
+  says stop.
+
+  SELF-PROOF + CONTEXT-BINDING -- structure must prove itself before its meaning
+  is trusted, and steps are generic until context fills them. Two additions. (1)
+  A discovered order can score z>2 yet be INCONSISTENT: if members' pairwise
+  precedences form a cycle (A before B, B before C, C before A) no ordering
+  satisfies them and the plan cannot be executed. prove_executable does a
+  topological feasibility check -- structure earns trust by passing, not by z
+  alone -- and gating registration on it immediately caught a real bug: a
+  score-heuristic canonical sort had misplaced a rare step against a 4-0
+  majority; the proof surfaced it, and a proper topological sort fixed it
+  (structure validating structure found an error before it shipped). (2)
+  extract_template discovers the generic SCHEMA and its context-bound SLOTS in a
+  repeated step: 'the material has density X' is fixed words plus a slot that
+  varies across observations (5g, 3g, ...), separated by per-position entropy and
+  split at the natural largest GAP (the data's own scale, no constant). This is a
+  physical law -- 'F = m*a' is generic until a scenario BINDS the values; the
+  schema is the law, the slots are where context enters, exactly as 'open the
+  book' leaves 'book' to be filled from prior context.
+
+  EXECUTION -- the closed loop, from discovering structure to ACTING on it.
+  execute_plan runs a discovered, PROVEN plan under an honest contract: a step
+  fires only when every step that must precede it has already fired AND its
+  context slots can be bound from the scenario; otherwise it BLOCKS, reported
+  with its reason (an unmet precondition naming the steps still needed, or an
+  unbound slot naming the missing context) rather than silently assumed away. A
+  templated step fires as its bound form ('cut into 2 pieces' when context
+  supplies pieces=2); without the binding it blocks, and steps behind it
+  cascade-block truthfully. An unproven plan cannot be run -- you cannot execute
+  what discovery and proof never registered. The full arc stands: discover order
+  (permutation test) -> prove it executable (topological feasibility) -> bind
+  context into its slots -> RUN it, every stage measured or proven, every failure
+  informative.
+
+  WIRED THROUGH THE STACK (not living in tests). absorb() now AUTO-DISCOVERS
+  order: hand it ordered list-examples and it runs the permutation test on each
+  class, proves the winners executable, and registers them -- order is a property
+  of self-assembly, not a manual call. Verified at scale: 240 mixed
+  procedure/bag examples absorbed in one call, all four procedures identified
+  with EXACT canonical-order recovery and both bag classes left alone. The
+  CREATURE uses it: a trained maze brain's successful escape routes are captured
+  (capture_route) and the sequence machinery discovers their route is genuinely
+  ordered (z up to ~68 vs its own shuffle) and proves it executable -- the
+  creature acts, then understands the structure of its own action, surfaced live
+  in the showcase maze panel. And the UI exposes the whole pipeline: a
+  plan-discovery panel (/api/plan) absorbs noisy procedure observations mixed
+  with bag distractors and shows, with no labels, the mind discovering which are
+  ordered, proving them, recovering the order, and executing under the honest
+  contract (in-order fires, out-of-order blocks). And the discovered plan composes with action:
+  replay_plan drives navigation from a proven route instead of re-deciding each
+  step, validating every move -- in its own maze the plan escapes 10/10, in a
+  CHANGED maze it detects exactly where it breaks (the blocked cell) rather than
+  falsely succeeding, so the creature knows the boundary of its learned structure
+  and the seam where it would need to re-learn.
+
+  THROUGHPUT (the raytracing parallel). A relation chain is a ray bouncing
+  through the holographic space -- each hop a bounce, the cleanup-to-a-symbol the
+  surface intersection, the cleanup confidence that bounce's reflectance. Path
+  tracing accumulates THROUGHPUT (the product of reflectances) and terminates
+  paths that lose too much energy; both transfer. ask_traced accumulates the
+  per-hop confidences, and the product is a calibrated trust in the chained
+  answer: on a dense interfering store it separates correct chains (~0.23) from
+  wrong (~0.10), and abstaining on the low-throughput half lifts answered
+  accuracy from 71% to 85%. A chain whose throughput decays below a floor
+  ABSTAINS rather than emitting noise -- the ray that ran out of energy
+  contributes nothing. The console relations panel shows the answer, its
+  throughput, and the per-hop confidences. (A revisit of the kept negatives
+  against the new machinery re-confirmed them: competence-weighted flocking still
+  loses to best-pick -- in the regime a committee should help, no candidate is
+  good enough to yield a signal to align toward, and once they are, best-pick
+  already wins -- and the fractal/curation negatives still stand, the new tools
+  not displacing a gate that already harvests its signal. A negative is overturned
+  by a measured win, not a fresh analogy.)
+
+  MULTI-RAY (many rays per pixel). One query is a noisy point sample; path tracing
+  fires many rays and averages, and the same recovers errors a single encoding
+  makes. classify_robust fires several word-resampled views of a text query and
+  combines them -- the crucial step is Z-SCORING each ray's per-label evidence
+  before summing, so a confident-but-wrong view cannot dominate (the naive vote's
+  failure, and flocking's). Measured: with feature lenses ranging 100/100/50/17%
+  the z-scored ensemble reaches the best single lens BLIND, and on a noisy text
+  task it lifted classification 89% -> 100% with no regression on clean queries.
+  Each view is a SHADOW of the input from a different angle; the ensemble is the
+  form no single shadow shows. The console classify panel reports the multi-ray
+  label and the fraction of rays that agreed.
+
+  MULTI-RAY CHAINS, by contrast, are a clean NEGATIVE for accuracy -- and the
+  contrast is the lesson. Firing several throughput-traced relation routes to one
+  answer and combining them does not help: a route through a unique key is already
+  exact (nothing to add), and routes through shared values fail for the SAME
+  reason (correlated errors), so combining averages noise -- naive voting even
+  made a perfect route worse (100% -> 75%), reliability-weighting only matched the
+  best route, and where all routes were ambiguous the combo (27%) lost to the best
+  single (52%). Multi-ray helps only when the rays' errors are INDEPENDENT, which
+  the feature-lens classification views are and the chain routes are not. The kept
+  artifact is route_reliability: a self-measured 1 / mean-fan-out (unique role =
+  exact key = 1.0, shared role = ambiguous = low) that ranks which find()
+  operations to trust, no magic number -- a good negative leaves something behind.
+
+  PROJECTION TO CREATE NEW THINGS. Casting one record's attributes onto another's
+  frame synthesizes a NOVEL entity -- 'france with japanese language and the yen'
+  -- that exists in no training data and decodes back to exactly the intended
+  blend (100% over random blends). blend() does this directly; project_transform()
+  does analogy AS GENERATION (the a->b per-role delta projected onto c creates a
+  coherent hybrid: japan's geography, germany's distinctive capital and language).
+  The honest split the investigation found: retrieval analogy (FIND the existing
+  d) hits a uniqueness wall -- the cleanup law makes every entity an exact key, so
+  there is no graded nearness for a transform to climb -- but GENERATION (MAKE the
+  specified new thing) is well-posed and exact. Creation sidesteps the wall
+  retrieval hits; the line a good negative names is the one between finding and
+  making. Wired into the knowledge store and the unified mind (synthesizing over
+  its own learned classes), and shown in the tour. And projection lifts to multi-object
+  SCENES, where the parts must first be discovered: blend_scenes takes two scene
+  vectors (objects unknown), factors each into its objects via the resonator,
+  projects one factor across (scene A's forms wearing scene B's palette), and
+  recomposes a NOVEL scene that factors back to exactly the intended hybrid
+  (100% across all three factors and 2-4 separable objects). The full decompose
+  -> project -> recompose loop, all through the resonator -- the part that was a
+  recovery tool now drives generation. Honest boundary: recovery rides the
+  resonator's capacity (separable objects exact; colliding objects degrade as
+  multi-object factoring always does). Shown as a third 'projection blend' demo in
+  the scene panel and in the tour. Projection then unfolds over TIME: a smooth
+  attribute morph is impossible (interpolating one colour atom red->blue is a
+  crossfade-with-snap -- the resonator reports red until t~0.55 then flips hard,
+  the cleanup law holding discrete coherent states), so the honest morph is a
+  SEQUENCE of discrete coherent frames: a control parameter sweeps 0->1 and the
+  objects adopt B's attribute one at a time, every frame factoring exactly, A
+  first and B's full pattern last. morph_scenes builds it, and the loop closes
+  with the sequence machinery -- the morph as a flip-count token sequence passes
+  the sequentiality permutation test (z~10 vs its own shuffle), so projection
+  generates the frames and sequence-discovery confirms the order. Shown as a morph
+  strip in the scene panel and in the tour. And cardinality itself morphs: the
+  object COUNT is self-measured (the scene is an unnormalised superposition of
+  near-orthogonal unit products, so round(||v||^2) IS the count -- 96% exact over
+  n=1..7, nobody tells the system n), and the scene vector is ALGEBRAICALLY
+  EDITABLE -- removing an object is subtracting its factored product (explain-away
+  repurposed as an editor), adding is adding one. morph_cardinality chains such
+  edits from a 3-object scene down to one and up into a different 2-object scene,
+  the count discovered at every frame, each frame factoring exactly, the final
+  edited vector holding exactly the target -- never re-encoded. The composite is
+  countable and editable, not just decodable. The same algebra becomes the creature's
+  PERCEPTION: WorldView encodes the world's contents (exit, poison, walls) as a
+  superposition of type(x)position products, so the count is the norm and the
+  DIFF of two snapshots is itself a composite of the changes -- appeared objects
+  positive, vanished negative, unchanged content cancelling exactly. The diff's
+  norm counts the changes and count-driven peeling names them (100%/100% over
+  mutated 16x16 mazes). The integration: a wall dropped on the creature's learned
+  route makes replay_plan break at exactly that cell and WorldView independently
+  names that wall -- perception explains the plan failure (6/6 at 9x9, 5/5 at
+  16x16). Stress sweep: 16x16 escapes 100% across six seeds, braided+poison forks
+  100%; 20x20 is the measured wall -- partly budget-shaped (one seed 0%->83% with
+  more episodes/steps) and partly the BOOTSTRAP problem (another seed stays 0%
+  under any budget or horizon: epsilon-greedy exploration never finds the first
+  success in a deep-enough maze, so no reward signal ever arrives). The honest
+  next step there is curiosity-driven exploration or a curriculum, recorded as a
+  future thread.
+  A WIRING SWEEP then made sure nothing
+  stayed hidden in tests: the app's labyrinth pane carried a stale "no
+  reactive brain can hold a 16x16 maze" early-return from before the gauntlet
+  broke that ceiling, so the panel now shows TWO SOLVERS, ONE SUBSTRATE -- the
+  brain that LEARNED the maze on the left (learn_maze protocol; escapes the
+  braided 16x16 in 42 steps on camera) and the slime-mold colony computing the
+  optimal 38-step tube on the right; the forage modes now TRAIN with the
+  brain's safety reflexes (the veto shapes the experience learned from, not
+  just the final moves -- measured in the app's own walls world: 48 -> 83
+  stars across six lives, both deathless); the unified mind's decide() passes
+  senses through to the same model-level vetoes; and every decision frame in
+  the creature animation now carries the brain's own account, decoded live
+  ("senses food_x=west, wall_S=yes -> W (value +0.79)") -- introspection on
+  camera. GENERATION FIDELITY (user-caught): generated text had no capitals or
+  punctuation -- the engines were innocent (the fractal coder takes raw
+  characters), but every console loader fed them a scrubbed token diet
+  (lowercased, isalpha-filtered), and BOTH generate endpoints lowercased the
+  seed. The loaders now feed TRUE corpus text, measured on Austen: ~12% more
+  bits/char (1.949 -> 2.175) and 8 points of word coherence for output that
+  reads as PROSE -- capitals, commas, apostrophes, sentences. The flat n-gram
+  gained a fold_case switch (default preserves every pinned number). And one
+  engine lesson the debugging earned: tiling a small corpus (block x N) makes
+  the whole block the OPTIMAL compression unit, so the chunk schema learns a
+  corpus-sized mega-chunk and generation replays it wholesale -- the schema
+  was right, the diet was degenerate; varied, independently-shuffled passes
+  fix it. A seed that encodes to nothing at coarse chunk levels now descends
+  to finer conditioning instead of trusting the unconditional prior
+  (bits/char unchanged at 2.175). The showcase app also joined in with a
+  'Compare two sprites' panel: pick (or randomize) two real sprites, see the
+  per-role verdict decoded holographically next to the actual images, and
+  below it the cross-modal loop live -- the mind is shown each IMAGE with no
+  name, classifies it against the whole library, and states the colour in
+  symbols (SEE -> SAY; the first run builds the relations memory over all 712
+  sprites, ~1 min, then instant). Absorbing the library with FAMILY as the
+  label closed the inception loop on real data too: every family split, and
+  the journal named the splits by the genuine within-family modes -- facing
+  and frame for the walk-cycle families, colour for the npc grab-bag. Building
+  the panel also caught a propagation miss the suite could not see: the
+  showcase's embedded unified panel had its own organize endpoint that never
+  learned to show the journal story -- fixed, both consoles now narrate. Pinned in
+  test_holographic_relations.py, test_holographic_unified.py, and
+  test_holographic_brain.py.
 - **Projection consolidation** (`HolographicMind.consolidate()`): the brain's
   thousands of 512-D prototypes are shadows of one low-rank object (the span of
   its sense-atom vocabulary -- measured: 99.9% of their energy in 22-24

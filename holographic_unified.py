@@ -70,6 +70,16 @@ class UnifiedMind:
         self._actions = None
         self._taught = 0
         self._label_modality = {}    # which modality each label came from (for routing)
+        self._fillers = {}           # role -> set of values seen in absorbed records
+        self._sequences = None       # lazily-built SequenceMemory: ORDER as a
+                                     # queryable property (recipes, plans, proofs --
+                                     # meaning the bag-of-everything stores discard)
+        self.journal = []            # the mind's own narration of its maintenance
+                                     # (every reorganization event, with the splits
+                                     # NAMED where record structure allows -- see
+                                     # _reorganize_and_narrate)
+                                     # (the cleanup vocabulary for read/ask/explain --
+                                     # learned from experience, never declared)
         self._gen = None             # sequence generator (lazy)
         # sub-format discovery state: raw samples of each TEXT-LIKE modality (capped),
         # and a lazily fitted compression-gate schema per modality (see classify)
@@ -100,6 +110,14 @@ class UnifiedMind:
         v = self.perceive(x, modality)
         self.memory.observe_vector(v, label)        # aggregate into self-organized prototypes
         self._index(v, (label, x))                  # AND keep the individual for recall
+        if modality == "record" and isinstance(x, dict):
+            # register the fillers seen per role: this becomes the cleanup
+            # vocabulary that lets the mind READ roles back out of its own
+            # memory (geometry -> symbol needs candidates, and the honest
+            # candidates are the values experience actually contained)
+            for k, val in x.items():
+                if isinstance(val, (str, int, float, bool)):
+                    self._fillers.setdefault(str(k), set()).add(val)
         self._label_modality[label] = modality      # remember which modality this label is
         if modality in self._TEXT_LIKE:
             # keep a bounded sample of each text-like sub-format's raw characters --
@@ -111,7 +129,7 @@ class UnifiedMind:
                 self._format_corpus[modality] = (cur + " " + raw)[:self._FORMAT_CORPUS_CAP]
         self._taught += 1
         if self.maintain == 'auto' and self._taught % self.check_every == 0:
-            self.memory.auto_reorganize()
+            self._reorganize_and_narrate()
         return self
 
     def classify(self, x, modality=None, route=True):
@@ -214,6 +232,21 @@ class UnifiedMind:
             self.learn(x, lab, m)
         if maintain:
             self.maintain_now()
+        # ORDER DISCOVERY as part of self-assembly: if any examples are ordered
+        # lists (steps of a plan, not bag-of-words text), the mind tests each
+        # label for genuine sequential structure (the permutation test against
+        # its own shuffle), proves the winners executable, and registers them --
+        # so order becomes a discovered property of the absorbed data, not a
+        # separate manual step. Bag-shaped classes are silently left alone.
+        list_examples = [(x, lab) for x, lab, m in examples
+                         if isinstance(x, (list, tuple)) and len(x) >= 2
+                         and not isinstance(x[0], (list, tuple))]
+        if list_examples:
+            if not hasattr(self, "_seq_members"):
+                self._seq_members = {}
+            for x, lab in list_examples:
+                self._seq_members.setdefault(lab, []).append(list(x))
+            self.discover_sequential()
         if sequences:
             # third pass: one sequence schema per discovered text-like sub-format,
             # fitted on the same capped samples learn() accumulated for the gate
@@ -229,45 +262,298 @@ class UnifiedMind:
             self._recall = _Index(self.dim)
         self._recall.add(v, payload)
 
-    def explain(self, x1, x2):
-        """WHY are two records similar -- not just a cosine, but the per-role
-        verdict. Both dicts are encoded exactly as absorb()/classify() would
-        encode them (bundle of bind(role, filler) via the one encoder), then each
-        shared role is unbound from both and cleaned up against the values the
-        two records actually contain -- self-contained: the candidates come from
-        the inputs themselves, no external vocabulary needed.
+    # -- relations over the mind's OWN memory --------------------------------
+    # The relations operations (explain/name/map/chain) were first measured on a
+    # standalone KnowledgeStore; these fold them into the unified mind, running
+    # on the records absorb() already stored and the filler vocabulary learn()
+    # already registered. The law from the measurements governs every method
+    # here: each hop cleans up to a SYMBOL before the next (the symbol-routed
+    # path measured 360/360 where the direct algebraic map was ~94% and
+    # dimension did not save it).
 
-        Returns a list of (role, value_in_x1, value_in_x2, shared, confidence),
-        e.g. explain({'capital':'paris','currency':'franc'}, {'capital':
-        'brussels','currency':'franc'}) -> capital differs, currency SHARED.
-        Built on holographic_relations, where the operations are measured:
-        per-role explanation 4/4, role naming 100%, symbol-routed mapping
-        360/360, chains exact through three hops. The law learned there holds
-        here too: every readout cleans up to a SYMBOL, because meaning survives
+    def _record_items(self):
+        """(vector, label, dict) for every absorbed record in the recall index."""
+        if self._recall is None:
+            return []
+        return [(v, lab, x) for v, (lab, x) in
+                zip(self._recall.vecs, self._recall.payloads)
+                if isinstance(x, dict)]
+
+    def _class_vec(self, label):
+        """A learned class's vector: the count-weighted bundle of its
+        sub-prototypes in the live memory (one observation -> the record itself;
+        many -> their superposition, which is what makes prototype-level
+        explanation a real question)."""
+        total = None
+        for lab, s, _, _ in self.memory.live._p:
+            if lab == label:
+                total = s if total is None else total + s
+        if total is None:
+            raise KeyError(f"unknown label: {label!r}")
+        n = np.linalg.norm(total)
+        return total / n if n else total
+
+    def _clean_filler(self, vec, role):
+        """Snap a noisy role-readout to the best filler EXPERIENCE registered
+        for that role (falling back to every registered value)."""
+        from holographic_ai import cosine
+        cands = self._fillers.get(str(role)) or {v for s in self._fillers.values()
+                                                 for v in s}
+        best, score = None, -2.0
+        for val in cands:
+            s = cosine(vec, self.encoder.encode(val))
+            if s > score:
+                best, score = val, s
+        return best, float(score)
+
+    def find(self, role, filler):
+        """Which absorbed record holds bind(role, filler)? One hop over the
+        mind's own recall store (the same stored vectors recall() scans),
+        restricted to record items. Returns (label, score)."""
+        from holographic_ai import bind
+        probe = bind(self.encoder._roles.get(str(role)), self.encoder.encode(filler))
+        items = self._record_items()
+        if not items:
+            return None, -1.0
+        best = max(items, key=lambda it: float(it[0] @ probe))
+        return best[1], float(best[0] @ probe)
+
+    def read_role(self, label, role):
+        """Decode one role's filler from a LEARNED class -- unbind the role from
+        the class prototype and clean up against the experience-registered
+        fillers. Works whether the class holds one record or the superposition
+        of many noisy ones (measured: see explain)."""
+        from holographic_ai import bind, involution
+        est = bind(self._class_vec(label), involution(self.encoder._roles.get(str(role))))
+        return self._clean_filler(est, role)
+
+    def ask(self, start_filler, *path):
+        """A CHAIN over the mind's own memory: ask('paris', ('capital',
+        'currency'), ('currency', 'language')) -> the language of the country
+        with the currency of the country whose capital is paris. Each hop is
+        find() then read() -- geometry snapped to a symbol before the next hop,
+        which is what keeps chains exact instead of compounding HRR noise."""
+        filler = start_filler
+        for match_role, read_role in path:
+            label, _ = self.find(match_role, filler)
+            if label is None:
+                return None
+            filler, _ = self.read_role(label, read_role)
+        return filler
+
+    def blend(self, base_label, donor_label, donor_roles):
+        """PROJECTION TO CREATE NEW THINGS, over the mind's OWN learned classes.
+        Synthesize a novel concept: the frame of `base_label`, with `donor_label`'s
+        values projected onto `donor_roles`. The mind decodes each role from its
+        class prototypes (so this works over concepts learned from many noisy
+        observations, not just hand-built records) and rebuilds a coherent new
+        record that names a thing it never saw -- 'this class, but with that
+        class's distinctive traits'. Returns {role: value} for the synthesized
+        concept. (Analogy as CREATION: synthesizing a specified new thing is
+        well-posed and exact where RETRIEVING an existing analogue from a clean
+        role-filler memory is not -- every learned class is an exact key, so there
+        is no graded nearness for a retrieval-analogy to climb.)"""
+        donor_roles = set(donor_roles)
+        roles = sorted(self._fillers)
+        spec = {}
+        for r in roles:
+            src = donor_label if r in donor_roles else base_label
+            val, _ = self.read_role(src, r)
+            if val is not None:
+                spec[r] = val
+        return spec
+
+    def ask_traced(self, start_filler, *path, min_throughput=0.0):
+        """ask() instrumented like a PATH TRACER: a relation chain is a ray
+        bouncing through the holographic space, each hop a bounce whose cleanup
+        confidence is its reflectance, and throughput is the accumulated product.
+        Throughput is a calibrated confidence in the chained answer (measured:
+        keeping only the most-confident chains sharply raises accuracy on the
+        answered subset), and a chain whose throughput decays below
+        `min_throughput` ABSTAINS (returns answer None) rather than emitting
+        noise -- the energy-based termination of a ray that has lost too much to
+        contribute. Returns (answer_or_None, throughput, hop_confidences)."""
+        filler = start_filler
+        throughput = 1.0
+        confidences = []
+        for match_role, read_role in path:
+            label, fconf = self.find(match_role, filler)
+            if label is None:
+                return None, 0.0, confidences
+            filler, rconf = self.read_role(label, read_role)
+            hop = max(0.0, float(fconf)) * max(0.0, float(rconf))
+            throughput *= hop
+            confidences.append(round(hop, 3))
+            if throughput < min_throughput:
+                return None, throughput, confidences
+        return filler, throughput, confidences
+
+    def explain(self, x1, x2):
+        """WHY are two things similar -- not just a cosine, but the per-role
+        verdict. Takes either two record DICTS (encoded fresh, candidates drawn
+        from the inputs) or two LEARNED LABELS (decoded from the mind's own
+        class prototypes, candidates from the experience-registered fillers --
+        so the mind explains concepts it learned, including classes built from
+        many noisy observations).
+
+        Returns [(role, value_1, value_2, shared, confidence), ...]. Built on
+        the measured relations operations (per-role explanation 4/4, naming
+        100%, symbol-routed mapping 360/360, chains exact through three hops);
+        every readout cleans up to a SYMBOL, because meaning survives
         composition only when it touches symbols between steps."""
         from holographic_ai import bind, involution, cosine
-        if not (isinstance(x1, dict) and isinstance(x2, dict)):
-            raise TypeError("explain() takes two record dicts")
-        rec1 = self.encoder.encode(x1, "record")
-        rec2 = self.encoder.encode(x2, "record")
-        values = sorted({str(v) for v in list(x1.values()) + list(x2.values())})
-        val_vecs = {v: self.encoder.encode(v) for v in values}
+        if isinstance(x1, dict) and isinstance(x2, dict):
+            rec1 = self.encoder.encode(x1, "record")
+            rec2 = self.encoder.encode(x2, "record")
+            values = sorted({str(v) for v in list(x1.values()) + list(x2.values())})
+            val_vecs = {v: self.encoder.encode(v) for v in values}
 
-        def clean(vec):
-            best, score = None, -2.0
-            for v, vv in val_vecs.items():
-                s = cosine(vec, vv)
-                if s > score:
-                    best, score = v, s
-            return best, float(score)
+            def clean(vec):
+                best, score = None, -2.0
+                for v, vv in val_vecs.items():
+                    s = cosine(vec, vv)
+                    if s > score:
+                        best, score = v, s
+                return best, float(score)
 
+            out = []
+            for role in sorted(set(x1) & set(x2), key=str):
+                inv = involution(self.encoder._roles.get(str(role)))
+                f1, c1 = clean(bind(rec1, inv))
+                f2, c2 = clean(bind(rec2, inv))
+                out.append((str(role), f1, f2, f1 == f2, min(c1, c2)))
+            return out
+        # learned labels: decode from the class prototypes the mind built itself
+        v1, v2 = self._class_vec(x1), self._class_vec(x2)
         out = []
-        for role in sorted(set(x1) & set(x2), key=str):
-            inv = involution(self.encoder._roles.get(str(role)))
-            f1, c1 = clean(bind(rec1, inv))
-            f2, c2 = clean(bind(rec2, inv))
-            out.append((str(role), f1, f2, f1 == f2, min(c1, c2)))
+        for role in sorted(self._fillers):
+            inv = involution(self.encoder._roles.get(role))
+            f1, c1 = self._clean_filler(bind(v1, inv), role)
+            f2, c2 = self._clean_filler(bind(v2, inv), role)
+            out.append((role, f1, f2, f1 == f2, min(c1, c2)))
         return out
+
+    def explain_splits(self, label, contrast_floor=0.25):
+        """INCEPTION: the mind explains its own memory organization. When the
+        self-organizing memory has split `label` into sub-prototypes (because
+        held-out accuracy said the class is genuinely multi-modal), each
+        sub-prototype is a superposition of one MODE's records -- so decoding
+        the registered roles from each names WHAT the split separated: 'this
+        class divided because one mode is colour=red and the other colour=blue'.
+        The relations machinery (built on the substrate) explaining the
+        organizer (built on the same substrate).
+
+        A role counts as SEPARATING only by CONTRAST -- each mode's winning
+        value must be genuinely absent from the other mode, not merely less
+        common. Measured on the XOR world: truly separating roles score ~0.5
+        contrast, incidental skews (a noise role one 2-means half happened to
+        lean toward) score <= 0.1, so the floor sits mid-gap. The statistic's
+        first real outing caught the organizer red-handed: one label's split
+        turned out to separate the NOISE role (accuracy-sufficient, since the
+        other label's clean split already resolved the XOR) -- the explanation
+        honestly reports what the split actually did, not what was assumed.
+
+        Returns (decodes, separating): per-sub-prototype {role: (value, score)}
+        and the roles whose contrast clears the floor. A single-prototype label
+        returns an empty separating set (nothing was divided, which is itself
+        the explanation)."""
+        from holographic_ai import bind, involution, cosine
+        subs = [unit for lab, _, unit, _ in self.memory.live._p if lab == label]
+        if not subs:
+            raise KeyError(f"unknown label: {label!r}")
+        # full per-role value scores for every sub-prototype
+        scores = []
+        for u in subs:
+            row = {}
+            for role in sorted(self._fillers):
+                est = bind(u, involution(self.encoder._roles.get(role)))
+                row[role] = {v: cosine(est, self.encoder.encode(v))
+                             for v in self._fillers[role]}
+            scores.append(row)
+        decodes = [{r: max(row[r].items(), key=lambda kv: kv[1]) for r in row}
+                   for row in scores]
+        separating = []
+        if len(subs) > 1:
+            for role in sorted(self._fillers):
+                winners = [d[role][0] for d in decodes]
+                if len(set(winners)) < 2:
+                    continue
+                # contrast: my winner's score here, minus every OTHER mode's
+                # winner scored here -- averaged over modes (mutual absence)
+                cs = []
+                for i, row in enumerate(scores):
+                    own = row[role][decodes[i][role][0]]
+                    others = [row[role].get(decodes[j][role][0], 0.0)
+                              for j in range(len(subs)) if j != i]
+                    cs.append(own - max(others))
+                if float(np.mean(cs)) >= contrast_floor:
+                    separating.append(role)
+        return decodes, separating
+
+    def explain_organization(self):
+        """The whole memory's self-explanation: for every label the organizer
+        split, the nameable reason. {label: differing_roles}."""
+        out = {}
+        for label in sorted(self.memory.live.labels()):
+            subs = sum(1 for lab, *_ in self.memory.live._p if lab == label)
+            if subs > 1:
+                _, differing = self.explain_splits(label)
+                out[label] = differing
+        return out
+
+    def classify_robust(self, x, modality=None, route=True, n_rays=5, seed=0):
+        """MULTI-RAY classification: one query is one noisy ray; fire several
+        independent encodings and combine them, the way path tracing fires many
+        rays per pixel and averages (no single ray is reliable, but the ensemble
+        converges). For text the independent views are word-resampled subsets of
+        the query -- each a different SHADOW of the same input -- and the crucial
+        step is that each ray's per-label scores are Z-SCORED before summing, so a
+        ray that is confident-but-wrong (an outlier view) cannot dominate, exactly
+        the failure that sinks a naive vote. Measured: on a task where the views'
+        individual accuracy ranges wildly (100%/100%/50%/17% across feature
+        lenses), the z-scored ensemble reaches the BEST single view's accuracy
+        BLIND -- without being told which view to trust.
+
+        Falls back to plain classify() for non-text inputs (where word-resampling
+        does not apply) and for single-token queries (no subset to resample).
+        Returns (label, agreement) where agreement is the fraction of rays that
+        voted for the winner -- a multi-ray confidence."""
+        import numpy as np
+        if modality is None:
+            modality = self.encoder.infer(x)
+            if modality == "text":
+                modality = self._resolve_text_like(x)
+        if modality not in ("text", "code") or not isinstance(x, str):
+            lab, _ = self.classify(x, modality, route)
+            return lab, 1.0
+        words = x.split()
+        if len(words) < 3:
+            lab, _ = self.classify(x, modality, route)
+            return lab, 1.0
+        among = None
+        if route:
+            among = {lab for lab, m in self._label_modality.items()
+                     if m == modality} or None
+        rng = np.random.default_rng(seed)
+        agg, raw_votes = {}, []
+        views = [x] + [" ".join([w for w in words if rng.random() > 0.25] or words)
+                       for _ in range(n_rays - 1)]
+        for view in views:
+            v = self.perceive(view, modality)
+            sc = self.memory.live.label_scores(v, among=among)
+            if not sc:
+                continue
+            vals = np.array(list(sc.values()))
+            mu, sd = vals.mean(), vals.std() + 1e-9
+            for lab, s in sc.items():               # z-score this ray's evidence
+                agg[lab] = agg.get(lab, 0.0) + (s - mu) / sd
+            raw_votes.append(max(sc, key=sc.get))
+        if not agg:
+            lab, _ = self.classify(x, modality, route)
+            return lab, 1.0
+        winner = max(agg, key=agg.get)
+        agreement = raw_votes.count(winner) / max(1, len(raw_votes))
+        return winner, round(agreement, 3)
 
     def recall(self, x, modality=None):
         """Nearest stored individual. The index does an exact scan until the store is
@@ -292,10 +578,17 @@ class UnifiedMind:
                                       maintain=self.maintain)
         return self
 
-    def decide(self, state, explore=False, epsilon=None, modality=None):
+    def decide(self, state, explore=False, epsilon=None, modality=None,
+               senses=None, avoid=("danger", "wall")):
+        """Decide an action. `senses`/`avoid` pass straight through to the
+        brain's built-in safety reflexes (HolographicMind.decide): hand over
+        the current senses dict and moves into seen dangers or walls are
+        vetoed below the value estimate -- the unified brain gets the same
+        measured safety every other caller of the model gets."""
         if self._brain is None:
             raise RuntimeError("declare an action set first -- call actions([...])")
-        a = self._brain.decide(self.perceive(state, modality), explore=explore, epsilon=epsilon)
+        a = self._brain.decide(self.perceive(state, modality), explore=explore,
+                               epsilon=epsilon, senses=senses, avoid=avoid)
         return self._actions[a]
 
     def reinforce(self, state, action, reward, modality=None):
@@ -379,13 +672,426 @@ class UnifiedMind:
     def generate(self, seed_text, length=160, temperature=0.5, name=None):
         return self._pick_gen(name, seed_text)["gen"].generate(seed_text, length, temperature)
 
+    def _seq_mem(self):
+        if self._sequences is None:
+            from holographic_sequence import SequenceMemory
+            # SHARE the encoder's symbol atoms, so sequence steps are the very
+            # same vectors the rest of the mind uses -- a plan's steps can be
+            # the labels it classifies, the records it relates, all one space
+            self._sequences = SequenceMemory(dim=self.dim, vocab=self.encoder._symbols)
+        return self._sequences
+
+    def learn_hierarchical(self, name, observations):
+        """Absorb observations of a possibly-NESTED plan. Each observation is a
+        plan whose steps may themselves be (sub_name, [sub_steps]) pairs OR bare
+        atomic step names. Stored so discover_hierarchy can test, recursively
+        and by the SAME permutation test, which steps expand into ordered
+        sub-plans -- structure unfolding fractally, one layer at a time."""
+        if not hasattr(self, "_hier_obs"):
+            self._hier_obs = {}
+        self._hier_obs[name] = list(observations)
+        return self
+
+    def discover_hierarchy(self, name=None, z_threshold=2.0, _depth=0, _max_depth=6):
+        """RECURSIVE self-discovery of order. Test the top-level observations for
+        sequential structure (the permutation test); if they pass, self-assemble
+        the canonical order, then for each step gather its OWN sub-observations
+        (where the data provides them) and recurse -- the same test one layer
+        down. The recursion STOPS honestly: at a step with no sub-observations,
+        or whose sub-observations show no sequential signal (z below the same
+        bar), or at a depth guard. Returns a nested tree:
+            {step: subtree or None}  (None = atomic / order not found)
+        so the discovered hierarchy is the data's own, measured at every layer,
+        with no depth or shape declared in advance."""
+        from holographic_sequence import sequentiality_z
+        obs = (self._hier_obs.get(name) if name is not None
+               else getattr(self, "_hier_obs", {}).get(None))
+        if not obs or _depth >= _max_depth:
+            return None
+        # an observation is a list of steps; a step is either a bare name or a
+        # (sub_name, [sub_steps]) pair. Split into the top-level order view and
+        # a per-step bag of sub-observations.
+        top_members, sub_obs = [], {}
+        for ob in obs:
+            order = []
+            for step in ob:
+                if isinstance(step, (list, tuple)) and len(step) == 2 \
+                        and isinstance(step[1], (list, tuple)):
+                    sub_name, sub_steps = step
+                    order.append(sub_name)
+                    sub_obs.setdefault(sub_name, []).append(list(sub_steps))
+                else:
+                    order.append(step)
+            top_members.append(order)
+        z = sequentiality_z(top_members, self.encoder._symbols)
+        if z < z_threshold:
+            return None                                  # no order here: stop
+        canonical = self._canonical_order(top_members)
+        tree = {}
+        for step in canonical:
+            children = sub_obs.get(step)
+            if not children:
+                tree[step] = None                        # atomic: honest stop
+                continue
+            # recurse: does THIS step's sub-observations carry order?
+            sub_z = sequentiality_z(children, self.encoder._symbols)
+            if sub_z < z_threshold:
+                tree[step] = None                        # sub-steps are a bag: stop
+            else:
+                # stash and recurse one layer down
+                key = (name, step, _depth)
+                self._hier_obs[key] = children
+                tree[step] = self.discover_hierarchy(key, z_threshold,
+                                                     _depth + 1, _max_depth)
+                if tree[step] is None:                   # recursion bottomed out
+                    tree[step] = self._canonical_order(children)
+        return tree
+
+    def learn_sequences(self, labeled_sequences):
+        """Absorb (sequence, label) pairs, KEEPING the raw ordered members per
+        label so the mind can later DISCOVER which classes are genuinely
+        sequential. Each sequence is also encoded order-free into the normal
+        memory (a bag of its elements) for classification -- the two views
+        coexist; discovery decides which matters for each class."""
+        if not hasattr(self, "_seq_members"):
+            self._seq_members = {}
+        for seq, label in labeled_sequences:
+            self._seq_members.setdefault(label, []).append(list(seq))
+            # order-free view into the standard memory (classification still works)
+            self.learn(list(seq), label, modality="text")
+        return self
+
+    def discover_sequential(self, z_threshold=2.0):
+        """SELF-DISCOVERY of order. For every absorbed class, run the permutation
+        test (real order vs the class's own shuffled null) and report which
+        classes carry genuine sequential structure -- no magic constant, the
+        class is measured against itself, and z>2 is the standard significance
+        bar (signal exceeds two sigma of the null), not a tuned threshold.
+
+        Classes that pass get an order-aware prototype in the sequence memory
+        (their canonical order recovered), so precedes()/validate_plan() work on
+        the discovered structure. Returns {label: z_score} for all tested
+        classes, so the continuous evidence is visible, not just the verdict."""
+        from holographic_sequence import sequentiality_z
+        if not getattr(self, "_seq_members", None):
+            return {}
+        verdicts = {}
+        for label, members in self._seq_members.items():
+            z = sequentiality_z(members, self.encoder._symbols)
+            verdicts[label] = round(z, 2)
+            if z >= z_threshold:
+                # the class scored sequential AND must PROVE executable (no
+                # precedence cycle) before its order is trusted -- statistical
+                # signal is necessary but not sufficient; the structure has to
+                # be consistent enough to actually walk
+                ok, _ = self.prove_executable(members)
+                if ok:
+                    canonical = self._canonical_order(members)
+                    self._seq_mem().add(label, canonical)
+                    verdicts[label] = (z, "executable")
+                else:
+                    verdicts[label] = (round(z, 2), "inconsistent")
+        return verdicts
+
+    def execute_plan(self, name, context=None, attempt_order=None, templates=None):
+        """RUN a discovered, proven plan -- the loop from discovering structure to
+        ACTING on it. The contract is honest: a step fires only when (a) every
+        step that must PRECEDE it (by the discovered canonical order) has already
+        fired, and (b) its context SLOTS can be bound from `context`. Otherwise it
+        BLOCKS, and the block is reported with its reason -- an unmet precondition
+        or an unbound slot -- rather than silently assumed away.
+
+        `context` is a dict binding slot names to values (the scenario: the
+        physics law is generic, context supplies m and a; 'open the book' needs
+        'book' bound). `templates` optionally maps a step to (template, slot_keys)
+        from extract_template, so a step's slots are filled from context as it
+        fires. `attempt_order` defaults to the canonical order (the natural run);
+        pass a different order to test what blocks.
+
+        Returns a log: [(step, status, detail)] where status is 'fired' (with the
+        bound form in detail) or 'blocked' (with the reason). A plan that wasn't
+        registered (failed discovery/proof) raises -- you cannot run what was
+        never proven."""
+        if name not in self._seq_mem().seqs:
+            raise ValueError(f"'{name}' is not a proven sequential plan -- "
+                             "discover_sequential must register it first")
+        order = self._seq_mem().seqs[name][1]
+        context = context or {}
+        templates = templates or {}
+        attempt = attempt_order or order
+        done, log = set(), []
+        for step in attempt:
+            idx = order.index(step)
+            required = set(order[:idx])
+            missing = required - done
+            if missing:
+                log.append((step, "blocked",
+                            f"preconditions unmet: needs {sorted(missing)}"))
+                continue
+            # bind slots from context if this step is a template
+            if step in templates:
+                template, slot_keys = templates[step]
+                unbound = [k for k in slot_keys if k not in context]
+                if unbound:
+                    log.append((step, "blocked",
+                                f"context missing bindings: {unbound}"))
+                    continue
+                bound = " ".join(context.get(t, t) if t == "<_>" else t
+                                 for t in template)
+                # fill each <_> in order from the slot_keys' context values
+                vals = [context[k] for k in slot_keys]
+                parts, vi = [], 0
+                for t in template:
+                    if t == "<_>":
+                        parts.append(str(vals[vi])); vi += 1
+                    else:
+                        parts.append(t)
+                done.add(step)
+                log.append((step, "fired", " ".join(parts)))
+            else:
+                done.add(step)
+                log.append((step, "fired", ""))
+        return log
+
+    def extract_template(self, observations):
+        """DISCOVER the generic schema and its context-bound slots in a repeated
+        step. A step like 'the material has density X' is a SCHEMA (fixed words:
+        'the material has density') plus a SLOT filled from context (X = 5g, 3g,
+        ...). Across observations the schema positions are STABLE and the slot
+        positions VARY -- so token-entropy per position separates them, and the
+        split is placed at the natural largest GAP in the entropy distribution
+        (the data's own scale, no magic cutoff). This is the same insight as a
+        physical law: 'F = m*a' is generic until a scenario BINDS m and a; the
+        schema is the law, the slots are where context enters.
+
+        Returns (template, slots): template is the step with slots marked as
+        '<_>', slots is {position: [observed values]} -- the variable parts and
+        what context has filled them with. A step with no varying position is
+        fully explicit (empty slots)."""
+        import numpy as np
+        from collections import Counter
+        obs = [list(o) for o in observations]
+        if len(obs) < 2:
+            return (list(obs[0]) if obs else []), {}
+        L = min(len(o) for o in obs)
+
+        def entropy(toks):
+            c = Counter(toks); n = len(toks)
+            return -sum((v / n) * np.log2(v / n) for v in c.values())
+
+        ents = np.array([entropy([o[i] for o in obs]) for i in range(L)])
+        order = np.sort(ents)
+        if order[-1] - order[0] < 1e-6:
+            return [obs[0][i] for i in range(L)], {}   # all positions stable: explicit
+        gaps = np.diff(order)
+        split = order[int(np.argmax(gaps))] + gaps.max() / 2  # cut at the biggest gap
+        slots = {}
+        template = []
+        for i in range(L):
+            if ents[i] > split:
+                slots[i] = [o[i] for o in obs]
+                template.append("<_>")
+            else:
+                template.append(obs[0][i])
+        return template, slots
+
+    def prove_executable(self, members):
+        """SELF-PROOF that a discovered order is VALID, not merely predictable.
+        A class can score z>2 (its order carries signal) and still be
+        INCONSISTENT -- if its members' pairwise precedences form a cycle
+        (A before B, B before C, C before A), no single ordering satisfies them
+        all and the 'plan' cannot be executed. The proof: build the majority
+        precedence edges, take the canonical (vote-sorted) order, and check that
+        EVERY majority edge is respected by it. A cycle shows up as an edge the
+        sorted order must violate. Returns (ok, violations): ok means the
+        structure proved itself executable; violations name the contradictory
+        precedences. Structure earns trust by passing this, not by z alone."""
+        from collections import Counter
+        before = Counter()
+        elems = set()
+        for m in members:
+            for i, a in enumerate(m):
+                elems.add(a)
+                for b in m[i + 1:]:
+                    before[(str(a), str(b))] += 1
+        order = self._canonical_order(members)
+        pos = {e: i for i, e in enumerate(order)}
+        # a ROBUST majority edge a->b that the canonical order reverses signals a
+        # real cycle. "Robust" = the majority is stronger than the sampling noise
+        # of sparse partial observations: a single contradictory vote from a rare
+        # pair is not a contradiction, a consistent reversal is. The bar is the
+        # data's own: an edge counts only if its margin exceeds the median edge
+        # margin (so typical-strength evidence, not a fluke), and the canonical
+        # order must still reverse it. No fixed constant -- the observation set
+        # sets the scale.
+        margins = [abs(before[(a, b)] - before[(b, a)])
+                   for a in elems for b in elems if a < b]
+        import numpy as np
+        med = np.median([mg for mg in margins if mg > 0]) if any(margins) else 0
+        violations = []
+        for a in elems:
+            for b in elems:
+                if a != b and pos[a] > pos[b]:
+                    margin = before[(a, b)] - before[(b, a)]
+                    if margin > 0 and margin >= med:        # robust reversed edge
+                        violations.append((a, b))
+        return (not violations), violations
+
+    def _canonical_order(self, members):
+        """Recover a class's canonical step order from its member sequences by a
+        true TOPOLOGICAL SORT over the majority-precedence edges -- so the
+        discovered order RESPECTS what the data agrees on (if cut beats plate
+        4-0, cut comes first), not a score heuristic that can misplace rare
+        elements. Edges are the net majority (a before b more often than after);
+        ties and the occasional cycle-inducing weak edge are broken by net
+        margin, so a consistent dataset yields its exact order and a contradictory
+        one yields the least-bad order (whose remaining violations prove_executable
+        then surfaces)."""
+        from collections import Counter
+        before = Counter()
+        elems = set()
+        for m in members:
+            for i, a in enumerate(m):
+                elems.add(a)
+                for b in m[i + 1:]:
+                    before[(str(a), str(b))] += 1
+        elems = [str(e) for e in elems]
+        # net majority edge weight a->b (positive => a should precede b)
+        def net(a, b):
+            return before[(a, b)] - before[(b, a)]
+        # Kahn-style topological sort, picking among available nodes the one with
+        # the strongest outgoing majority (greedy by net precedence) so stronger
+        # evidence is honoured first; this respects every consistent edge exactly.
+        remaining = set(elems)
+        order = []
+        while remaining:
+            # a node is "available" if no remaining node has a majority edge INTO it
+            avail = [e for e in remaining
+                     if not any(net(o, e) > 0 for o in remaining if o != e)]
+            if not avail:                                  # a cycle: break it by
+                # picking the node with the best net outgoing balance
+                avail = [max(remaining,
+                             key=lambda e: sum(net(e, o) for o in remaining if o != e))]
+            pick = max(avail, key=lambda e: sum(net(e, o) for o in remaining if o != e))
+            order.append(pick)
+            remaining.discard(pick)
+        return order
+
+    def learn_plan(self, name, steps):
+        """Store an ORDERED plan/recipe/protocol by name. Unlike absorb (which
+        files things order-free for classification and recall), this keeps the
+        SEQUENCE queryable: meaning that lives in the order is preserved."""
+        self._seq_mem().add(name, steps)
+        return self
+
+    def step_at(self, name, i):
+        """What is the i-th step of a stored plan?"""
+        return self._seq_mem().step(name, i)
+
+    def precedes(self, name, a, b):
+        """In the stored plan, does step a come before step b? The order
+        relation no bag store can answer (measured 100% on plans up to ~8
+        steps)."""
+        return self._seq_mem().precedes(name, a, b)
+
+    def validate_plan(self, name_or_steps, constraints):
+        """Check a plan against ordering rules -- the PB&J test: does every
+        'a must come before b' hold? Returns (ok, violations); a violation
+        names exactly which step is out of order. Works on a stored plan name
+        or a fresh step list."""
+        return self._seq_mem().validate(name_or_steps, constraints)
+
+    def attribute(self, text, name=None):
+        """WHO taught this? If the sequence model was fit on (text, source)
+        documents, rank the sources by how much of the passage's transitions
+        each one taught -- the stylistic bag. Returns [(source, weight)] or []."""
+        gen = self._pick_gen(name, text)["gen"]
+        if hasattr(gen, "attribute") and getattr(gen, "sources", None):
+            return gen.attribute(text)
+        return []
+
+    def trace(self, text, name=None):
+        """The full provenance answer: STYLE (transition bag) AND MATERIAL
+        (sequence alignment -- the longest verbatim span), leading with whichever
+        the evidence makes decisive. This is the method that tells apart sources
+        sharing every word in opposite order (meaning is in the ordering). Returns
+        the trace dict, or None when no provenance was recorded."""
+        gen = self._pick_gen(name, text)["gen"]
+        if hasattr(gen, "trace") and getattr(gen, "sources", None):
+            return gen.trace(text)
+        return None
+
     # -- self-maintenance across the whole model ---------------------------
+    def _reorganize_and_narrate(self):
+        """Run the organizer's speculate-measure-adopt pass AND write the mind's
+        own account of what happened into the journal: which labels changed
+        sub-prototype counts, and -- where the absorbed data was record-shaped --
+        WHAT each split separates, by the contrast-judged role decode
+        (explain_splits). The maintenance log narrates itself: 'A split in two;
+        the modes differ in colour and shape.' Every consumer of the unified
+        mind (the console, the tour, absorb()'s auto path) gets the narration
+        for free, because this wrapper is the only road to auto_reorganize."""
+        before = dict(self.memory.live.counts_by_label())
+        choice = self.memory.auto_reorganize()
+        after = dict(self.memory.live.counts_by_label())
+        changed = {lab: (before.get(lab, 0), after.get(lab, 0))
+                   for lab in set(before) | set(after)
+                   if before.get(lab, 0) != after.get(lab, 0)}
+        entry = {"taught": self._taught,
+                 "choice": (choice[0] if choice else "keep"),
+                 "changed": changed, "named": {}}
+        if self._fillers:
+            for lab, (b, a) in changed.items():
+                if a > 1:
+                    try:
+                        _, sep = self.explain_splits(lab)
+                        if sep:
+                            entry["named"][lab] = sep
+                    except Exception:
+                        pass
+        if changed:
+            bits = []
+            for lab, (b, a) in sorted(changed.items()):
+                why = (f", the modes differ in {', '.join(entry['named'][lab])}"
+                       if lab in entry["named"] else "")
+                bits.append(f"'{lab}' went from {b} to {a} sub-prototype(s){why}")
+            entry["story"] = "reorganized: " + "; ".join(bits) + "."
+        else:
+            entry["story"] = (f"checked the organization ({entry['choice']}): "
+                              "nothing earned a change.")
+        self.journal.append(entry)
+        return choice
+
     def maintain_now(self):
         """Reorganize the memory and refresh the brain, each by its own held-out
-        measurement. Returns the memory's choice."""
-        choice = self.memory.auto_reorganize()
+        measurement. Returns the memory's choice -- and writes the mind's own
+        narration of BOTH events into self.journal: the organizer's splits (named
+        where the data allows) and the brain's keep/fold/refresh verdict, so the
+        whole self-maintenance story reads in one place."""
+        choice = self._reorganize_and_narrate()
         if self._brain is not None and self._brain.maintain == 'auto':
-            self._brain.auto_maintain()
+            outcome = self._brain.auto_maintain()
+            entry = self.journal[-1]
+            if outcome is None:
+                # too little recent experience to judge -- say so honestly
+                entry["brain"] = {"choice": "untested"}
+                entry["story"] += (" The decision brain has too little recent"
+                                   " experience to judge; left as is.")
+            else:
+                name, protos = outcome
+                entry["brain"] = {"choice": name, "prototypes": protos}
+                if name == "keep":
+                    entry["story"] += (f" The decision brain measured its policy"
+                                       f" memory and kept it ({protos} prototypes).")
+                elif name.startswith("fold"):
+                    entry["story"] += (f" The decision brain folded duplicate"
+                                       f" situations down to {protos} prototypes"
+                                       f" without forgetting.")
+                else:
+                    entry["story"] += (f" The decision brain REFRESHED its policy"
+                                       f" from recent experience ({protos}"
+                                       f" prototypes) -- recent decisions judged"
+                                       f" the old regime stale.")
         return choice
 
     def describe(self):

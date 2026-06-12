@@ -307,3 +307,398 @@ def test_unified_app_self_dataset_builds_and_classifies():
     assert mind.classify(q)[0] == "code:tree"
     out = mind.generate("def recall ( self", length=50, temperature=0.4)
     assert len(out) > 25
+
+
+def test_unified_mind_relations_over_its_own_memory():
+    # THE UNIFICATION of the relations work: find/read/ask/explain run on the
+    # records absorb() stored and the filler vocabulary learn() registered --
+    # no side KnowledgeStore. Measured: find 40/40, read 40/40, 2+3-hop chains
+    # 20/20 on the demo world, every hop cleaned up to a symbol (the law).
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    W = {
+        "france":  dict(capital="paris", currency="franc", language="french"),
+        "sweden":  dict(capital="stockholm", currency="krona", language="swedish"),
+        "japan":   dict(capital="tokyo", currency="yen", language="japanese"),
+        "mexico":  dict(capital="mexico_city", currency="peso", language="spanish"),
+        "usa":     dict(capital="washington", currency="dollar", language="english"),
+        "egypt":   dict(capital="cairo", currency="pound", language="arabic"),
+    }
+    m = UnifiedMind(dim=2048, seed=0)
+    m.absorb([(attrs, name) for name, attrs in W.items()])
+
+    assert m.find("capital", "tokyo")[0] == "japan"
+    assert m.read_role("japan", "currency")[0] == "yen"
+    # 3-hop chain over the mind's own memory
+    assert m.ask("tokyo", ("capital", "currency"), ("currency", "language")) == "japanese"
+    # learned-label explanation
+    v = {r: s for r, _, _, s, _ in m.explain("mexico", "usa")}
+    assert v["capital"] is False and v["currency"] is False
+
+
+def test_unified_mind_explains_classes_learned_from_noisy_observations():
+    # The genuinely new measurement: a class prototype built from SIX noisy,
+    # incomplete observations (one random role dropped per copy) still decodes
+    # its roles -- superposition linearity reinforces the shared role-filler
+    # terms while the dropouts average out. Measured 100% on read (40/40),
+    # explain (180/180), and 3-hop chains; pinned with conservative floors.
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    W = {
+        "france":  dict(capital="paris", currency="franc", language="french"),
+        "belgium": dict(capital="brussels", currency="franc", language="french"),
+        "japan":   dict(capital="tokyo", currency="yen", language="japanese"),
+        "mexico":  dict(capital="mexico_city", currency="peso", language="spanish"),
+        "kenya":   dict(capital="nairobi", currency="shilling", language="swahili"),
+    }
+    rng = np.random.default_rng(7)
+    m = UnifiedMind(dim=2048, seed=0)
+    ex = []
+    for name, attrs in W.items():
+        for _ in range(6):
+            drop = rng.choice(list(attrs))
+            ex.append(({k: v for k, v in attrs.items() if k != drop}, name))
+    rng.shuffle(ex)
+    m.absorb(ex)
+
+    ok = tot = 0
+    for name, attrs in W.items():
+        for r, v in attrs.items():
+            ok += (m.read_role(name, r)[0] == v)
+            tot += 1
+    assert ok / tot >= 0.9                            # measured 100%
+
+    verd = {r: s for r, _, _, s, _ in m.explain("france", "belgium")}
+    assert verd["currency"] is True and verd["language"] is True
+    assert verd["capital"] is False
+
+
+def test_explain_splits_names_what_reorganization_separated():
+    # INCEPTION: the mind explains its own memory organization. XOR world
+    # (A = red circles + blue squares, B = the opposite pairings, plus a
+    # uniformly-random noise role): auto_reorganize must split to reach 100%
+    # held-out, and explain_splits must name colour+shape -- by CONTRAST, not
+    # mere winner-difference (truly separating roles measured ~0.5 contrast,
+    # incidental skews <= 0.1). Its first outing caught the organizer making an
+    # accuracy-sufficient but structurally arbitrary split on label B (it
+    # separated the NOISE role; A's clean split already resolved the XOR) --
+    # the explanation honestly reports what the split DID.
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    rng = np.random.default_rng(0)
+
+    def rec(c, s):
+        return dict(colour=c, shape=s, size=rng.choice(["small", "medium", "large"]))
+
+    examples = []
+    for _ in range(40):
+        examples += [(rec("red", "circle"), "A"), (rec("blue", "square"), "A"),
+                     (rec("red", "square"), "B"), (rec("blue", "circle"), "B")]
+    rng.shuffle(examples)
+    m = UnifiedMind(dim=2048, seed=0)
+    m.absorb(examples)
+    m.memory.auto_reorganize()
+
+    test = []
+    for _ in range(10):
+        test += [(rec("red", "circle"), "A"), (rec("blue", "square"), "A"),
+                 (rec("red", "square"), "B"), (rec("blue", "circle"), "B")]
+    acc = sum(m.classify(x)[0] == lab for x, lab in test) / len(test)
+    assert acc >= 0.9                                  # the split earned its keep
+
+    _, sep_a = m.explain_splits("A")
+    assert set(sep_a) == {"colour", "shape"}           # the real structure, named
+    assert "size" not in sep_a                         # the noise role excluded
+
+
+def test_journal_narrates_reorganization_with_named_splits():
+    # SELF-NARRATING MAINTENANCE: every road to auto_reorganize goes through
+    # _reorganize_and_narrate, so the mind keeps its own account of every
+    # maintenance event -- with splits NAMED (contrast-judged role decode)
+    # where the data is record-shaped. Every consumer (console, tour, absorb's
+    # auto path) gets the narration for free.
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    rng = np.random.default_rng(0)
+
+    def rec(c, s):
+        return dict(colour=c, shape=s, size=rng.choice(["small", "medium", "large"]))
+
+    ex = []
+    for _ in range(40):
+        ex += [(rec("red", "circle"), "A"), (rec("blue", "square"), "A"),
+               (rec("red", "square"), "B"), (rec("blue", "circle"), "B")]
+    rng.shuffle(ex)
+    m = UnifiedMind(dim=2048, seed=0)
+    m.absorb(ex)
+
+    assert m.journal, "absorb's maintenance must journal itself"
+    stories = " ".join(e["story"] for e in m.journal)
+    assert "reorganized" in stories                  # the split event was narrated
+    named = {}
+    for e in m.journal:
+        named.update(e.get("named", {}))
+    assert "colour" in named.get("A", []) and "shape" in named.get("A", [])
+
+
+def test_maintain_now_journals_the_brains_verdict_too():
+    # The whole self-maintenance story in one place: maintain_now's journal
+    # entry carries the organizer's account AND the decision brain's measured
+    # keep/fold/refresh verdict (auto_maintain's return value, narrated). A
+    # mind without a brain journals only the organizer -- no empty brain talk.
+    import numpy as np
+    from holographic_unified import UnifiedMind
+
+    m = UnifiedMind(dim=512, seed=0, maintain='auto')
+    m.actions(["left", "right"])
+    rng = np.random.default_rng(1)
+    for _ in range(300):
+        x = {"temp": "hot"} if rng.random() < 0.5 else {"temp": "cold"}
+        good = "left" if x["temp"] == "hot" else "right"
+        a = rng.choice(["left", "right"])
+        m.reinforce(x, a, 1.0 if a == good else -1.0)
+    m.learn({"temp": "hot"}, "climate")
+    m.maintain_now()
+    entry = m.journal[-1]
+    assert "brain" in entry and entry["brain"]["choice"]
+    assert "decision brain" in entry["story"]
+
+    m2 = UnifiedMind(dim=512, seed=0)
+    m2.learn({"temp": "hot"}, "climate")
+    m2.maintain_now()
+    assert "brain" not in m2.journal[-1]
+    assert "decision brain" not in m2.journal[-1]["story"]
+
+
+def test_sprite_library_as_relational_memory():
+    # THE REAL LIBRARY, RELATIONAL: absorb actual sprites (image + auto-tag/
+    # name record under the same label) and the relations operations run over
+    # genuine data. The new measured result: each label's prototype superposes
+    # an IMAGE vector with the record, and role decode survives the mixing at
+    # 100% (750/750 full-set) -- the image component is near-orthogonal noise
+    # to the role-bound terms. SEE->SAY (classify image, state colour in
+    # symbols) measured 96% full-set; subset-pinned with conservative floors.
+    import os, re
+    import numpy as np
+    import pytest
+    hsp = os.path.join(os.path.dirname(__file__), "features", "sprites.hsp")
+    if not os.path.exists(hsp):
+        pytest.skip("sprite asset not present")
+    import pack_sprites as ps
+    from holographic_unified import UnifiedMind
+    from holographic_scene import auto_tags
+
+    with open(hsp, "rb") as f:
+        sprites = dict(ps.unpack(f.read()))
+    names = sorted(sprites)[:120]                    # subset: keep the test quick
+
+    mind = UnifiedMind(dim=2048, seed=0)
+    recs, rgbs = {}, {}
+    examples = []
+    for name in names:
+        rgba = sprites[name]
+        rgb = rgba[..., :3].astype(float) / 255.0 if rgba.dtype == np.uint8 else rgba[..., :3]
+        mask = (rgba[..., 3] > 0) if rgba.shape[-1] == 4 else None
+        t = auto_tags(rgb, mask=mask)
+        rec = {"colour": t["colour"], "texture": t["texture"]}
+        m = re.match(r"([a-z]+)(\d*)_([a-z]{2})(\d)\.gif", name)
+        if m:
+            rec.update(family=m.group(1), facing=m.group(3), frame=m.group(4))
+        recs[name], rgbs[name] = rec, rgb
+        examples += [(rgb, name, "image"), (rec, name, "record")]
+    mind.absorb(examples, maintain=False)
+
+    # find by attribute returns a sprite truly holding it
+    ok = tot = 0
+    for role in mind._fillers:
+        for val in mind._fillers[role]:
+            lab, _ = mind.find(role, val)
+            ok += (recs[lab].get(role) == val); tot += 1
+    assert ok == tot
+
+    # role decode through image-contaminated prototypes
+    rng = np.random.default_rng(0)
+    sample = rng.choice(names, 40, replace=False)
+    ok = tot = 0
+    for name in sample:
+        for role, val in recs[name].items():
+            ok += (mind.read_role(name, role)[0] == val); tot += 1
+    assert ok / tot >= 0.95                          # measured 100%
+
+    # SEE -> SAY: classify the image, state its colour in symbols
+    ok = 0
+    for name in sample[:25]:
+        lab, _ = mind.classify(rgbs[name], modality="image")
+        ok += (mind.read_role(lab, "colour")[0] == recs[name]["colour"])
+    assert ok / 25 >= 0.8                            # measured 96% full-set
+
+
+def test_unified_app_world_dataset_and_relations_panel():
+    # The console's record dataset + relations endpoint, end-to-end through the
+    # test client: ten countries from eight noisy observations each (the
+    # measured noisy-prototype decode), then explain/find/ask over the mind's
+    # own absorbed memory.
+    import unified_app as ua
+    c = ua.app.test_client()
+    r = c.post("/api/unified/load", json={"id": "world"}).get_json()
+    assert r["ok"] and r["accuracy"] >= 80           # measured 97
+    e = c.post("/api/unified/relations",
+               json={"op": "explain", "a": "france", "b": "belgium"}).get_json()
+    verd = {x["role"]: x["shared"] for x in e["explain"]}
+    assert verd["currency"] is True and verd["capital"] is False
+    f = c.post("/api/unified/relations",
+               json={"op": "find", "role": "capital", "value": "tokyo"}).get_json()
+    assert f["find"]["label"] == "japan"
+    a = c.post("/api/unified/relations",
+               json={"op": "ask", "start": "tokyo",
+                     "hops": [["capital", "language"]]}).get_json()
+    assert a["ask"]["answer"] == "japanese"
+    # arbitrary chains, as the panel's chain builder sends them (3 hops)
+    a3 = c.post("/api/unified/relations",
+                json={"op": "ask", "start": "lima",
+                      "hops": [["capital", "language"], ["language", "currency"],
+                               ["currency", "continent"]]}).get_json()
+    assert a3["ask"]["answer"] == "america"
+    # GENERATION FIDELITY (user-caught): the corpus is learned with case and
+    # punctuation, the seed is NOT lowercased by the endpoint, and the output
+    # reads as prose -- capitals and sentence punctuation present.
+    g = c.post("/api/unified/generate",
+               json={"seed": "The capital of", "length": 120,
+                     "temperature": 0.5}).get_json()
+    txt = g["text"]
+    assert txt.startswith("The capital of")          # seed case preserved
+    assert any(ch.isupper() for ch in txt[20:])      # capitals beyond the seed
+    assert "." in txt                                # sentences end
+
+
+def test_journal_names_real_sprite_family_splits():
+    # REAL-DATA INCEPTION: absorb sprite records with FAMILY as the label and
+    # the journal must narrate the organizer's splits in role terms -- on the
+    # full set every family split, named overwhelmingly by facing/frame (the
+    # genuine within-family modes; the npc grab-bag named by colour). Pinned
+    # on a subset: a reorganization happens, and the separations it names come
+    # from the actual roles.
+    import os, re
+    import numpy as np
+    import pytest
+    hsp = os.path.join(os.path.dirname(__file__), "features", "sprites.hsp")
+    if not os.path.exists(hsp):
+        pytest.skip("sprite asset not present")
+    import pack_sprites as ps
+    from holographic_unified import UnifiedMind
+    from holographic_scene import auto_tags
+
+    with open(hsp, "rb") as f:
+        sprites = dict(ps.unpack(f.read()))
+    keep = ("amg", "avt", "knt", "npc", "ftr", "wmn")
+    examples = []
+    for name, rgba in sorted(sprites.items()):
+        m = re.match(r"([a-z]+)(\d*)_([a-z]{2})(\d)\.gif", name)
+        if not m or m.group(1) not in keep:
+            continue
+        rgb = rgba[..., :3].astype(float) / 255.0 if rgba.dtype == np.uint8 else rgba[..., :3]
+        mask = (rgba[..., 3] > 0) if rgba.shape[-1] == 4 else None
+        t = auto_tags(rgb, mask=mask)
+        examples.append(({"colour": t["colour"], "texture": t["texture"],
+                          "facing": m.group(3), "frame": m.group(4)},
+                         m.group(1), "record"))
+    rng = np.random.default_rng(0)
+    rng.shuffle(examples)
+    mind = UnifiedMind(dim=2048, seed=0)
+    mind.absorb(examples)
+
+    assert any("reorganized" in e["story"] for e in mind.journal)
+    named = mind.explain_organization()
+    assert named, "at least one family's split should be nameable"
+    legal = {"colour", "texture", "facing", "frame"}
+    assert all(set(roles) <= legal for roles in named.values())
+
+
+def test_unified_trace_distinguishes_ordering():
+    # The unified mind exposes trace(): style + material provenance, leading
+    # with the decisive one. Ordering carries meaning -- opposite-message
+    # same-word sources are told apart by the verbatim span.
+    from holographic_unified import UnifiedMind
+    bull = ("the council voted to approve the plan and raise the budget this year " * 25)
+    bear = ("the council voted to reject the plan and cut the budget this year " * 25)
+    m = UnifiedMind(dim=512, seed=0)
+    m.learn_sequence([(bull, "Approve"), (bear, "Reject")], modality="text")
+    up = m.trace("the council voted to approve the plan and raise the budget")
+    dn = m.trace("the council voted to reject the plan and cut the budget")
+    assert up["verdict"] == "Approve"
+    assert dn["verdict"] == "Reject"
+
+
+def test_unified_ask_traced_reports_throughput():
+    # The unified mind's chains carry THROUGHPUT -- the ray's accumulated
+    # confidence as it bounces through memory. A direct one-hop chain answers
+    # with positive throughput and one confidence per hop.
+    from holographic_unified import UnifiedMind
+    m = UnifiedMind(dim=2048, seed=0)
+    for name, attrs in {"france": {"capital": "paris", "currency": "euro"},
+                        "germany": {"capital": "berlin", "currency": "euro"}}.items():
+        m.learn(attrs, name, "record")
+    ans, tp, confs = m.ask_traced("paris", ("capital", "currency"))
+    assert ans == "euro"
+    assert 0.0 < tp <= 1.0 and len(confs) == 1
+    # an impossibly high floor forces an honest abstention
+    ans2, _, _ = m.ask_traced("paris", ("capital", "currency"), min_throughput=0.99)
+    assert ans2 is None
+
+
+def test_classify_robust_multiray_recovers_noisy_queries():
+    # MULTI-RAY: one query is a noisy ray; firing several word-resampled views
+    # and combining them z-scored (so a confident-wrong view can't dominate)
+    # recovers errors single-ray makes -- path tracing's many-rays-per-pixel.
+    # Measured: lifts noisy-query accuracy above plain classify, and never hurts
+    # on clean queries.
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    rng = np.random.default_rng(0)
+    TRAIN = {
+        "weather": ["rain storm cloud wind cold", "sunny sky clear warm bright",
+                    "snow ice freeze cold white", "fog mist damp grey morning",
+                    "heat wave hot dry summer", "thunder lightning rain dark sky"],
+        "music": ["guitar drums bass loud band", "melody song tune sing voice",
+                  "concert stage crowd live show", "piano keys notes soft play",
+                  "beat rhythm dance move groove", "album track record play list"],
+        "travel": ["flight airport plane gate board", "hotel room book stay night",
+                   "beach sand sea sun warm", "map route road trip drive",
+                   "passport visa border cross country", "train station ticket ride rail"],
+    }
+    m = UnifiedMind(dim=2048, seed=0)
+    ex = [(s, lab) for lab, ss in TRAIN.items() for s in ss]
+    m.read([s for s, _ in ex])
+    for s, lab in ex:
+        m.learn(s, lab, "text")
+    m.maintain_now()
+    held = {"weather": ["storm wind rain heavy", "sunny warm clear day"],
+            "music": ["guitar band loud rock", "song melody sing tune"],
+            "travel": ["flight plane gate board", "hotel book room stay"]}
+    test = []
+    for lab, ss in held.items():
+        for s in ss:
+            ws = s.split(); rng.shuffle(ws)
+            test.append((" ".join(ws[:3]), lab))
+    single = sum(m.classify(t)[0] == truth for t, truth in test)
+    robust = sum(m.classify_robust(t, n_rays=7)[0] == truth for t, truth in test)
+    assert robust >= single                          # never worse, usually better
+    # and no regression on clean full sentences
+    clean_robust = sum(m.classify_robust(s, n_rays=7)[0] == lab for s, lab in ex)
+    assert clean_robust == len(ex)
+
+
+def test_unified_blend_synthesizes_over_learned_classes():
+    # The mind synthesizes a novel concept over its OWN learned classes (decoded
+    # from prototypes, so it works on concepts built from noisy observations):
+    # one class's frame with another's values on chosen roles -- a thing it never
+    # saw, held coherently.
+    from holographic_unified import UnifiedMind
+    m = UnifiedMind(dim=2048, seed=0)
+    data = {"france": {"capital": "paris", "currency": "euro", "language": "french", "continent": "europe"},
+            "japan": {"capital": "tokyo", "currency": "yen", "language": "japanese", "continent": "asia"}}
+    for n, a in data.items():
+        m.learn(a, n, "record")
+    blend = m.blend("france", "japan", {"language", "currency"})
+    assert blend["capital"] == "paris" and blend["continent"] == "europe"   # france frame
+    assert blend["language"] == "japanese" and blend["currency"] == "yen"   # japan projected

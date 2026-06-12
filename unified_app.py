@@ -21,6 +21,7 @@ first time); everything degrades gracefully and tells you what to install.
 
 import io
 import os
+import re
 from collections import defaultdict
 
 import numpy as np
@@ -54,6 +55,24 @@ def _content(tokens):
     return [w for w in tokens if w not in STOPWORDS]
 
 
+def _detok(words):
+    """Join corpus word-tokens back into readable text: punctuation attaches to
+    the preceding word ('the dog , ran .' -> 'the dog, ran.'). Generation wants
+    text that LOOKS like writing -- case and punctuation kept (measured on
+    Austen: true raw costs ~12% bits/char vs the scrubbed diet but the output
+    becomes prose; see README)."""
+    out = []
+    for w in words:
+        if out and (w in {",", ".", ";", ":", "!", "?", ")", "''", "'"}
+                    or w.startswith("'")):
+            out[-1] += w
+        elif out and out[-1] in {"(", "``"}:
+            out[-1] += w
+        else:
+            out.append(w)
+    return " ".join(out).replace("``", '"').replace("''", '"')
+
+
 def load_reuters():
     from nltk.corpus import reuters
     single = [(f, reuters.categories(f)[0]) for f in reuters.fileids()
@@ -69,7 +88,10 @@ def load_reuters():
         for f in fids[:150]:
             toks = [w.lower() for w in reuters.words(f) if w.isalpha()]
             items.append((_content(toks), c))
-            raw.append(" ".join(toks))
+            # generation learns from the TRUE article text -- case and
+            # punctuation kept (the scrubbed token diet made every generated
+            # sentence lowercase and unpunctuated; user-caught)
+            raw.append(re.sub(r"\s+", " ", reuters.raw(f)))
     return items, " ".join(raw), "Reuters financial newswire -- 10 confusable categories (grain/crude/money-fx share vocabulary)"
 
 
@@ -79,10 +101,11 @@ def load_brown():
     items, raw = [], []
     for c in cats:
         words = [w.lower() for w in brown.words(categories=c) if w.isalpha()]
+        true_words = list(brown.words(categories=c))[:20000]
         for k in range(0, min(len(words), 18000) - 300, 300):
             chunk = words[k:k + 300]
             items.append((_content(chunk), c))
-            raw.append(" ".join(chunk))
+        raw.append(_detok(true_words))             # generation: real text
     return items, " ".join(raw), "Brown corpus -- five prose genres, in 300-word chunks"
 
 
@@ -91,7 +114,7 @@ def load_gutenberg():
     books = {"austen-emma.txt": "Austen", "carroll-alice.txt": "Carroll",
              "shakespeare-hamlet.txt": "Shakespeare", "melville-moby_dick.txt": "Melville",
              "chesterton-brown.txt": "Chesterton"}
-    items, raw = [], []
+    items, docs = [], []
     for fid, author in books.items():
         if fid not in gutenberg.fileids():
             continue
@@ -99,8 +122,12 @@ def load_gutenberg():
         for k in range(0, len(words) - 200, 200):
             chunk = words[k:k + 200]
             items.append((_content(chunk), author))
-            raw.append(" ".join(chunk))
-    return items, " ".join(raw), "Project Gutenberg -- classify the author, generate in their style"
+        # generation corpus is a LIST OF (text, source) docs -> PROVENANCE:
+        # generated or pasted text can be traced back to the author who taught
+        # the transitions it used (measured 92% top-1 on held-out passages)
+        docs.append((re.sub(r"\s+", " ", gutenberg.raw(fid))[:40000], author))
+    return items, docs, ("Project Gutenberg -- classify the author, generate in their "
+                         "style, and TRACE text back to its source author")
 
 
 def load_europarl():
@@ -157,7 +184,66 @@ def load_self():
                                    "snippet is from; generate code in its style (no download needed)")
 
 
+WORLD = {
+    "france":  dict(capital="paris", currency="franc", language="french", continent="europe"),
+    "belgium": dict(capital="brussels", currency="franc", language="french", continent="europe"),
+    "sweden":  dict(capital="stockholm", currency="krona", language="swedish", continent="europe"),
+    "japan":   dict(capital="tokyo", currency="yen", language="japanese", continent="asia"),
+    "mexico":  dict(capital="mexico_city", currency="peso", language="spanish", continent="america"),
+    "usa":     dict(capital="washington", currency="dollar", language="english", continent="america"),
+    "peru":    dict(capital="lima", currency="sol", language="spanish", continent="america"),
+    "egypt":   dict(capital="cairo", currency="pound", language="arabic", continent="africa"),
+    "kenya":   dict(capital="nairobi", currency="shilling", language="swahili", continent="africa"),
+    "vietnam": dict(capital="hanoi", currency="dong", language="vietnamese", continent="asia"),
+}
+
+
+def load_world():
+    """Record-shaped knowledge, no network: ten countries, each absorbed from
+    EIGHT noisy observations (one attribute dropped at random per copy) -- the
+    measured result this leans on is that role decode survives prototype
+    averaging at 100%. This is the dataset the RELATIONS panel runs on: explain
+    why two countries are similar, find by attribute, chain multi-hop asks --
+    all over the mind's own absorbed memory."""
+    rng = np.random.default_rng(7)
+    items, raw = [], []
+    for name, attrs in WORLD.items():
+        for _ in range(8):
+            drop = rng.choice(list(attrs))
+            items.append(({k: v for k, v in attrs.items() if k != drop}, name, "record"))
+        # VARIED templates, not one fixed rendering: the first version repeated
+        # ten identical sentences x40, and the chunk schema memorized whole
+        # sentences as single chunks -- any seed that wasn't an exact chunk
+        # encoded to nothing and generation ignored it (user-visible as the
+        # seed being echoed then restarted). Varied phrasing gives the schema
+        # genuine sub-sentence structure to chunk, so seeds condition properly.
+        cap = lambda s: s.replace("_", " ").title()
+        n, attrs_c = cap(name), {k: cap(v) for k, v in attrs.items()}
+        raw += [f"The capital of {n} is {attrs_c['capital']}. ",
+                f"{n} uses the {attrs['currency']} and speaks {attrs_c['language']}. ",
+                f"{n} is in {attrs_c['continent']}. ",
+                f"In {n} they speak {attrs_c['language']}, and the capital is "
+                f"{attrs_c['capital']}. ",
+                f"The currency of {n} is the {attrs['currency']}. ",
+                f"{attrs_c['capital']} is the capital of {n}, a country in "
+                f"{attrs_c['continent']}. "]
+    # EIGHT INDEPENDENTLY SHUFFLED PASSES, not one pass tiled: tiling the same
+    # block makes the WHOLE BLOCK the optimal compression unit, so the chunk
+    # schema legitimately learns a corpus-sized mega-chunk and generation
+    # replays the corpus wholesale, seed ignored (caught by tracing the PPM:
+    # the top candidate after any context was a several-hundred-atom chunk).
+    # The schema was right; the diet was degenerate.
+    passes = []
+    for p in range(8):
+        block = list(raw)
+        np.random.default_rng(p).shuffle(block)
+        passes.append(" ".join(block))
+    return items, " ".join(passes), ("ten countries as role-bound records, each "
+                                     "learned from eight incomplete observations")
+
+
 DATASETS = {
+    "world": ("Countries (records)", [], load_world),
     "self": ("This project's own source", [], load_self),
     "reuters": ("Reuters categories", ["reuters"], load_reuters),
     "brown": ("Brown genres", ["brown"], load_brown),
@@ -199,7 +285,14 @@ def build(dataset_id):
     mind = UnifiedMind(dim=1024, seed=0, text_window=3)
     mind.absorb(train)                              # classification + recall, one memory
     seq_mod = "code" if any(m == "code" for _, _, m in train) else "text"
-    mind.learn_sequence(raw[:160000], n=6, modality=seq_mod)   # generation, same space
+    # raw is either a plain string or a list of (text, source) documents (the
+    # latter carries PROVENANCE through to generation/attribution); slice each
+    # form to a budget without losing the document structure
+    if isinstance(raw, (list, tuple)) and raw and isinstance(raw[0], (list, tuple)):
+        seq_data = [(t[:40000], s) for t, s in raw]
+    else:
+        seq_data = raw[:160000]
+    mind.learn_sequence(seq_data, n=6, modality=seq_mod)   # generation, same space
 
     # scoring is UNTAGGED on purpose: the mind must self-discover each query's
     # modality (type inference, then the content gate where type goes blind)
@@ -273,8 +366,14 @@ def classify():
     mind = STATE["mind"]
     label, score = mind.classify(toks)
     (rlabel, _), rscore = mind.recall(toks)
+    # MULTI-RAY: also classify by firing several resampled views and combining
+    # them z-scored -- robust to a noisy single encoding (path tracing's many
+    # rays per pixel). Agreement is the fraction of rays that backed the winner.
+    rob_label, agreement = mind.classify_robust(" ".join(toks) if isinstance(toks, list)
+                                                else toks)
     return jsonify({"label": label, "score": round(float(score), 3),
-                    "recall": {"label": rlabel, "score": round(float(rscore), 3)}})
+                    "recall": {"label": rlabel, "score": round(float(rscore), 3)},
+                    "robust": {"label": rob_label, "agreement": agreement}})
 
 
 @app.route("/api/unified/organize", methods=["POST"])
@@ -285,10 +384,52 @@ def organize():
     before = mind.memory.live.counts_by_label()
     choice = mind.maintain_now()
     after = mind.memory.live.counts_by_label()
+    # the mind keeps its own journal of maintenance events (self-narrating
+    # reorganization: splits NAMED by the contrast-judged role decode where the
+    # data is record-shaped) -- surface its latest account verbatim
+    story = mind.journal[-1]["story"] if mind.journal else ""
     return jsonify({"before": before, "after": after,
                     "choice": (choice[0] if choice else "keep"),
+                    "story": story,
+                    "journal": [e["story"] for e in mind.journal[-5:]],
                     "note": "each label may hold several sub-prototypes when the memory "
                             "found it multi-modal; one each means it stayed simple."})
+
+
+@app.route("/api/unified/relations", methods=["POST"])
+def relations():
+    """The relations operations over the mind's OWN memory: explain two learned
+    labels per-role, find which record holds an attribute, or chain a multi-hop
+    ask -- every readout cleaned up to a symbol (the measured law)."""
+    if _need_mind():
+        return jsonify({"error": "load a dataset first"})
+    mind = STATE["mind"]
+    if not mind._fillers:
+        return jsonify({"error": "this dataset has no record structure -- load "
+                                 "'Countries (records)' for the relations panel"})
+    p = request.get_json(force=True)
+    op = p.get("op")
+    try:
+        if op == "explain":
+            rows = mind.explain(p["a"].strip(), p["b"].strip())
+            return jsonify({"explain": [
+                {"role": r, "a": va, "b": vb, "shared": bool(sh), "conf": round(c, 2)}
+                for r, va, vb, sh, c in rows]})
+        if op == "find":
+            lab, score = mind.find(p["role"].strip(), p["value"].strip())
+            reads = {r: mind.read_role(lab, r)[0] for r in sorted(mind._fillers)}
+            return jsonify({"find": {"label": lab, "score": round(float(score), 3),
+                                     "record": reads}})
+        if op == "ask":
+            hops = [tuple(h) for h in p["hops"]]
+            # traced chain: the answer plus its THROUGHPUT (the ray's accumulated
+            # confidence as it bounced through memory) and the per-hop confidences
+            ans, tp, confs = mind.ask_traced(p["start"].strip(), *hops)
+            return jsonify({"ask": {"answer": ans, "throughput": round(float(tp), 3),
+                                    "hops": confs}})
+        return jsonify({"error": f"unknown op {op!r}"})
+    except KeyError as e:
+        return jsonify({"error": f"unknown label or role: {e}"})
 
 
 @app.route("/api/unified/generate", methods=["POST"])
@@ -296,11 +437,36 @@ def generate():
     if _need_mind() or STATE["mind"]._gen is None:
         return jsonify({"error": "load a dataset first"})
     j = request.json
-    seed = (j.get("seed") or "the ").lower()
+    # the seed keeps its CASE: the corpus is learned raw (caps + punctuation),
+    # so a lowercased seed matches no learned context and generation restarts
+    # with its own capitalized opener -- the doubled-echo bug, user-caught
+    seed = j.get("seed") or "The "
     length = int(j.get("length", 200))
     temp = float(j.get("temperature", 0.45))
     text = STATE["mind"].generate(seed, max(20, min(length, 600)), max(0.1, min(temp, 1.2)))
     return jsonify({"text": text})
+
+
+@app.route("/api/unified/attribute", methods=["POST"])
+def attribute():
+    """WHO taught this text? Ranks the dataset's sources by how much of the
+    passage's transitions each one taught -- provenance from the same tables
+    generation reads. Works on pasted text OR the last generated output."""
+    if _need_mind():
+        return jsonify({"error": "load a dataset first"})
+    mind = STATE["mind"]
+    text = (request.json.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "nothing to attribute"})
+    tr = mind.trace(text)
+    if tr is None:
+        return jsonify({"error": "this dataset carries no source provenance -- "
+                                 "load 'Project Gutenberg' (per-author sources)"})
+    return jsonify({
+        "verdict": tr["verdict"], "basis": tr["basis"],
+        "span": tr["span"][:120], "span_source": tr["span_source"],
+        "by_material": [{"source": s, "weight": round(w, 3)} for s, w in tr["by_material"]],
+        "ranked": [{"source": s, "weight": round(w, 3)} for s, w in tr["by_style"]]})
 
 
 @app.route("/api/unified/recall", methods=["POST"])
@@ -379,6 +545,24 @@ PAGE = r"""
   </div>
 
   <div class="card">
+    <h2>3&frac12; &middot; relations <span class="muted">(record datasets)</span></h2>
+    <div class="muted">The mind answers WHY over its own memory: per-role explanation of two learned labels, find-by-attribute, and a two-hop chain &mdash; every readout cleaned up to a symbol.</div>
+    <div class="row" style="margin-top:8px">
+      <input id="rel_a" placeholder="label A, e.g. france" style="width:130px">
+      <input id="rel_b" placeholder="label B, e.g. belgium" style="width:130px">
+      <button onclick="relExplain()">Explain</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <input id="rel_role" placeholder="role, e.g. capital" style="width:130px">
+      <input id="rel_val" placeholder="value, e.g. tokyo" style="width:130px">
+      <button onclick="relFind()">Find</button>
+      <input id="rel_chain" placeholder="chain, e.g. capital>currency, currency>language" style="width:260px">
+      <button onclick="relAsk()">Ask</button>
+    </div>
+    <div id="relout" class="out"></div>
+  </div>
+
+  <div class="card">
     <h2>4 &middot; generate</h2>
     <div class="row">
       <input id="seed" value="the " style="width:160px" placeholder="seed text">
@@ -387,6 +571,16 @@ PAGE = r"""
       <button onclick="generate()">Generate</button>
     </div>
     <div id="gout" class="out"></div>
+  </div>
+
+  <div class="card">
+    <h2>4&frac12; &middot; provenance <span class="muted">(source datasets)</span></h2>
+    <div class="muted">WHO taught this text? Paste a passage (or trace a generated one above) and the mind ranks the dataset's sources by how much of the text's actual transitions each one taught &mdash; from the same tables generation reads. Strong on real held-out text (measured ~70&ndash;92% top-1 depending on how distinct the sources are); near-uniform on freely-generated text, which legitimately blends everyone.</div>
+    <div class="row" style="margin-top:8px">
+      <textarea id="attin" rows="3" style="width:100%;background:#0d1626;color:#cfe;border:1px solid #2a3a55;border-radius:6px;padding:6px" placeholder="paste text to trace to its source..."></textarea>
+    </div>
+    <div class="row" style="margin-top:6px"><button onclick="trace($('attin').value)">Trace sources &rarr;</button></div>
+    <div id="trout2" class="out"></div>
   </div>
   </div>
 
@@ -418,8 +612,10 @@ async function load(){
 async function classify(){
   const r=await post("/api/unified/classify",{text:$("cq").value});
   if(r.error){$("cout").innerHTML=`<span class="muted">${r.error}</span>`;return;}
+  const rob=r.robust;
+  const robline=rob?`<br><span class="muted">multi-ray (5 resampled views, z-combined): <b style="color:var(--teal2)">${rob.label}</b> &mdash; ${Math.round(rob.agreement*100)}% of rays agree</span>`:"";
   $("cout").innerHTML=`classified as <b style="color:var(--teal2)">${r.label}</b> (cos ${r.score})
-     <br><span class="muted">nearest stored item is a <b>${r.recall.label}</b> (cos ${r.recall.score})</span>`;
+     <br><span class="muted">nearest stored item is a <b>${r.recall.label}</b> (cos ${r.recall.score})</span>${robline}`;
 }
 async function recall(){
   const r=await post("/api/unified/recall",{text:$("cq").value});
@@ -431,14 +627,69 @@ async function organize(){
   const r=await post("/api/unified/organize",{});
   if(r.error){$("oout").innerHTML=`<span class="muted">${r.error}</span>`;return;}
   const pills=Object.entries(r.after).map(([l,n])=>`<span class="pill">${l}: ${n}</span>`).join("");
-  $("oout").innerHTML=`reorganize decided: <b>${r.choice}</b><div style="margin-top:8px">${pills}</div>
+  const story=r.story?`<div style="margin-top:8px;color:var(--amber)">the mind's own account: ${r.story}</div>`:"";
+  $("oout").innerHTML=`reorganize decided: <b>${r.choice}</b><div style="margin-top:8px">${pills}</div>${story}
      <div class="muted" style="margin-top:6px">${r.note}</div>`;
 }
 async function generate(){
   $("gout").innerHTML='<span class="muted">generating\u2026</span>';
   const r=await post("/api/unified/generate",{seed:$("seed").value,length:+$("len").value,temperature:+$("temp").value});
   if(r.error){$("gout").innerHTML=`<span class="muted">${r.error}</span>`;return;}
-  $("gout").innerHTML=`<span style="color:var(--amber)">${r.text}</span>`;
+  window._lastGen=r.text;
+  $("gout").innerHTML=`<span style="color:var(--amber)">${r.text}</span>`+
+    `<div style="margin-top:8px"><button onclick="trace()">Trace sources &rarr;</button>`+
+    `<span class="muted" style="margin-left:8px">who taught the transitions this used?</span></div>`+
+    `<div id="trout" style="margin-top:8px"></div>`;
+}
+async function trace(text){
+  const t=text||window._lastGen||"";
+  const fromPaste=!!text;
+  const r=await post("/api/unified/attribute",{text:t});
+  const node=fromPaste?$("trout2"):($("trout")||$("gout"));
+  if(r.error){node.innerHTML=`<span class="muted">${r.error}</span>`;return;}
+  const barRow=(e,col)=>{const pct=Math.round(e.weight*100);
+    return `<div style="display:flex;align-items:center;gap:8px;margin:3px 0">
+      <span style="width:90px">${e.source}</span>
+      <span style="flex:1;background:#1a2740;border-radius:4px;overflow:hidden">
+        <span style="display:block;height:14px;width:${pct}%;background:${col}"></span></span>
+      <span class="muted" style="width:40px;text-align:right">${pct}%</span></div>`;};
+  const mat=r.by_material.map(e=>barRow(e,"#67d6a0")).join("");
+  const sty=r.ranked.map(e=>barRow(e,"var(--amber)")).join("");
+  const spanLine=r.span?`<div style="margin:6px 0;padding:6px;background:#0d1626;border-radius:6px;font-size:12px">
+     longest verbatim span &rarr; <b style="color:#67d6a0">${r.span_source}</b>: <span class="muted">&ldquo;${r.span}&rdquo;</span></div>`:"";
+  node.innerHTML=`<div style="margin-bottom:6px">verdict: <b style="color:${r.basis==='material'?'#67d6a0':'var(--amber)'}">${r.verdict}</b>
+     <span class="muted">(by ${r.basis==='material'?'MATERIAL &mdash; a verbatim span pins it':'STYLE &mdash; no decisive span, stylistic match'})</span></div>
+     ${spanLine}
+     <div class="muted" style="margin:6px 0 2px">by material (sequence alignment):</div>${mat}
+     <div class="muted" style="margin:8px 0 2px">by style (transition bag):</div>${sty}`;
+}
+async function relExplain(){
+  const r=await post("/api/unified/relations",{op:"explain",a:$("rel_a").value,b:$("rel_b").value});
+  if(r.error){$("relout").innerHTML=`<span class="muted">${r.error}</span>`;return;}
+  $("relout").innerHTML="<table><tr><th>role</th><th>"+$("rel_a").value+"</th><th>"+$("rel_b").value+"</th><th></th></tr>"+
+    r.explain.map(e=>`<tr><td>${e.role}</td><td>${e.a}</td><td>${e.b}</td><td>${e.shared?'<span style="color:var(--green)">SHARED</span>':'<span class="muted">differs</span>'}</td></tr>`).join("")+"</table>";
+}
+async function relFind(){
+  const r=await post("/api/unified/relations",{op:"find",role:$("rel_role").value,value:$("rel_val").value});
+  if(r.error){$("relout").innerHTML=`<span class="muted">${r.error}</span>`;return;}
+  const rec=Object.entries(r.find.record).map(([k,v])=>`<span class="pill">${k}: ${v}</span>`).join(" ");
+  $("relout").innerHTML=`<b>${r.find.label}</b> holds ${$("rel_role").value}=${$("rel_val").value} (score ${r.find.score})<div style="margin-top:6px">${rec}</div>`;
+}
+async function relAsk(){
+  const v=$("rel_val").value;
+  const txt=$("rel_chain").value||"capital>currency, currency>language";
+  const hops=txt.split(",").map(h=>h.split(">").map(s=>s.trim())).filter(h=>h.length===2&&h[0]&&h[1]);
+  if(!hops.length){$("relout").innerHTML='<span class="muted">chain format: matchrole&gt;readrole, ...</span>';return;}
+  const r=await post("/api/unified/relations",{op:"ask",start:v,hops:hops});
+  if(r.error){$("relout").innerHTML=`<span class="muted">${r.error}</span>`;return;}
+  const path=hops.map(h=>`${h[0]}&rarr;${h[1]}`).join(" , ");
+  const a=r.ask;
+  const tp=a.throughput;
+  const bar=tp!=null?` <span class="muted">(throughput ${tp.toFixed(2)} &mdash; the ray's accumulated confidence; low means trust it less)</span>`:"";
+  const answer = a.answer==null
+    ? `<span style="color:#f0a0a0">abstained (throughput too low to trust)</span>`
+    : `<b style="color:var(--amber)">${a.answer}</b>`;
+  $("relout").innerHTML=`ask <b>${v}</b> through [${path}] &rarr; ${answer}${bar}`;
 }
 init();
 </script>

@@ -87,3 +87,164 @@ def test_compositional_separates_what_holistic_cannot():
     assert {(o["colour"], o["shape"]) for o in rec} == {("red", "circle"), ("blue", "rectangle")}
     # one holistic colour label can only name one of them
     assert sc.colour_tag(img) in ("red", "blue")
+
+
+def test_blend_scenes_projects_one_factor_across():
+    # SCENE-LEVEL PROJECTION: given two scene vectors (objects unknown), factor
+    # each, project one factor across (A's forms wearing B's colours), and
+    # recompose a NOVEL scene that factors back exactly. The full decompose ->
+    # project -> recompose loop through the resonator -- a scene neither input
+    # contained. Measured 100% across factors and 2-4 separable objects.
+    import numpy as np
+    from holographic_scene import SceneCoder, COLOURS, SHAPES, TEXTURES
+    sc = SceneCoder(dim=2048, seed=0)
+    rng = np.random.default_rng(0)
+
+    def distinct_scene(n):
+        # distinct shapes so the objects are separable for the resonator
+        shapes = list(rng.choice(SHAPES, n, replace=False))
+        return [{"colour": rng.choice(COLOURS), "shape": shapes[i],
+                 "texture": rng.choice(TEXTURES)} for i in range(n)]
+
+    for project in ("colour", "shape", "texture"):
+        ok = 0
+        for _ in range(8):
+            A, B = distinct_scene(3), distinct_scene(3)
+            vecBlend, blended = sc.blend_scenes(sc.encode_scene(A), sc.encode_scene(B),
+                                                3, project=project)
+            out = sc.factor_scene(vecBlend, 3)
+            got = sorted((o["colour"], o["shape"], o["texture"]) for o in out)
+            want = sorted((o["colour"], o["shape"], o["texture"]) for o in blended)
+            ok += (got == want)
+        assert ok >= 7                                # >=7/8 (resonator capacity)
+        # and the projected factor really came from B
+        A = [{"colour": "red", "shape": "circle", "texture": "smooth"},
+             {"colour": "cyan", "shape": "rectangle", "texture": "busy"}]
+        B = [{"colour": "blue", "shape": "triangle", "texture": "vertical"},
+             {"colour": "green", "shape": "line", "texture": "horizontal"}]
+        _, blended = sc.blend_scenes(sc.encode_scene(A), sc.encode_scene(B), 2,
+                                     project=project)
+        # each blended object keeps A's other two factors, takes B's projected one
+        assert all(o[project] in [b[project] for b in B] for o in blended)
+
+
+def test_morph_scenes_is_ordered_coherent_frames():
+    # MORPH SEQUENCE: projection unfolded over time. A continuous attribute blend
+    # is impossible (the cleanup law makes it crossfade-with-snap), so the honest
+    # morph is a sequence of discrete COHERENT frames -- objects adopt B's
+    # attribute one at a time, every frame factors EXACTLY, frame 0 is A and the
+    # last has B's full pattern.
+    from holographic_scene import SceneCoder
+    sc = SceneCoder(dim=2048, seed=0)
+    A = [{"colour": "red", "shape": "circle", "texture": "smooth"},
+         {"colour": "red", "shape": "rectangle", "texture": "busy"},
+         {"colour": "red", "shape": "triangle", "texture": "horizontal"}]
+    B = [{"colour": "blue", "shape": "circle", "texture": "smooth"},
+         {"colour": "green", "shape": "rectangle", "texture": "busy"},
+         {"colour": "cyan", "shape": "triangle", "texture": "horizontal"}]
+    frames = sc.morph_scenes(sc.encode_scene(A), sc.encode_scene(B), 3)
+    assert len(frames) == 4                            # n+1 frames
+    # every frame factors back exactly (each is a coherent scene)
+    for f in frames:
+        rec = sc.factor_scene(sc.encode_scene(f), 3)
+        got = sorted((o["colour"], o["shape"], o["texture"]) for o in rec)
+        want = sorted((o["colour"], o["shape"], o["texture"]) for o in f)
+        assert got == want
+    # flip-count increases monotonically (0 -> n): a genuine ordered progression
+    flips = [sum(1 for o in f if o["colour"] != "red") for f in frames]
+    assert flips == sorted(flips) and flips[0] == 0 and flips[-1] == 3
+
+
+def test_morph_sequence_passes_sequentiality_test():
+    # INTEGRATION: projection generates the frames, sequence-discovery confirms
+    # the order. The morph as a token sequence (flip-count per frame) is genuinely
+    # ordered and passes the permutation test; a shuffle does not.
+    import numpy as np
+    from holographic_scene import SceneCoder
+    from holographic_sequence import sequentiality_z
+    from holographic_ai import Vocabulary
+    sc = SceneCoder(dim=2048, seed=0)
+    A = [{"colour": "red", "shape": s, "texture": "smooth"}
+         for s in ("circle", "rectangle", "triangle", "line")]
+    B = [{"colour": c, "shape": s, "texture": "smooth"}
+         for c, s in zip(("blue", "green", "cyan", "magenta"),
+                         ("circle", "rectangle", "triangle", "line"))]
+    frames = sc.morph_scenes(sc.encode_scene(A), sc.encode_scene(B), 4)
+    seq = [f"step{sum(1 for o in fr if o['colour'] != 'red')}" for fr in frames]
+    v = Vocabulary(1024, seed=0)
+    assert sequentiality_z([seq] * 8, v) > 2.0         # ordered
+    shuffled = [list(np.random.default_rng(i).permutation(seq)) for i in range(8)]
+    assert sequentiality_z(shuffled, v) < 2.0          # shuffle is not
+
+
+def test_count_objects_is_self_discovered():
+    # CARDINALITY IS SELF-MEASURED: the scene is an unnormalised superposition of
+    # near-orthogonal unit products, so round(||v||^2) IS the object count -- the
+    # design decision made for explain-away pays off again. No one tells the
+    # system n.
+    import numpy as np
+    from holographic_scene import SceneCoder, COLOURS, SHAPES, TEXTURES
+    sc = SceneCoder(dim=2048, seed=0)
+    rng = np.random.default_rng(1)
+
+    def rand_scene(n):
+        picks, objs = set(), []
+        while len(objs) < n:
+            o = (rng.choice(COLOURS), rng.choice(SHAPES), rng.choice(TEXTURES))
+            if o not in picks:
+                picks.add(o)
+                objs.append({"colour": o[0], "shape": o[1], "texture": o[2]})
+        return objs
+
+    ok = tot = 0
+    for n in range(1, 6):
+        for _ in range(8):
+            ok += (sc.count_objects(sc.encode_scene(rand_scene(n))) == n)
+            tot += 1
+    assert ok >= tot - 2                              # ~96% measured; tiny slack
+
+
+def test_scene_vector_is_algebraically_editable():
+    # The scene VECTOR is a directly editable structure: removing an object is
+    # subtracting its factored product (explain-away as an editor), adding is
+    # adding a product -- no re-encoding. Count tracks every edit.
+    from holographic_scene import SceneCoder
+    sc = SceneCoder(dim=2048, seed=0)
+    A = [{"colour": "red", "shape": "circle", "texture": "smooth"},
+         {"colour": "cyan", "shape": "rectangle", "texture": "busy"},
+         {"colour": "grey", "shape": "triangle", "texture": "horizontal"}]
+    v = sc.encode_scene(A)
+    v = sc.remove_object(v, {"shape": "triangle"})
+    assert sc.count_objects(v) == 2
+    v = sc.add_object(v, {"colour": "magenta", "shape": "line", "texture": "busy"})
+    assert sc.count_objects(v) == 3
+    rec = sc.factor_scene(v, 3)
+    shapes = sorted(o["shape"] for o in rec)
+    assert shapes == ["circle", "line", "rectangle"]   # triangle gone, line added
+    import pytest
+    with pytest.raises(ValueError):
+        sc.remove_object(v, {"shape": "triangle"})     # honest: can't remove absent
+
+
+def test_morph_cardinality_changes_count_per_frame():
+    # CARDINALITY MORPH: scene A (3 objects) -> scene B (2 objects) as a chain of
+    # algebraic edits, one per frame. Every frame's count is DISCOVERED from its
+    # own norm and the frame factors exactly at that count; the last frame holds
+    # exactly scene B.
+    from holographic_scene import SceneCoder
+    sc = SceneCoder(dim=2048, seed=0)
+    A = [{"colour": "red", "shape": "circle", "texture": "smooth"},
+         {"colour": "cyan", "shape": "rectangle", "texture": "busy"},
+         {"colour": "grey", "shape": "triangle", "texture": "horizontal"}]
+    B = [{"colour": "blue", "shape": "line", "texture": "vertical"},
+         {"colour": "green", "shape": "circle", "texture": "busy"}]
+    frames = sc.morph_cardinality(sc.encode_scene(A), sc.encode_scene(B))
+    counts = [sc.count_objects(f) for f in frames]
+    assert counts == [3, 2, 1, 1, 2]                   # remove, remove, swap, add
+    for fv, n in zip(frames, counts):
+        rec = sc.factor_scene(fv, n)
+        assert len(rec) == n                           # coherent at discovered n
+    rec = sc.factor_scene(frames[-1], 2)
+    got = sorted((o["colour"], o["shape"], o["texture"]) for o in rec)
+    want = sorted((o["colour"], o["shape"], o["texture"]) for o in B)
+    assert got == want                                 # arrives exactly at B
