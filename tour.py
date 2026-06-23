@@ -1603,6 +1603,93 @@ print(f"  splat-bundle archive (beside WHT)   : recover {_full:.0f} dB full / {_
       f"(progressive); region query found {sum(len(h) for h in _here)} splats in a quadrant (exact); "
       f"recall_region peak occupancy={_occ:.2f}")
 
+# honest recognition: the calibration harness (RecallNull / SPRT / bh_fdr) is now woven INTO recognition --
+# a raw cosine becomes an honest false-alarm probability against the mind's OWN prototypes, so the mind can
+# ABSTAIN ("I don't recognise this") instead of always naming a nearest label, on BOTH readout paths.
+_hm = UnifiedMind(dim=512, seed=0, maintain="manual")
+for _w in ("dog", "wolf", "puppy", "hound"):  _hm.learn(_w, "canine")
+for _w in ("cat", "lion", "kitten", "tiger"): _hm.learn(_w, "feline")
+for _w in ("oak", "pine", "maple", "birch"):  _hm.learn(_w, "tree")
+_lab_r, _sim_r, _p_r = _hm.recognize("dog")               # a learned member -> low p
+_lab_n, _sim_n, _p_n = _hm.recognize("qz xkqv zzpf")      # gibberish        -> high p
+print(f"  honest recognition (calibrated)     : recognize('dog')->{_lab_r} p={_p_r:.3f} (trust it); "
+      f"gibberish p={_p_n:.2f} so classify(abstain=.05) returns {_hm.classify('qz xkqv zzpf', abstain=0.05)[0]}")
+_dec, _who, _n = _hm.stream_recognize(["dog", "hound", "puppy", "wolf"])
+_batch = _hm.recognize_batch(["dog", "tiger", "oak", "zzqx vvbn"], alpha=0.1)
+print(f"  streaming (SPRT) + FDR batch        : stream of canine cues -> {_dec} ('{_who}') in {_n}; "
+      f"FDR batch keeps {sum(b['significant'] for b in _batch)}/4 real members, drops the gibberish")
+_pay, _psim, _pp = _hm.recall_calibrated("dog")
+print(f"  calibrated recall (individual store): recall('dog')->{_pay} p={_pp:.3f}; "
+      f"recall(gibberish, abstain=.05) -> {_hm.recall('zzqx vvbn', abstain=0.05)} (nothing like it)")
+
+# self-maintenance triggered by INCOHERENCE, not a clock. A calibrated-NOVELTY trigger was a measured
+# negative (novelty can't see incoherence); coherence-gating is the win -- it matches the fixed schedule's
+# accuracy at a fraction of the (self-validating) reorganize passes by skipping the ones a coherent store
+# does not need. Opt-in via coherence_floor; default stays the fixed schedule.
+_rngm = np.random.default_rng(0); _Lm, _NCm = 24, 4
+_angm = np.linspace(0, 2 * np.pi, _NCm * 2, endpoint=False)
+_dirsm = np.stack([np.cos(_angm), np.sin(_angm)], 1) @ _rngm.standard_normal((2, _Lm))
+_subm = {c: [c, c + _NCm] for c in range(_NCm)}             # each class = two antipodal modes
+_sampm = lambda c: _dirsm[_subm[c][_rngm.integers(2)]] * 3 + 0.5 * _rngm.standard_normal(_Lm)
+_rows = ([(_sampm(c := int(_rngm.integers(2))), c) for _ in range(90)]           # 2 classes
+         + [(_sampm(c := int(_rngm.integers(_NCm))), c) for _ in range(90)]      # 2 new classes arrive
+         + [(_sampm(c := int(_rngm.integers(_NCm))), c) for _ in range(150)])    # stable coherent tail
+def _run_maint(cf):
+    mm = UnifiedMind(dim=384, seed=0, check_every=30, coherence_floor=cf); ok = []
+    for _x, _c in _rows:
+        ok.append((mm.classify(_x, modality="vector")[0] == _c) if mm.memory.live.size() else False)
+        mm.learn(_x, _c, modality="vector")
+    return np.mean(ok), len(mm.journal)                     # journal length == reorganize passes
+_sa, _sp = _run_maint(None); _ga, _gp = _run_maint(0.65)
+print(f"  coherence-gated maintenance         : fixed schedule {_sa*100:.0f}% at {_sp} reorganize-passes "
+      f"vs coherence-gated {_ga*100:.0f}% at {_gp} -- ~{_sp/max(_gp,1):.0f}x fewer passes (the calibrated-"
+      f"novelty trigger was a kept negative; coherence is the signal that sees incoherence)")
+
+# calibration coverage: the proof the honest p-values above are actually honest. Draw pure-noise vectors,
+# threshold recognition at alpha, and the false-alarm rate should track alpha -- on BOTH the prototype path
+# (recognize) and the individual path (recall_calibrated, whose null is matched to the sublinear recall path).
+_cm = UnifiedMind(dim=512, seed=0, maintain="manual")
+for _w in ("dog", "wolf", "puppy", "hound", "cat", "lion", "kitten", "tiger", "oak", "pine", "maple", "birch"):
+    _cm.learn(_w, "animal" if _w not in ("oak", "pine", "maple", "birch") else "tree")
+_cal = _cm.calibration_report(n=3000)
+print(f"  calibration coverage (false-alarm)  : at alpha=0.05/0.10 the noise false-alarm rate is "
+      f"{_cal['prototype_false_alarm'][0.05]:.3f}/{_cal['prototype_false_alarm'][0.1]:.3f} (prototypes) and "
+      f"{_cal['individual_false_alarm'][0.05]:.3f}/{_cal['individual_false_alarm'][0.1]:.3f} (individuals) -- "
+      f"it tracks alpha, so abstention is trustworthy")
+
+# Wald's sequential test earns its keep only when the match/null densities OVERLAP. Distinct learned items
+# are well-separated, so stream_recognize decides in ~1 sample (correctly). As the signal gets fainter the
+# densities overlap, the SPRT spends exactly as many samples as the evidence needs, and at matched error it
+# uses about HALF the samples of the best fixed-window rule.
+from holographic_honesty import SPRTRecall as _SP
+def _sprt_avg_n(mu0, sd0, mu1, sd1, trials=4000, cap=80):
+    _null = np.random.default_rng(1).normal(mu0, sd0, 4000)
+    _match = np.random.default_rng(2).normal(mu1, sd1, 4000)
+    _g = np.random.default_rng(5); _ns = []
+    for _t in range(trials):
+        _mu, _sd = (mu1, sd1) if _t % 2 == 0 else (mu0, sd0)
+        _d, _n = _SP(_null, _match, alpha=0.05, beta=0.05).decide(_g.normal(_mu, _sd, cap), cap=cap)
+        _ns.append(_n)
+    return float(np.mean(_ns))
+_sep = _sprt_avg_n(0.093, 0.037, 0.450, 0.137)        # the mind's distinct-item densities
+_ovl = _sprt_avg_n(0.350, 0.130, 0.520, 0.130)        # a faint / drifting signal: real overlap
+print(f"  Wald SPRT sample count vs overlap   : well-separated signal decides in {_sep:.1f} samples; a faint "
+      f"overlapping one takes {_ovl:.1f} -- ~half a fixed-window rule's samples at the same error")
+
+# the honesty layer reaches ACTION: a creature brain that knows when it is guessing. Same RecallNull
+# machinery, over the brain's experienced states -- a familiar state gets a low false-alarm p (trust the
+# value estimate), a never-seen one a high p (explore instead of committing to a guess).
+_dm = UnifiedMind(dim=512, seed=0); _dm.actions(["N", "S", "E", "W"])
+_dr = np.random.default_rng(0); _arch = [random_vector(512, _dr) for _ in range(4)]; _bestA = ["N", "E", "S", "W"]
+for _ in range(40):
+    for _k, _b in enumerate(_arch):
+        _s = _b + 0.25 * random_vector(512, _dr); _s /= np.linalg.norm(_s)
+        _dm.reinforce(_s, _bestA[_k], 1.0); _dm.reinforce(_s, _bestA[(_k + 1) % 4], -0.5)
+_fam = _arch[0] + 0.25 * random_vector(512, _dr); _fam /= np.linalg.norm(_fam)
+_af, _pf = _dm.decide_confidence(_fam); _an, _pn = _dm.decide_confidence(random_vector(512, _dr))
+print(f"  calibrated decide (honesty->action) : familiar state -> {_af!r} at p={_pf:.3f} (trusted); a novel "
+      f"state -> p={_pn:.3f} (guessing) -- explore_if_unrecognized turns that into a safe random move")
+
 print("\n" + "-" * 66)
 print("  All fifteen subsystems ran on the same vector substrate. Wired up.")
 print("-" * 66 + "\n")

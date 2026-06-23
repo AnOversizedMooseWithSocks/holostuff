@@ -4354,3 +4354,182 @@ THE COMMON THREAD (the part worth keeping): both phrases name the move the engin
 representation where the hard thing becomes a downhill walk (log turns x into +, KLT decorrelates, the
 Hopfield energy turns recall into descent). They are good descriptions of the design, not new leverage over
 it. Measured, written down, moved on.
+
+## Honesty woven into recognition -- calibrated confidence + abstention as CORE (shipped)
+
+The honesty layer (holographic_honesty: RecallNull / SPRTRecall / bh_fdr) was a standalone MEASUREMENT
+harness -- the tour, the tests and holographic_ablate.py called it to VALIDATE the engine, but the mind
+itself never used it. It is now part of how the UnifiedMind RECOGNISES, on both readout paths.
+
+The move it encodes: a raw recall cosine means nothing on its own (radio-SETI and particle physics live by
+this) -- you ask how high pure NOISE reaches against THIS codebook before believing a match. RecallNull
+draws random unit queries against the mind's own prototypes and records the best cosine each reaches; that
+empirical null IS the noise floor, and pvalue(score) = the fraction of noise reaching `score` or higher =
+the honest false-alarm probability. Small p: trust the recall. Large p: ABSTAIN.
+
+Wired (all auto-maintained on the mind's OWN data -- no external calibration set, no new persisted state):
+  * _recognition_null  -- a RecallNull over the class PROTOTYPE codebook (memory.live._stack()), rebuilt
+    only when the prototype set changes (keyed on the store mutation counter _gen), so steady state is free.
+  * recognize(x)       -- CORE calibrated recognition: (label, similarity, pvalue).
+  * classify(x, abstain=alpha) -- the label only if p <= alpha, else (None, sim). Default abstain=None
+    preserves the original always-name-a-nearest-label behaviour EXACTLY (the (label, score) tuple shape is
+    unchanged), so every existing caller is untouched.
+  * recall_calibrated / recall(x, abstain) -- the SAME treatment for the INDIVIDUAL store (a _recall_null
+    over a capped sample of self._recall.vecs), so BOTH memory readouts can say "I have nothing like this".
+    (Exact-scan winner -- on a large store it can name a truly-nearest item the sublinear forest misses --
+    and the capped sample is a documented under-estimate of the true floor.)
+  * stream_recognize(cues) -- Wald's SPRT over a stream of cues bearing on the same thing; null density =
+    the mind's noise floor, match density = its own examples' self-similarity (the quantity coherence()
+    reads). Decides MATCH / REJECT as fast as the evidence allows.
+  * recognize_batch(queries) -- bh_fdr (Benjamini-Hochberg/Yekutieli) over the per-query p-values, so
+    scanning many queries cannot manufacture matches by luck (the look-elsewhere discipline).
+
+MEASURED (dim 512, three single-token text classes): a learned member recognises at p=0.000; gibberish at
+p~0.5 so classify(abstain=.05) returns None; the SPRT stream of canine cues decides MATCH in 1 sample
+(well-separated densities); the FDR batch keeps the 3 real members and drops the gibberish; recall abstains
+on an unseen query. KEPT NEGATIVE / scope: single-token text only matches what was literally learned (no
+co-occurrence), so an UNLEARNED synonym like 'terrier' is correctly noise to this mind -- the honesty layer
+flags it, which is the point, not a failure to generalise.
+
+AUDIT (the second half of the task -- is anything else "just a callable method" that should be core?).
+Enumerated all 103 public UnifiedMind methods. Finding: honesty was the ONE cross-cutting *property* (vs
+*operation*) that belonged in the core, and it is now there, on both readouts. The rest fall into two
+groups, both correctly placed:
+  * the core loop itself (perceive / learn / classify / recall / recognize / decide / reinforce / save), and
+  * on-demand TRANSFORMATIONS (decompose_signal, denoise, fit_function, decompose_structure,
+    factor_composite, chain/decode_structure, solve_maze, assemble, learn_dynamics, generate_vector,
+    splat_field/archive, typed_structure, compose/decompose scene/nested, blend, ...). These are things you
+    INVOKE, not background properties of recognition; forcing them into the core loop is the "a faculty must
+    earn its method" anti-pattern the integration plan warns against.
+denoise is DELIBERATELY standalone for a MEASURED reason (integration plan section 6): a denoiser fed a
+recall output dropped cosine 0.13 -> -0.06 -- a shared kernel is not a shared manifold -- so chaining it
+into recall REGRESSES. ONE opportunity is flagged, NOT forced: the calibrated null could replace the
+organizer's fixed-floor novelty(0.35) and DRIVE reorganization (reorganize when calibrated-novel inputs
+accumulate, not on a fixed schedule). That is a change to AUTONOMOUS behaviour and needs its own measurement
+plus a design decision (the learn buffer has a prototype-formation lag), so it is recorded here as a
+measured follow-up rather than wired blind.
+
+Tests: +4 honesty integration tests through the mind (recognize calibrated + classify abstain; SPRT stream
+MATCH vs REJECT; FDR-controlled batch; recall abstains on unseen). 701 -> 705.
+
+## Reorganize when INCOHERENT, not on a clock -- a kept negative (calibrated novelty) and a win (coherence gate) (shipped)
+
+The audit that wove honesty into recognition flagged ONE opportunity it did not take blindly: the
+calibrated noise floor could DRIVE reorganization -- reorganize when calibrated-novel inputs arrive,
+not on a fixed schedule. "Build it and let's find out", so this is the measured outcome.
+
+Setup (exp_calibrated_maintain.py, scratch -- not shipped). A prequential stream where reorganization
+genuinely matters: each class is two ANTIPODAL modes on a circle, so the class centroid collapses and the
+single (blurry) prototype online `add` keeps is useless -- only a SPLIT (auto_reorganize's job) classifies
+it. Two new classes arrive mid-stream, so a trigger's RESPONSIVENESS shows up in post-shift accuracy. The
+honest frame: auto_reorganize is SELF-VALIDATING (it holds out recent data, tries k=1..4, adopts the best,
+defaults "keep"), so running it never hurts accuracy -- it only costs compute. The question is therefore
+the accuracy-vs-COST frontier: hold accuracy with FEWER expensive passes.
+
+NEGATIVE (the flagged idea). A calibrated-NOVELTY trigger does NOT work. 8 seeds: 75.5+/-9.5% overall,
+46.9+/-6.4% on the new classes -- the FLOOR -- at 3.4 passes. It fires rarely and ineffectively because
+NOVELTY detects "matches nothing", but online `add` always leaves SOMETHING to match, so the signal stays
+low even when the store badly needs reorganizing. And CALIBRATION added nothing over the organizer's fixed
+cosine floor (novelty(0.35)): both sat at the ~45% floor. The value of reorganizing here is fixing
+INCOHERENCE, which novelty cannot see -- a standing property, not a new-thing-arriving event.
+
+WIN (what the negative pointed to). COHERENCE -- mean similarity of recent inputs to their own prototype --
+IS the signal. A coherence-gated trigger (reorganize when coherence drops below a floor) gets, 8 seeds,
+85.5+/-1.6% overall at 5.8 passes: it BEATS the comparable fixed schedule (k=80: 82.9% at 8.0 passes) on
+BOTH accuracy and cost, and matches the best schedule (k=40: 86.8% at 16.0 passes) at about a THIRD of its
+passes -- by reorganizing only when the store is actually incoherent and skipping the passes a coherent
+store does not need.
+
+Wired into UnifiedMind as an OPT-IN coherence_floor (default None -> the original fixed schedule, so every
+existing test is untouched). One subtlety that mattered: the gate must read a RESPONSIVE coherence window --
+the default window=400 is too smooth to register a mid-stream shift (it left the gate stuck at the 44%
+floor), so the gate reads coherence(window=check_every), checked EVERY observation, with a cooldown of
+check_every//2. MIND-LEVEL verification (dim 512, check_every=40, 4 seeds) replicates the organizer result:
+schedule 86.6% overall / 88.7% new at 16 passes; coherence gate 86.2% / 78.2% at 6.2 passes -- the SAME
+overall accuracy at ~1/3 the passes (the gate is slightly less aggressive on the brand-new classes, but
+stays well above the floor). The right floor is DATA-DEPENDENT (the coherence scale moves with dimension
+and class structure), so it is a parameter, not a constant -- the kept caveat.
+
+Tests: +2 (coherence gate reorganizes fewer times than the schedule at comparable accuracy and above the
+never-reorganize floor; coherence_floor round-trips through save/reload). 705 -> 707.
+
+## Tier-0 panel fixes: sublinear+calibrated recall, a procedure-matched null, rd-in-auto, calibration coverage (shipped)
+
+The panel reviewed the live mind and asked first for FIXES to what the honesty/coherence work had just added,
+not new features. Four landed.
+
+1. recall_calibrated was sublinear-DEFEATING (Pharr). It did its own exact O(n) scan for the winner, throwing
+away the HoloForest the recall path uses. Now the winner comes through recall() itself -- the sublinear forest
+on a big store, the exact scan on a small one -- so honest abstention costs nothing the acceleration structure
+did not already cost. Verified: on a 5000-item store the null fit + recall stays ~1s (forest), and
+recall_calibrated now returns the SAME winner and score as recall().
+
+2. The recall null was ANTI-CONSERVATIVE (Cranmer). It was a RecallNull fit on a capped SAMPLE of the
+individuals (max-over-sample < max-over-all), which under-estimates the floor and inflates false matches.
+Replaced with a PROCEDURE-MATCHED null: draw random unit queries, run them through the SAME recall path, and
+take the score distribution that produces. Calibrated by construction (the null IS what noise scores under the
+real procedure) and it inherits the procedure's sublinearity. The earlier "documented under-estimate" is gone,
+not just noted.
+
+3. A calibration COVERAGE diagnostic (Cranmer). calibration_report(n) draws pure-noise vectors and reports the
+empirical false-alarm RATE -- the fraction whose p-value falls at or below each alpha -- on both readout paths.
+MEASURED: at alpha 0.01/0.05/0.10/0.20 the prototype path fires at 0.008/0.059/0.098/0.200 and the individual
+path at 0.008/0.062/0.093/0.200 -- it tracks alpha, so thresholding at alpha holds the false-alarm rate at
+alpha. This is the radio-SETI / HEP coverage check, run on the mind's own geometry, and the proof that the
+abstention the honesty layer added is trustworthy.
+
+4. The mind's default save now uses B5 where it helps (Duda). B5's rate-distortion code was in the kernel but
+only reachable via quant='rd'; the default 'auto' never asked for it. Now 'auto' itself tries the
+rate-distortion code for LARGE low-rank 2D arrays (>= 256 rows), taking it only when it beats int8 and only
+because it preserves cosines to 0.9999 (tighter than int8's ~0.998, so it fits auto's decision-safe contract).
+Small minds are untouched (rd needs >= 256 rows); a 512x256 rank-8 array drops to ~200 bits/vector vs int8's
+2048 (~10x) and round-trips at >= 0.999 row-cosine. The mind's default save now uses the rate-distortion code
+automatically wherever the state is genuinely low-rank.
+
+Tests: +4 (recall_calibrated agrees with recall and can abstain; recognition p-values are calibrated on noise
+for both paths; auto picks rd for a large low-rank array and round-trips decision-safe; the mind's default save
+round-trips classify-identical). 707 -> 711.
+
+## Honesty reaches action; the SPRT's real regime; an auto coherence floor (shipped)
+
+Three pieces: the flagship carries the calibrated-recognition idea from PERCEPTION into the decision brain
+(Togelius's seat -- an agent that knows when it is guessing), plus two Tier-0 finishers.
+
+1. Calibrated decide (Togelius). The creature brain already returns a `support` from value() -- the best cosine
+the current state reaches against an action's prototypes -- and used a HAND-SET absolute `blind_floor` on it,
+the same uncalibrated-threshold problem the coherence floor had. decide_confidence(state) now turns that raw
+support into a false-alarm p-value via a PROCEDURE-MATCHED brain null (_brain_null: run the brain's own value()
+on random unit states, take the best-support distribution -- calibrated by construction, value() used as a
+black box). It returns (action, pvalue): p small means the brain has genuinely been somewhere like here and the
+value estimate can be trusted; p large means it is guessing. decide(..., explore_if_unrecognized=alpha) makes
+that actionable -- when p > alpha the value estimate is built on nothing, so take a safe random move among the
+allowed actions instead of committing. MEASURED: a familiar state -> the learned-good action at p=0.000; a
+never-seen state -> p=0.300; the brain null is calibrated on noise (false-alarm 0.066/0.113 at alpha 0.05/0.10);
+explore_if_unrecognized=0.1 spreads a novel state's action ~uniformly (guessing) while a familiar state stays
+locked on its trusted action. This is the honesty layer's RecallNull machinery, over the brain's experienced
+states instead of perceptual prototypes -- and it replaces the hand-set blind_floor with a calibrated one.
+
+2. The SPRT's real regime (a Tier-0 demo finisher). Wald's sequential test was decribed as saving ~half a fixed
+window's samples, but the tour's distinct learned items are WELL-SEPARATED from noise, so stream_recognize
+decides in ~1 sample -- correctly (decide as fast as the evidence allows). The sample-savings appear only when
+the match and null densities OVERLAP -- a faint or drifting signal. MEASURED across overlap regimes (matched
+error throughout): well-separated -> avg 1.1 samples, fixed-N needs 3 (~64% fewer); overlapping -> 2.2, fixed-N
+4 (~46% fewer); heavy overlap -> 4.4, fixed-N 10 (~56% fewer). On REAL noisy cues the count adapts the same way
+-- a clear sighting decides in 1, a borderline one spends up to 5. The honest framing: the SPRT is correctly
+decisive when the evidence is strong; its efficiency is a property of the OVERLAP regime, not a number to force
+on separated densities.
+
+3. An auto-calibrated coherence floor (a Tier-0 finisher). The opt-in coherence gate fired below a hand-set
+absolute level (0.65) that depends on dimension and structure. coherence_floor='auto' removes the absolute
+level: track recent coherence and reorganize when it drops below ~90% of its own recent PEAK -- a RELATIVE
+retention that transfers across data scales. Honestly, this trades an absolute parameter for a relative one,
+not for nothing; but the relative one needs no per-dataset retuning. MEASURED (6 seeds, the antipodal-bimodal
+shift stream): fixed schedule 81.1% at 11.0 passes; hand-set 0.65 -> 80.0% at 6.5; AUTO -> 82.1% at 6.7;
+never-reorganize 48.5% (the floor). AUTO matches the hand-set floor's accuracy-vs-cost with no absolute
+threshold. The 'auto' sentinel round-trips through save/load like a numeric floor; the baseline resets after a
+reorganize because the store has changed.
+
+Tests: +5 (decide_confidence low for familiar / high for novel; the brain recognition null is calibrated on
+noise; explore_if_unrecognized guesses randomly on novel states and commits on familiar; the SPRT spends more
+samples as densities overlap and beats fixed-N at matched error; the auto coherence floor matches the hand-set
+floor without an absolute threshold and round-trips). 711 -> 716.

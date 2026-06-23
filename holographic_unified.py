@@ -53,11 +53,24 @@ class UnifiedMind:
     _FORMAT_CORPUS_CAP = 40000     # chars per sub-format kept for fitting the gate
 
     def __init__(self, dim=1024, seed=0, number_range=(-4.0, 4.0), maintain='auto',
-                 check_every=60, text_window=2):
+                 check_every=60, text_window=2, coherence_floor=None):
         self.dim = dim
         self.seed = seed                   # remembered for owned faculties (scene, morph)
         self.maintain = maintain
         self.check_every = check_every
+        # OPT-IN coherence-gated maintenance (default None -> the original fixed schedule). When set,
+        # the mind runs the (self-validating) reorganize pass only when its store has gone INCOHERENT
+        # -- mean similarity of recent inputs to their own prototype drops below this floor -- rather
+        # than on a fixed clock. MEASURED: on a multi-modal stream with a mid-stream class shift this
+        # matched the best fixed schedule's accuracy at ~1/3 the reorganize passes, because it skips
+        # the passes a coherent store does not need. (KEPT NEGATIVE from the same study: a calibrated
+        # NOVELTY trigger -- the originally-flagged idea -- does NOT work here; novelty detects "matches
+        # nothing", but the value of reorganizing is fixing incoherence, which novelty cannot see, and
+        # calibration added nothing over a fixed cosine floor.) The right floor is data-dependent (the
+        # coherence scale moves with dimension and class structure), so it is a parameter, not a constant.
+        self.coherence_floor = coherence_floor
+        self._last_reorg = 0               # taught-count at the last reorganize (the gate's cooldown)
+        self._coh_hist = []                # recent coherence readings (the 'auto' floor's relative baseline)
         # ONE perception, shared by everything below
         self.encoder = UniversalEncoder(dim, seed=seed, number_range=number_range,
                                         text_window=text_window)
@@ -353,11 +366,38 @@ class UnifiedMind:
                 raw = x if isinstance(x, str) else " ".join(str(t) for t in x)
                 self._format_corpus[modality] = (cur + " " + raw)[:self._FORMAT_CORPUS_CAP]
         self._taught += 1
-        if self.maintain == 'auto' and self._taught % self.check_every == 0:
-            self._reorganize_and_narrate()
+        if self.maintain == 'auto':
+            if self.coherence_floor is None:
+                if self._taught % self.check_every == 0:
+                    self._reorganize_and_narrate()          # original FIXED SCHEDULE (default, unchanged)
+            # coherence-GATED: checked EVERY observation over a RESPONSIVE window (so a distribution
+            # shift actually moves the signal -- the default window=400 is too smooth to see one), and
+            # reorganize only when the store is incoherent, with a cooldown to avoid thrashing. Skips the
+            # passes a coherent store does not need. (Window/cooldown scale with check_every; measured to
+            # match the best fixed schedule's accuracy at a fraction of its passes.)
+            elif self.coherence_floor == 'auto':
+                # AUTO floor: no hand-set coherence LEVEL. Track recent coherence and reorganize when it
+                # drops below ~90% of its own recent PEAK -- a RELATIVE retention that transfers across data
+                # scales (dim, structure) where an absolute 0.65 does not, rather than a constant. (Honestly:
+                # this trades an absolute parameter for a relative one, not for nothing -- but the relative
+                # one needs no per-dataset retuning.) Cooldown and warm-up as for the fixed floor; the
+                # baseline resets after a reorganize because the store has changed.
+                coh = self.memory.coherence(window=self.check_every)
+                self._coh_hist.append(coh)
+                if len(self._coh_hist) > 40:
+                    self._coh_hist.pop(0)
+                if len(self._coh_hist) >= 8 and (self._taught - self._last_reorg) >= max(20, self.check_every // 2) \
+                        and coh < 0.90 * max(self._coh_hist):
+                    self._reorganize_and_narrate()
+                    self._last_reorg = self._taught
+                    self._coh_hist = [coh]                   # store changed: rebuild the baseline
+            elif (self._taught - self._last_reorg) >= max(20, self.check_every // 2) and \
+                    self.memory.coherence(window=self.check_every) < self.coherence_floor:
+                self._reorganize_and_narrate()
+                self._last_reorg = self._taught
         return self
 
-    def classify(self, x, modality=None, route=True):
+    def classify(self, x, modality=None, route=True, abstain=None):
         """Nearest self-organized prototype. If `route` is on, the query competes only
         against its own modality's concepts -- a cheap router that removes the
         cross-modal interference a single flat store can otherwise suffer (a text
@@ -377,7 +417,16 @@ class UnifiedMind:
           and recovered declared-tag accuracy (61%) exactly. Routing's GAIN over
           a flat scan stayed zero on that data (the bag-of-token vectors already
           separate docs from code) -- the safeguard story again, now one level
-          down."""
+          down.
+
+        With `abstain` set (a false-alarm level alpha), the label is returned only if it is
+        calibrated-significant -- p <= alpha against the mind's own noise floor (recognize) -- and None
+        otherwise (an honest 'I don't recognise this'). Default None preserves the original
+        always-name-a-nearest-label behaviour exactly."""
+        if abstain is not None:
+            label, sim, p = self.recognize(x, modality=modality, route=route)
+            # keep classify's (label, score) shape; None label is its existing 'no match' convention
+            return (label, sim) if (p == p and p <= abstain) else (None, sim)
         if modality is None:
             modality = self.encoder.infer(x)
             if modality == "text":
@@ -866,7 +915,7 @@ class UnifiedMind:
         agreement = raw_votes.count(winner) / max(1, len(raw_votes))
         return winner, round(agreement, 3)
 
-    def recall(self, x, modality=None):
+    def recall(self, x, modality=None, abstain=None):
         """Nearest stored individual. The index does an exact scan until the store is
         genuinely big, then switches to the recursive HoloForest (the crossover is
         measured -- see _Index.recall). A NEGATIVE worth recording here: wiring the
@@ -876,10 +925,175 @@ class UnifiedMind:
         senses were tuned on UNIFORM random vectors; the unified store is clustered
         (many near-duplicates per class), which miscalibrates the arrive/keep-moving
         instinct. So recall keeps the dumb-but-honest index, and the navigator stays
-        a study of adaptive access, not a default."""
+        a study of adaptive access, not a default.
+
+        With `abstain` set (a false-alarm level alpha), returns the recalled payload only if the match is
+        calibrated-significant (p <= alpha against the store's own noise floor, recall_calibrated) and None
+        otherwise -- an honest 'I have nothing like this'. Default None preserves the original behaviour."""
         if self._recall is None:
             raise RuntimeError("nothing learned yet -- call learn() first")
+        if abstain is not None:
+            payload, _sim, p = self.recall_calibrated(x, modality=modality)
+            return payload if (p == p and p <= abstain) else None
         return self._recall.recall(self.perceive(x, modality))
+
+    # -- honest recall: calibrated confidence + abstention, woven into recognition --------
+    # The honesty layer (RecallNull / SPRT / bh_fdr) was a standalone measurement harness; here it
+    # becomes part of how the mind RECOGNISES. A raw cosine means nothing on its own -- RecallNull asks
+    # how high pure noise reaches against THIS mind's own prototypes, turning a recall into an honest
+    # false-alarm probability (the radio-SETI / particle-physics 'prove it isn't an artifact of your own
+    # pipeline' discipline, calibrated to this mind's geometry). That p-value is what lets the mind
+    # ABSTAIN -- say 'I don't recognise this' -- instead of always returning a nearest label, and it
+    # upgrades the organizer's fixed-floor novelty heuristic to a calibrated one.
+    def _recognition_null(self, n_null=1200):
+        """Maintain a RecallNull over the CURRENT class-prototype codebook -- the mind's own noise floor.
+        Rebuilt only when the prototype set changes (keyed on the store's mutation counter _gen), so
+        steady-state recognition pays nothing. Returns None when nothing is learned yet."""
+        labels, mat = self.memory.live._stack()
+        if getattr(mat, "shape", (0,))[0] == 0:
+            return None
+        gen = getattr(self.memory.live, "_gen", 0)
+        cache = getattr(self, "_null_cache", None)
+        if cache is None or cache[0] != gen or cache[1] != mat.shape[0]:
+            from holographic_honesty import RecallNull
+            self._null_cache = (gen, mat.shape[0], RecallNull().fit(mat, n_null=n_null, seed=self.seed))
+        return self._null_cache[2]
+
+    def _resolve_modality(self, x, modality):
+        """The modality classify() uses: declared, or inferred (with text-like sub-format resolution)."""
+        if modality is None:
+            modality = self.encoder.infer(x)
+            if modality == "text":
+                modality = self._resolve_text_like(x)
+        return modality
+
+    def recognize(self, x, modality=None, route=True):
+        """CORE calibrated recognition. Like classify, but returns (label, similarity, pvalue): the
+        pvalue is the honest false-alarm probability -- the chance pure noise would match the mind's own
+        prototypes this well (RecallNull, calibrated to THIS mind). p small -> trust the label; p large ->
+        the input matches no learned class. This is the basis of honest abstention and of the calibrated
+        batch / streaming recognisers below."""
+        modality = self._resolve_modality(x, modality)
+        among = None
+        if route:
+            among = {lab for lab, m in self._label_modality.items() if m == modality} or None
+        scores = self.memory.live.label_scores(self.perceive(x, modality), among=among)
+        if not scores:
+            return (None, 0.0, 1.0)
+        label = max(scores, key=scores.get); sim = float(scores[label])
+        null = self._recognition_null()
+        p = float(null.pvalue(sim)) if null is not None else float("nan")
+        return (label, sim, p)
+
+    def _match_scores(self, window=600):
+        """Genuine-match score density: recent stored examples' cosine to their OWN label's prototype
+        (the quantity the organizer's coherence() reads). Feeds SPRT's match density from the mind's own
+        experience -- no external calibration data."""
+        recent = self.memory.buffer[-window:]
+        out = [float(max((p[2] @ v for p in self.memory.live._p if p[0] == label), default=0.0))
+               for v, label in recent]
+        out = [s for s in out if s > 0.0]
+        return np.asarray(out) if out else np.asarray([0.6])
+
+    def stream_recognize(self, cues, modality=None, alpha=0.05, beta=0.05, route=True, cap=None):
+        """Sequential recognition over a STREAM of cues bearing on the SAME thing (repeated noisy
+        sightings of a landmark, a drifting pattern). Accumulates each cue's best-match score with Wald's
+        SPRT and decides MATCH / REJECT the instant the evidence crosses a boundary -- the minimum expected
+        number of samples for the (alpha, beta) error pair (decide as fast as the evidence allows). Returns
+        (decision, recalled_label, n_samples_used). Null density = the mind's noise floor; match density =
+        its own examples' self-similarity."""
+        null = self._recognition_null()
+        if null is None:
+            raise RuntimeError("nothing learned yet -- call learn() first")
+        from holographic_honesty import SPRTRecall
+        sprt = SPRTRecall(null.null, self._match_scores(), alpha=alpha, beta=beta)
+        votes, scores = {}, []
+        for c in cues:
+            lab, sim, _p = self.recognize(c, modality=modality, route=route)
+            scores.append(sim)
+            if lab is not None:
+                votes[lab] = votes.get(lab, 0) + 1
+        decision, n = sprt.decide(scores, cap=cap)
+        return (decision, (max(votes, key=votes.get) if votes else None), n)
+
+    def recognize_batch(self, queries, modality=None, alpha=0.1, route=True):
+        """Recognise a BATCH honestly: classify each query, then control the FALSE-DISCOVERY RATE across
+        the batch with Benjamini-Hochberg/Yekutieli (bh_fdr) over the per-query false-alarm p-values.
+        Returns a list of {label, similarity, pvalue, significant}, where `significant` is True only for
+        recognitions that survive FDR at `alpha` -- so scanning many queries cannot manufacture matches by
+        luck (the look-elsewhere discipline applied to the mind's own recognition)."""
+        from holographic_honesty import bh_fdr
+        res = [self.recognize(q, modality=modality, route=route) for q in queries]
+        pvals = np.asarray([(p if p == p else 1.0) for (_l, _s, p) in res])
+        reject, _k = bh_fdr(pvals, alpha=alpha, dependent=True)
+        return [{"label": l, "similarity": s, "pvalue": p, "significant": bool(r)}
+                for (l, s, p), r in zip(res, reject)]
+
+    def _recall_null(self, n_null=800):
+        """The noise floor for 'have I stored anything actually like this?' -- and it is PROCEDURE-MATCHED:
+        it is fit by running the SAME recall path (recall() -- the sublinear forest on a big store, the exact
+        scan on a small one) on random unit queries and recording the score each reaches. Calibrated by
+        construction (the null IS the score distribution noise produces under the real procedure), and it
+        inherits recall()'s sublinearity, so it neither under-samples the store nor defeats the acceleration
+        structure -- the two problems the earlier exact-scan + sampled-null version had. Cached on store size.
+        Stored vectors and queries are unit length, so the index's dot is a cosine. Returns None if empty."""
+        if self._recall is None or not getattr(self._recall, "vecs", None):
+            return None
+        n = len(self._recall.vecs)
+        cache = getattr(self, "_recall_null_cache", None)
+        if cache is None or cache[0] != n:
+            rng = np.random.default_rng(self.seed)
+            Q = rng.standard_normal((n_null, self.dim))
+            Q /= np.linalg.norm(Q, axis=1, keepdims=True) + 1e-12
+            scores = np.array([self._recall.recall(q)[1] for q in Q])   # the actual recall path on noise
+            from holographic_honesty import RecallNull
+            rn = RecallNull(); rn.null = np.sort(scores)                 # reuse its searchsorted pvalue
+            self._recall_null_cache = (n, rn)
+        return self._recall_null_cache[1]
+
+    def recall_calibrated(self, x, modality=None):
+        """CORE calibrated recall: the nearest STORED INDIVIDUAL plus an honest false-alarm probability --
+        (payload, similarity, pvalue). p small -> the store really contains something like this; p large ->
+        it does not (abstain). The symmetric partner of recognize() (which calibrates the class PROTOTYPE
+        readout); recall(..., abstain=alpha) thresholds on it. The winner comes through recall() itself --
+        the sublinear HoloForest on a big store, the exact scan on a small one -- so honest abstention does
+        NOT cost the acceleration structure, and the null is matched to the same path (see _recall_null)."""
+        if self._recall is None or not getattr(self._recall, "vecs", None):
+            raise RuntimeError("nothing learned yet -- call learn() first")
+        q = self.perceive(x, modality)
+        qn = np.linalg.norm(q)
+        if qn > 0:
+            q = q / qn                                  # unit query: stored vecs are unit, so the dot is a cosine
+        payload, score = self._recall.recall(q)         # sublinear (forest) when big, exact when small
+        null = self._recall_null()
+        p = float(null.pvalue(float(score))) if null is not None else float("nan")
+        return payload, float(score), p
+
+    def calibration_report(self, n=2000, alphas=(0.01, 0.05, 0.1, 0.2), seed=12345):
+        """Validate that the false-alarm probabilities recognize() and recall_calibrated() report are
+        actually CALIBRATED. Draw `n` random unit vectors -- pure noise, matching nothing by construction --
+        score each against the mind's own prototypes (the recognize path) and its individual store (the
+        recall path), and report the empirical false-alarm RATE: the fraction whose p-value lands at or below
+        each alpha. A calibrated detector fires on noise at rate ~= alpha; materially above alpha is
+        anti-conservative (too many false matches), materially below is conservative. This is the radio-SETI
+        / particle-physics coverage check (does thresholding at alpha hold the false-alarm rate at alpha?),
+        run on the mind's own geometry -- and the validation that the procedure-matched recall null is not
+        the anti-conservative under-estimate the earlier sampled null was."""
+        rng = np.random.default_rng(seed)
+        pnull = self._recognition_null()
+        rnull = self._recall_null()
+        proto = self.memory.live._stack()[1] if pnull is not None else None
+        p_proto, p_indiv = [], []
+        for _ in range(n):
+            v = rng.standard_normal(self.dim); v /= np.linalg.norm(v) + 1e-12
+            if pnull is not None and proto is not None and proto.shape[0]:
+                p_proto.append(pnull.pvalue(float((proto @ v).max())))
+            if rnull is not None:
+                p_indiv.append(rnull.pvalue(float(self._recall.recall(v)[1])))
+        rates = lambda ps: {a: (float(np.mean(np.asarray(ps) <= a)) if ps else float("nan")) for a in alphas}
+        return {"n": int(n), "alphas": list(alphas),
+                "prototype_false_alarm": rates(p_proto),       # recognize() path: should track alpha
+                "individual_false_alarm": rates(p_indiv)}       # recall_calibrated() path: should track alpha
 
     # -- one decision brain, on the same substrate -------------------------
     def actions(self, names):
@@ -890,17 +1104,73 @@ class UnifiedMind:
         return self
 
     def decide(self, state, explore=False, epsilon=None, modality=None,
-               senses=None, avoid=("danger", "wall")):
+               senses=None, avoid=("danger", "wall"), explore_if_unrecognized=None):
         """Decide an action. `senses`/`avoid` pass straight through to the
         brain's built-in safety reflexes (HolographicMind.decide): hand over
         the current senses dict and moves into seen dangers or walls are
         vetoed below the value estimate -- the unified brain gets the same
-        measured safety every other caller of the model gets."""
+        measured safety every other caller of the model gets.
+
+        `explore_if_unrecognized=alpha` carries the honesty layer from perception
+        to ACTION: if the current state is noise-level against the brain's own
+        experience (calibrated false-alarm p > alpha, see decide_confidence), the
+        value estimate is built on nothing, so take a safe random move among the
+        allowed actions instead of committing to an unreliable greedy pick -- the
+        agent KNOWING when it is guessing. Off by default (None); the calibrated
+        threshold replaces the brain's hand-set absolute `blind_floor` cosine."""
         if self._brain is None:
             raise RuntimeError("declare an action set first -- call actions([...])")
-        a = self._brain.decide(self.perceive(state, modality), explore=explore,
-                               epsilon=epsilon, senses=senses, avoid=avoid)
+        sv = self.perceive(state, modality)
+        if explore_if_unrecognized is not None:
+            null = self._brain_null()
+            if null is not None:
+                sup = max((self._brain.value(sv, a)[1] for a in range(len(self._actions))), default=0.0)
+                if float(null.pvalue(float(sup))) > explore_if_unrecognized:
+                    epsilon = 1.0                    # unrecognized: the value estimate is noise -> safe random
+        a = self._brain.decide(sv, explore=explore, epsilon=epsilon, senses=senses, avoid=avoid)
         return self._actions[a]
+
+    def _brain_null(self, n_null=800):
+        """The noise floor for the creature brain's recognition of a STATE -- the action-side analogue of
+        _recall_null, and PROCEDURE-MATCHED the same way: draw random unit states, run them through the
+        brain's own value() (which projects into the brain's basis exactly as a real decision does), and take
+        the distribution of the best support any action reaches. Calibrated by construction (the null IS the
+        support noise produces under the real value path); uses value() as a black box, reaching into no
+        internals. Cached on the brain's prototype count. Returns None when the brain has learned nothing."""
+        if self._brain is None:
+            return None
+        nproto = int(sum(len(self._brain._unit[a]) for a in range(len(self._actions))))
+        if nproto == 0:
+            return None
+        cache = getattr(self, "_brain_null_cache", None)
+        if cache is None or cache[0] != nproto:
+            rng = np.random.default_rng(self.seed)
+            scores = np.empty(n_null)
+            for i in range(n_null):
+                s = rng.standard_normal(self.dim); s /= np.linalg.norm(s) + 1e-12
+                scores[i] = max((self._brain.value(s, a)[1] for a in range(len(self._actions))), default=0.0)
+            from holographic_honesty import RecallNull
+            rn = RecallNull(); rn.null = np.sort(scores)
+            self._brain_null_cache = (nproto, rn)
+        return self._brain_null_cache[1]
+
+    def decide_confidence(self, state, modality=None, explore=False, epsilon=None,
+                          senses=None, avoid=("danger", "wall")):
+        """Decide an action AND report a CALIBRATED confidence in it: (action, pvalue). The p-value is the
+        false-alarm probability that the state is no better matched to the brain's experience than pure noise
+        -- p small means the brain has genuinely been somewhere like here and the value estimate can be
+        trusted; p large means it is in unfamiliar territory and effectively guessing. This is recognize()'s
+        honesty applied to the decision brain: the same RecallNull machinery, over the brain's experienced
+        states instead of the perceptual prototypes. The action returned is exactly decide()'s."""
+        if self._brain is None:
+            raise RuntimeError("declare an action set first -- call actions([...])")
+        sv = self.perceive(state, modality)
+        a = self._brain.decide(sv, explore=explore, epsilon=epsilon, senses=senses, avoid=avoid)
+        null = self._brain_null()
+        if null is None:
+            return self._actions[a], float("nan")
+        sup = max((self._brain.value(sv, a2)[1] for a2 in range(len(self._actions))), default=0.0)
+        return self._actions[a], float(null.pvalue(float(sup)))
 
     def reinforce(self, state, action, reward, modality=None):
         s = self.perceive(state, modality)
@@ -2178,7 +2448,8 @@ class UnifiedMind:
             "kind": self._STATE_KIND,
             "config": {"dim": int(self.dim), "seed": int(self.seed), "maintain": self.maintain,
                        "check_every": int(self.check_every), "number_range": [float(nr[0]), float(nr[1])],
-                       "text_window": int(self.encoder._text.window)},
+                       "text_window": int(self.encoder._text.window),
+                       "coherence_floor": self.coherence_floor},
             "encoder": self.encoder.to_state(),
             "memory": self.memory.to_state(),
             "label_modality": dict(self._label_modality),
@@ -2199,7 +2470,7 @@ class UnifiedMind:
         cfg = state["config"]
         m = cls(dim=int(cfg["dim"]), seed=int(cfg["seed"]), number_range=tuple(cfg["number_range"]),
                 maintain=cfg.get("maintain", "auto"), check_every=int(cfg.get("check_every", 60)),
-                text_window=int(cfg.get("text_window", 2)))
+                text_window=int(cfg.get("text_window", 2)), coherence_floor=cfg.get("coherence_floor"))
         m.encoder = UniversalEncoder.from_state(state["encoder"])      # replace the fresh encoder/memory
         m.memory = SelfOrganizingMind.from_state(state["memory"])      # with the saved, trained ones
         m._label_modality = dict(state.get("label_modality", {}))
@@ -2213,10 +2484,12 @@ class UnifiedMind:
         return m
 
     def save(self, path, quant="auto", compress=True):
-        """Persist the learned mind to `path` (.npz) via the kernel save. quant='rd' uses the B5
-        rate-distortion code on any low-rank float arrays (KLT -> quantize -> rANS, ~11x under int8),
-        falling back to int8 where there is no low-rank structure, so it is never larger; 'auto' picks
-        the coarsest decision-safe precision per array; 'int8'/None as in holographic_core.save."""
+        """Persist the learned mind to `path` (.npz) via the kernel save. The default quant='auto' picks
+        the coarsest DECISION-SAFE precision per array -- and now also uses the B5 rate-distortion code
+        (KLT -> quantize -> rANS, cosines preserved to 0.9999) on any LARGE low-rank float array, taken only
+        when it beats int8, so low-rank state shrinks automatically with no precision risk and small arrays
+        are untouched. quant='rd' forces that code wherever it helps (int8 elsewhere); 'int8'/None as in
+        holographic_core.save."""
         from holographic_core import save as _save
         return _save(self, path, compress=compress, quant=quant)
 

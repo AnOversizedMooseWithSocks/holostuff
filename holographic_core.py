@@ -257,15 +257,29 @@ def save(obj, path, compress=True, quant=None):
                 out[k] = np.round(arr / scale).astype(np.int8)
                 qspec[k] = {"k": "int8", "scale": scale}
         elif quant == "auto" and is_f64:
-            kind = _auto_quant_kind(arr)
-            if kind == "int8":
-                peak = float(np.abs(arr).max()) if arr.size else 0.0
-                scale = (peak / 127.0) or 1.0
-                out[k] = np.round(arr / scale).astype(np.int8)
-                qspec[k] = {"k": "int8", "scale": scale}
-            else:
-                out[k] = arr.astype(np.float32)
-                qspec[k] = {"k": "f32"}
+            # auto now also considers the RATE-DISTORTION code (B5) for large low-rank 2D arrays: it
+            # preserves cosines to 0.9999 (decision-safe -- tighter than int8's ~0.998 -- so it fits auto's
+            # "coarsest decision-safe precision" contract) and is taken ONLY when it actually beats int8, so
+            # the default save shrinks genuinely low-rank state with no precision risk and changes nothing for
+            # small arrays (rd needs >= 256 rows). This is how the mind's default save (quant='auto') uses B5.
+            used_rd = False
+            if arr.ndim == 2 and arr.shape[0] >= 256:
+                from holographic_ratedistortion import geometry_preserving_code, pack_code, bits_per_vector
+                code = geometry_preserving_code(arr, target_cos=0.9999)
+                if bits_per_vector(code) < 8 * arr.shape[1]:        # only when it beats int8
+                    out[k] = np.frombuffer(pack_code(code), dtype=np.uint8)
+                    qspec[k] = {"k": "rd"}
+                    used_rd = True
+            if not used_rd:
+                kind = _auto_quant_kind(arr)
+                if kind == "int8":
+                    peak = float(np.abs(arr).max()) if arr.size else 0.0
+                    scale = (peak / 127.0) or 1.0
+                    out[k] = np.round(arr / scale).astype(np.int8)
+                    qspec[k] = {"k": "int8", "scale": scale}
+                else:
+                    out[k] = arr.astype(np.float32)
+                    qspec[k] = {"k": "f32"}
         elif quant == "int8" and is_f64:
             peak = float(np.abs(arr).max()) if arr.size else 0.0
             scale = (peak / 127.0) or 1.0                         # one scale per array

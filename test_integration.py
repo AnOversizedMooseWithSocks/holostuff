@@ -459,3 +459,288 @@ def test_splat_bundle_is_a_superposition_carrying_region_signal():
     occupied = recall_region(scene, (0, 0), ctx)              # top-left: has the blob
     empty = recall_region(scene, (3, 3), ctx)                 # bottom-right: empty
     assert occupied > empty
+
+
+# ============== Honesty layer woven into recognition (RecallNull / SPRT / bh_fdr as core) ===========
+# RecallNull/SPRT/bh_fdr were a standalone measurement harness; these prove they are now part of how the
+# mind RECOGNISES -- calibrated confidence, honest abstention, sequential decision, FDR-controlled batch.
+
+def _animal_mind():
+    m = UnifiedMind(dim=512, seed=0)
+    for w in ["dog", "wolf", "puppy", "hound"]:
+        m.learn(w, "canine")
+    for w in ["cat", "lion", "kitten", "tiger"]:
+        m.learn(w, "feline")
+    for w in ["oak", "pine", "maple", "birch"]:
+        m.learn(w, "tree")
+    return m
+
+
+def test_recognize_is_calibrated_and_classify_can_abstain():
+    m = _animal_mind()
+    # a learned member: low false-alarm p; gibberish: clearly higher p
+    _lab, _sim, p_real = m.recognize("dog")
+    _lab2, _sim2, p_noise = m.recognize("qz xkqv zzpf")
+    assert p_real < 0.05 and p_noise > p_real + 0.2
+    # default classify ALWAYS names a nearest label (backward compatible, returns a (label, score) tuple)
+    lab, score = m.classify("qz xkqv zzpf")
+    assert lab is not None and isinstance(score, float)
+    # with abstain: None label on noise, real label on a member -- both keep the (label, score) shape
+    none_lab, _ = m.classify("qz xkqv zzpf", abstain=0.05)
+    real_lab, _ = m.classify("dog", abstain=0.05)
+    assert none_lab is None and real_lab == "canine"
+
+
+def test_stream_recognize_decides_match_for_real_and_reject_for_noise():
+    m = _animal_mind()
+    dec_real, lab_real, _n1 = m.stream_recognize(["dog", "hound", "puppy", "wolf"])
+    dec_noise, _lab, _n2 = m.stream_recognize(["qz1 zz", "zxq ww", "vbn qq", "wqp kk"])
+    assert dec_real == "MATCH" and lab_real == "canine"
+    assert dec_noise == "REJECT"
+
+
+def test_recognize_batch_controls_false_discovery():
+    m = _animal_mind()
+    out = m.recognize_batch(["dog", "tiger", "oak", "zzqx vvbn wqlk"], alpha=0.1)
+    sig = {r["label"]: r["significant"] for r in out[:3]}        # first three are real members
+    assert all(sig.values())                                     # learned members survive FDR
+    assert out[3]["significant"] is False                        # the gibberish does not
+
+
+def test_recall_can_abstain_on_unseen_inputs():
+    m = _animal_mind()
+    # a stored individual recalls with a tiny false-alarm p; gibberish sits above the abstain threshold
+    _pay, _sim, p_real = m.recall_calibrated("dog")
+    _pay2, _sim2, p_noise = m.recall_calibrated("zzqx vvbn wqlk")
+    assert p_real < 0.05 < p_noise                               # they straddle the abstention level
+    # default recall is unchanged (returns (payload, score)); abstain returns the payload or None
+    assert m.recall("dog") is not None
+    assert m.recall("dog", abstain=0.05) is not None
+    assert m.recall("zzqx vvbn wqlk", abstain=0.05) is None
+
+
+# ============== Coherence-gated maintenance (the measured win from the calibrated-novelty study) ======
+# Calibrated NOVELTY (the originally-flagged idea) was a NEGATIVE -- novelty detects "matches nothing",
+# but reorganization's value is fixing INCOHERENCE, which novelty cannot see. The study that disproved it
+# found COHERENCE-gated reorganization instead: reorganize only when the store is actually incoherent, not
+# on a fixed clock. This test pins the win at the mind level -- fewer reorganize passes at comparable
+# accuracy -- and that the default (coherence_floor=None) still reorganizes on the fixed schedule.
+
+def _shift_stream(seed=0):
+    """Antipodal-bimodal classes (a single prototype is useless, only a SPLIT classifies), with two NEW
+    classes arriving mid-stream and then a long STABLE coherent tail where a fixed schedule keeps paying
+    for reorganize passes the gate can skip."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    L, NC, MODES = 24, 4, 2
+    ang = np.linspace(0, 2 * np.pi, NC * MODES, endpoint=False)
+    dirs = np.stack([np.cos(ang), np.sin(ang)], 1) @ rng.standard_normal((2, L))
+    csub = {c: [c + NC * m for m in range(MODES)] for c in range(NC)}
+    samp = lambda c: dirs[csub[c][rng.integers(MODES)]] * 3 + 0.5 * rng.standard_normal(L)
+    rows = []
+    for _ in range(90):
+        c = int(rng.integers(2)); rows.append((samp(c), c))          # phase 1: 2 classes
+    for _ in range(90):
+        c = int(rng.integers(NC)); rows.append((samp(c), c))         # shift: 2 new classes join
+    for _ in range(150):
+        c = int(rng.integers(NC)); rows.append((samp(c), c))         # stable, coherent tail
+    return rows
+
+
+def _run_maintained(coherence_floor, maintain="auto", check_every=30):
+    import numpy as np
+    rows = _shift_stream(0)
+    m = UnifiedMind(dim=384, seed=0, check_every=check_every,
+                    coherence_floor=coherence_floor, maintain=maintain)
+    correct = []
+    for i, (x, c) in enumerate(rows):
+        pred = m.classify(x, modality="vector")[0] if m.memory.live.size() else None
+        correct.append(pred == c)
+        m.learn(x, c, modality="vector")
+    return float(np.mean(correct)), len(m.journal), len(rows)        # journal length == reorganize passes
+
+
+def test_coherence_gate_reorganizes_less_than_schedule_at_comparable_accuracy():
+    sched_acc, sched_passes, total = _run_maintained(None)           # default: fixed schedule
+    gated_acc, gated_passes, _ = _run_maintained(0.65)               # opt-in coherence gate
+    floor_acc, _, _ = _run_maintained(None, maintain="manual")       # never reorganize (the floor)
+    # the gate reorganizes FEWER times than the schedule (but does reorganize) ...
+    assert 2 <= gated_passes < sched_passes
+    # ... at accuracy comparable to the schedule ...
+    assert gated_acc >= sched_acc - 0.15
+    # ... and well above the never-reorganize floor (so it reorganizes USEFULLY, not idly) ...
+    assert gated_acc >= floor_acc + 0.12
+    # ... while the DEFAULT (coherence_floor=None) reorganizes on the fixed schedule, unchanged.
+    assert sched_passes == total // 30
+
+
+def test_coherence_floor_survives_save_and_reload():
+    import tempfile, os
+    m = UnifiedMind(dim=256, seed=0, coherence_floor=0.6)
+    m.learn("dog", "canine"); m.learn("cat", "feline")
+    p = os.path.join(tempfile.mkdtemp(), "mind")
+    m.save(p)
+    assert UnifiedMind.load(p).coherence_floor == 0.6                 # config round-trips
+
+
+# ============== Tier-0 panel fixes: sublinear+calibrated recall, coverage, rd-in-auto ================
+# Pharr (sublinear recall_calibrated), Cranmer (calibration coverage), Duda (auto save uses B5 rd).
+
+def test_recall_calibrated_uses_the_same_path_as_recall_and_can_abstain():
+    m = UnifiedMind(dim=512, seed=0)
+    for w in ["dog", "wolf", "puppy", "hound", "cat", "lion", "kitten", "tiger", "oak", "pine", "maple"]:
+        m.learn(w, "animal" if w not in ("oak", "pine", "maple") else "tree")
+    # recall_calibrated now routes the winner through recall() itself (the forest on a big store, the exact
+    # scan on a small one) instead of its own exact scan -- so the two agree on the winner and the score.
+    pay_r, sim_r = m.recall("dog")
+    pay_c, sim_c, p_real = m.recall_calibrated("dog")
+    assert pay_r == pay_c and abs(sim_r - sim_c) < 1e-9
+    _pay, _sim, p_noise = m.recall_calibrated("zzqx vvbn wqlk")
+    assert p_real < 0.05 < p_noise                                # stored vs noise straddle the threshold
+    assert m.recall("dog", abstain=0.05) is not None
+    assert m.recall("zzqx vvbn wqlk", abstain=0.05) is None
+
+
+def test_recognition_p_values_are_calibrated_on_noise():
+    m = UnifiedMind(dim=512, seed=0)
+    for w in ["dog", "wolf", "puppy", "hound", "cat", "lion", "kitten", "tiger",
+              "oak", "pine", "maple", "birch", "ash", "elm", "fox", "bear"]:
+        m.learn(w, "animal" if w not in ("oak", "pine", "maple", "birch", "ash", "elm") else "tree")
+    rep = m.calibration_report(n=3000)
+    # a calibrated detector fires on pure noise at ~= alpha, on BOTH the prototype and individual paths.
+    for path in ("prototype_false_alarm", "individual_false_alarm"):
+        assert 0.02 <= rep[path][0.05] <= 0.10                    # ~5% false-alarm at alpha=0.05
+        assert 0.05 <= rep[path][0.1] <= 0.17                     # ~10% at alpha=0.10
+
+
+def test_auto_save_uses_rate_distortion_for_large_low_rank_arrays():
+    import numpy as np
+    from holographic_ratedistortion import (geometry_preserving_code, pack_code, unpack_code,
+                                             reconstruct, bits_per_vector)
+    rng = np.random.default_rng(0)
+    rows, cols, rank = 512, 256, 8
+    A = rng.standard_normal((rows, rank)) @ rng.standard_normal((rank, cols))   # large + genuinely low-rank
+    code = geometry_preserving_code(A, target_cos=0.9999)
+    # this is the decision auto now makes: take rd only when it beats int8 (8 bits/value)
+    assert bits_per_vector(code) < 8 * cols
+    B = reconstruct(unpack_code(pack_code(code)))                 # full pack -> unpack -> reconstruct
+    An = A / np.linalg.norm(A, axis=1, keepdims=True)
+    Bn = B / np.linalg.norm(B, axis=1, keepdims=True)
+    assert float(np.sum(An * Bn, axis=1).min()) >= 0.998         # decision-safe (cosines preserved)
+
+
+def test_default_auto_save_round_trips_a_mind_identically():
+    import tempfile, os
+    import numpy as np
+    m = UnifiedMind(dim=256, seed=0, maintain="manual")
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        m.learn(round(float(rng.uniform(0, 1)), 3), "small", modality="number")
+        m.learn(round(float(rng.uniform(5, 6)), 3), "big", modality="number")
+    probe = [round(float(rng.uniform(0, 6)), 3) for _ in range(12)]
+    before = [m.classify(p, modality="number")[0] for p in probe]
+    p = os.path.join(tempfile.mkdtemp(), "mind")
+    m.save(p)                                                     # default quant='auto', now rd-aware
+    after = [UnifiedMind.load(p).classify(p2, modality="number")[0] for p2 in probe]
+    assert before == after
+
+
+# ============== Tier-1: calibrated decide -- honesty from perception to ACTION (Togelius) ============
+
+def _taught_action_mind(dim=512, seed=0):
+    import numpy as np
+    import holographic_ai as A
+    m = UnifiedMind(dim=dim, seed=seed)
+    m.actions(["N", "S", "E", "W"])
+    rng = np.random.default_rng(seed)
+    archetypes = [A.random_vector(dim, rng) for _ in range(4)]
+    best = ["N", "E", "S", "W"]
+    for _ in range(40):
+        for k, base in enumerate(archetypes):
+            s = base + 0.25 * A.random_vector(dim, rng); s /= np.linalg.norm(s)
+            m.reinforce(s, best[k], 1.0)                   # this action paid off in situations like this
+            m.reinforce(s, best[(k + 1) % 4], -0.5)        # a bad alternative, so values differ
+    return m, archetypes, best, rng
+
+
+def test_decide_confidence_is_low_for_familiar_states_and_high_for_novel_ones():
+    import numpy as np
+    import holographic_ai as A
+    m, archetypes, best, rng = _taught_action_mind()
+    fam = archetypes[0] + 0.25 * A.random_vector(512, rng); fam /= np.linalg.norm(fam)
+    nov = A.random_vector(512, rng)
+    act_f, p_f = m.decide_confidence(fam)
+    act_n, p_n = m.decide_confidence(nov)
+    assert act_f == best[0]                                 # familiar -> the learned-good action
+    assert p_f < 0.1 < p_n                                  # familiar vs novel straddle the threshold
+
+
+def test_brain_recognition_null_is_calibrated_on_noise():
+    import numpy as np
+    m, _arch, _best, _rng = _taught_action_mind()
+    null = m._brain_null()
+    rng = np.random.default_rng(7)
+    sup = np.array([max(m._brain.value(s, a)[1] for a in range(4))
+                    for s in (rng.standard_normal((3000, 512)) /
+                              np.linalg.norm(rng.standard_normal((3000, 512)), axis=1, keepdims=True))])
+    ps = np.array([null.pvalue(x) for x in sup])
+    assert 0.02 <= float(np.mean(ps <= 0.05)) <= 0.10      # the action-side detector tracks alpha too
+    assert 0.05 <= float(np.mean(ps <= 0.10)) <= 0.17
+
+
+def test_explore_if_unrecognized_guesses_randomly_on_novel_states_and_commits_on_familiar():
+    import numpy as np
+    import holographic_ai as A
+    m, archetypes, best, rng = _taught_action_mind()
+    fam = archetypes[0] + 0.25 * A.random_vector(512, rng); fam /= np.linalg.norm(fam)
+    nov = A.random_vector(512, rng)
+    novel_actions = {m.decide(nov, explore_if_unrecognized=0.1) for _ in range(100)}
+    fam_actions = {m.decide(fam, explore_if_unrecognized=0.1) for _ in range(100)}
+    assert len(novel_actions) >= 3                          # unrecognized -> safe random move (guessing)
+    assert fam_actions == {best[0]}                         # recognized -> commits to the trusted action
+
+
+# ============== Tier-0: the SPRT earns its keep on OVERLAPPING densities (Wald sample-savings) ==========
+
+def test_sprt_spends_more_samples_as_densities_overlap_and_beats_fixed_n():
+    import numpy as np
+    from holographic_honesty import SPRTRecall
+    def avg_n_err(mu0, sd0, mu1, sd1, trials=1500, cap=60):
+        null = np.random.default_rng(1).normal(mu0, sd0, 3000)
+        match = np.random.default_rng(2).normal(mu1, sd1, 3000)
+        g = np.random.default_rng(5); ns, ok = [], 0
+        for t in range(trials):
+            ms = (t % 2 == 0); mu, sd = (mu1, sd1) if ms else (mu0, sd0)
+            d, n = SPRTRecall(null, match, alpha=0.05, beta=0.05).decide(g.normal(mu, sd, cap), cap=cap)
+            ns.append(n); ok += (d == ("MATCH" if ms else "REJECT"))
+        return float(np.mean(ns)), 1.0 - ok / trials
+    sep_n, _ = avg_n_err(0.10, 0.04, 0.45, 0.14)          # well-separated -> decisive in ~1 sample
+    ovl_n, ovl_err = avg_n_err(0.35, 0.13, 0.52, 0.13)    # heavy overlap -> several samples
+    assert sep_n < 1.5 < ovl_n                            # the SPRT spends more samples when densities overlap
+    # at matched error, the smallest fixed-window rule uses MORE samples than the SPRT's average
+    thresh = (0.35 + 0.52) / 2.0
+    def fixedN_err(N, trials=1500):
+        h = np.random.default_rng(11); bad = 0
+        for t in range(trials):
+            ms = (t % 2 == 0); mu, sd = (0.52, 0.13) if ms else (0.35, 0.13)
+            bad += ((float(np.mean(h.normal(mu, sd, N))) >= thresh) != ms)
+        return bad / trials
+    fixedN = next((N for N in range(1, 40) if fixedN_err(N) <= ovl_err + 0.01), None)
+    assert fixedN is not None and fixedN > ovl_n          # Wald uses fewer samples for the same error
+
+
+# ============== Tier-0: auto-calibrated coherence floor -- relative drop, no absolute threshold ==========
+
+def test_auto_coherence_floor_matches_the_hand_set_floor_without_an_absolute_threshold():
+    sched_acc, sched_passes, total = _run_maintained(None)           # fixed schedule
+    auto_acc, auto_passes, _ = _run_maintained('auto')               # auto relative-drop floor (90% of peak)
+    floor_acc, _, _ = _run_maintained(None, maintain="manual")       # never reorganize (the floor)
+    assert 2 <= auto_passes < sched_passes                           # reorganizes less than the schedule, but does
+    assert auto_acc >= sched_acc - 0.15                              # at accuracy comparable to the schedule
+    assert auto_acc >= floor_acc + 0.12                              # usefully above never-reorganizing
+    # the 'auto' sentinel round-trips through save/load exactly like a numeric floor
+    import tempfile, os
+    m = UnifiedMind(dim=256, seed=0, coherence_floor='auto')
+    m.learn("dog", "canine"); m.learn("cat", "feline")
+    p = os.path.join(tempfile.mkdtemp(), "mind"); m.save(p)
+    assert UnifiedMind.load(p).coherence_floor == 'auto'
