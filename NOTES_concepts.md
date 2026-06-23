@@ -3120,3 +3120,1100 @@ test_holographic_brain.
 (Noted from the previous round, now FIXED by this: the "consolidated value() rejects a raw probe"
 gap was this same bug.) Net: the creature was already optimized with the latest tech; the audit's
 deliverable is the confirming measurement, one robustness fix, and one honest negative.
+
+## PORTING UPSTREAM FROM A SIBLING PROJECT (TuneFM) -- verified, then adopted/adapted
+
+A sibling project that adopted the holostuff methodology on market data proposed five
+improvements to send back upstream "because they help every application, not just trading."
+Treated the document the holostuff way: VERIFIED every claim against the actual source (all
+five were accurate about what holostuff did/didn't have), then let MEASUREMENT on this
+substrate decide what earns its place. All five adopted, two adapted from the proposal.
+
+1. rfft bind + bind_batch/bind_fixed. The core bind used the COMPLEX fft; atoms are real, so
+   the REAL fft is exact (measured equal to ~7e-17) and ~1.5x cheaper -- switched it, and the
+   full algebra suite + the rescue_cracks canary pass, so every caller gets 1.5x for free.
+   Added bind_batch/bind_fixed (vectorised): ~2x even at 3 fillers, 5.5x at 64. Wired into
+   RecordEncoder.encode (verified bit-identical to the per-field loop). The new primitives are
+   in real use, not siloed.
+
+2. ScalarEncoder RBF kernel + kernel_at. Default stays sinc (uniform phases). kernel="rbf"
+   mints Gaussian phases -> a non-negative monotone RBF kernel; kernel_at(dx) returns the
+   similarity the encoder analytically realises (Bochner). VERIFIED the encoder IS its kernel
+   (measured cosine matches kernel_at to 0.001) and MEASURED the real win: recovering a
+   bimodal density within the range, RBF gets corr 0.73 and resolves both modes where sinc --
+   one lobe over the range by construction -- gets 0.40 and sees one. (Did NOT find the
+   negative-lobe density corruption the document claimed in my configs, so did not claim it;
+   the mode-resolution win is the measured justification.)
+
+3. holographic_honesty.py -- the ablation ethos as a callable instrument. walk_forward_recall
+   (six checks a recall predictor must survive: beat chance, beat the persistence baseline,
+   collapse under a shuffle, magnitude correlation, net of cost) and bh_fdr (Benjamini-
+   Hochberg/Yekutieli false-discovery control -- the real gap: grep for benjamini returned
+   nothing, and a library that generates many candidates needs FDR). The module passes its
+   OWN audit: a planted edge clears chance with its shuffle collapsing, pure noise does not,
+   bh_fdr rejects 5 planted discoveries and spares 200 nulls. (Did NOT rewire the known-flaky
+   market test onto it -- left available for adoption rather than destabilise that test.)
+
+4. HoloForest.recall(with_agreement=True). The trees are independently seeded, so their
+   agreement is a free abstention signal. Returns (best, agreement=fraction of trees whose
+   own pick equals the forest's). Stored item -> 1.00, random query -> 0.59, so it separates
+   known from unknown. Guarded so the DEFAULT path is byte-identical (verified, incl. cosine-
+   tie order) and not slowed (per-tree work only when the flag is set).
+
+5. HolographicArchive.verify(). ADAPTED from the document's sketch, which assumed a bucket-of-
+   members API this archive does not have (it is WHT disjoint-slot image superposition). The
+   real, checkable version: reconstruct the most collision-prone stored images and confirm
+   each recalls back to its OWN index -- the disjoint-slot orthonormal-key guarantee, checked
+   on this build rather than assumed, using only the archive's own API. 6/6 exact clean and
+   after 4-bit plate quantisation; catches identity loss if quantisation ever corrupts it.
+
+Deliberately NOT taken (the document was honest about provenance and so is this): the WHT
+plate memory, median-split trees, and resonator peeling were re-derivations on their side of
+things holostuff already had. Net: cross-project port, every claim verified against source,
+every change measured before adoption, two adapted to the real APIs, all backward-compatible.
+
+## VENDORING REAL MARKET + ON-CHAIN DATA FROM A SIBLING PROJECT (not just code, data)
+
+The sibling project (TuneFM-SOL) that produced the upstream-port document also shipped its
+real datasets and some app/infra code. Brief: add its market and trading datasets alongside
+the existing images/text/records, and extract anything else useful. Treated it the holostuff
+way -- vendor REAL data in a lean, native form, wire it into the existing machinery, and be
+explicit about what was deliberately left out.
+
+WHAT WAS VENDORED (real, checked-in, lean):
+  * data/sol_market.npz (0.60 MB) -- real SOL/USDT bars from Binance, multi-timeframe (5m/1h/1d)
+    plus BTC/ETH 1d cross-assets, each [time,open,high,low,close,volume,taker_buy,ofi] (taker_buy
+    = aggressive buy volume, ofi = order-flow-imbalance sign -- microstructure the permutation
+    tests and CandleCoder can chew on), plus a funding-rate [time,rate] series. Built from the
+    richest source file (the 62 MB -big export) but capped to recent bars and float32, so it is
+    0.60 MB, not 62. load_sol_market(timeframe=...) in holographic_market.py; feeds the EXISTING
+    CandleCoder once prices are normalized to a working level (the coder lives in bp-space around
+    1.0 -- a real contract detail, documented in the test: SOL round-trips to 0.13% normalized).
+  * data/onchain_traders.json (122 KB) -- realized on-chain Jupiter Perpetuals trades the sibling
+    read off Solana's public ledger: 58 wallet profiles + 869 realized trades. HONEST by
+    construction: every profile carries trade COUNT and a per-trade edge t-stat beside its PnL, so
+    a wallet green on a handful of trades reads as luck, not skill (the same n-problem the engine
+    keeps flagging). load_onchain_traders() in holographic_market.py.
+
+WIRED IN (reachable, not siloed):
+  * load_onchain_world() in unified_app.py turns the wallets into role-bound RECORDS (win_rate,
+    leverage, hold, bias, blowups bucketed to categoricals) LABELLED by honest skill: "skilled"
+    only when edge_t_stat >= 2 AND positive per-trade net, "burned" if liquidated and negative,
+    else "neutral" (distribution 4/37/17). Registered as the "onchain" dataset in DATASETS, so it
+    appears in the app's dataset picker next to world/reuters/brown/... Measured: the records are
+    genuinely learnable -- absorb a 70/30 split, held-out classify accuracy 0.95 (vs 0.33 chance
+    for the 3 classes). A tour line demonstrates both the SOL candles and the onchain records.
+
+DELIBERATELY NOT VENDORED (and why -- this matters as much as what was taken):
+  * onchain.py -- a live Solana/Helius RPC fetcher (hand-rolled borsh event decoder). It is
+    network-dependent infrastructure that does not fit holostuff's offline, minimal-dependency
+    philosophy, and the sandbox blocks Solana RPC anyway. Its OUTPUT (the trader JSON) is the
+    useful artifact; the fetcher is not. Its honest caveat is preserved in spirit in the labeling
+    above ("up over a window is survivorship/variance until proven; report count + per-trade edge
+    t-stat, treat green-on-12-trades as luck").
+  * app.py (734 KB FastAPI app) and index.html (407 KB) -- the sibling's whole web app. Far too
+    large and infra-specific; holostuff has its own app surface. Not vendored.
+  * The 62 MB / 12 MB / 9 MB raw soldata exports, the quiz CSVs, TEAM_REGISTRY.md -- raw or
+    project-specific; the useful market signal was distilled into the 0.60 MB npz instead.
+
+The sibling's README is itself a substantial honest-measurement document (same methodology,
+including holographic experiments); it was read for provenance but not vendored wholesale.
+Net: two real datasets added in lean native form, wired into the existing CandleCoder, dataset
+registry, tour, and tests; honest labeling baked in; clear boundary on what infra was left out.
+
+## FILESYSTEM: the recovery zip was silently dropping data/*.npz
+
+While vendoring sol_market.npz, found the close-out zip's exclude list carried a blanket
+-x "*.npz", meant to skip transient model snapshots -- but it ALSO dropped the checked-in
+datasets data/sol_5min.npz and data/sol_market.npz from the recovery zip. Since this tree is
+not a git repo, the zip is the ONLY recovery path, so the tick dataset had quietly been at risk
+the whole time. Fixed by removing the blanket *.npz exclude from the close-out rebuild so
+data/*.npz is kept; transient snapshots are written to /tmp or root scratch (handled by the
+"_"-scratch and /tmp conventions) rather than under data/, so they are still not shipped.
+
+## WHERE THE RECENT IMPROVEMENTS REACH ELSEWHERE -- an audit, with one unlock and one kept negative
+
+After the upstream port, traced each improvement to see where else it applies or what it unlocks.
+Measured every candidate; applied what earned its place, kept the negatives.
+
+THE UNLOCK -- bh_fdr controls the project's own ablation table. The flagship "is VSA
+load-bearing?" table (holographic_ablate.py) scans ~6 subsystems and decides each verdict on
+that subsystem's OWN 95% CI. But a table is a SCAN, and scanning enough subsystems means one can
+clear a per-test bar by luck -- exactly the exposure the honesty module's bh_fdr exists for. Added
+fdr_verdicts(): each subsystem gets a PAIRED PERMUTATION p-value (holo vs baseline; seeds are
+shared so scores pair by seed -- a sign-flip test, enumerated exactly for the handful of seeds;
+falls back to a two-sample label-permutation test when an arm ran fewer seeds), then bh_fdr
+(Benjamini-Yekutieli, dependent=True since the subsystems share data/methodology) holds the
+false-discovery rate among the surviving "load-bearing" calls across the WHOLE family. On the real
+table both load-bearing verdicts (topic-classify, noisy key->value) are unanimous 6-seed wins
+(p=0.0156) and SURVIVE the family-wise bar. HONEST PROPERTY found while testing: BY is conservative
+-- a single unanimous 6-seed win (finest p reachable = 1/64) does NOT survive BY across a 6-test
+family on its own (top-rank threshold ~0.007); the two real verdicts survive because they SHARE the
+win (the rank-2 threshold is more lenient). So 6 seeds is near the floor for clearing BY-FDR; more
+seeds tighten it. Wired into the ablation _demo (p + FDR columns) and the tour. Pinned in
+test_ablations. This makes the engine's core epistemic instrument rigorous against multiple-testing.
+
+APPLIED (consistent, behaviour-safe) -- bind_batch in KnowledgeStore.add. The relations record
+builder used the same bundle([bind(role,filler) for ...]) pattern already vectorised in
+RecordEncoder; switched it to one batched FFT. Identical to the loop at 1e-12, relations recall is
+exact-key (wide margin, robust to the ~1e-16 batched-vs-scalar difference), all relations tests
+pass. A small, consistent application -- faster as records widen, no behaviour change.
+
+KEPT NEGATIVE -- bind_batch in the creature encoder. CreatureEncoder.encode binds role->value for
+every sense each step (a hot path: encode ~169us actually costs MORE than decide ~80us). bind_batch
+measured 1.38x there and identical to the loop at 1e-12 -- BUT batched and scalar FFT differ at
+~1e-16, and that is enough to flip a knife-edge tie-break in the starved-maze rescue trajectory:
+the rescue_cracks CANARY FAILED. Reverted. The creature's deterministic reproducibility outweighs a
+per-step 1.4x. Note the asymmetry with RecordEncoder (which tolerated the identical change): record
+classification is wide-margin argmax, the maze rescue is tie-sensitive -- the SAME 1e-16 perturbation
+is harmless in one consumer and trajectory-changing in the other. This is why the canary gates
+compute-path changes and bit-exactness matters for the creature specifically.
+
+ASSESSED, NOT FORCED (no high-value internal consumer right now, so left as available capability):
+  * HoloForest with_agreement (abstention signal) -- the forest is used for scale benchmarks and
+    the recall-index ablation, not for any decision that should abstain; the unified mind's
+    classify/cleanup run on vectorised prototype matrices, not the forest. Wiring agreement somewhere
+    just to use it would be decorative. Kept as an available signal for callers.
+  * ScalarEncoder RBF / kernel_at (non-negative density kernel) -- no existing path reads a scalar
+    bundle as a density where sinc's lobes bite; forcing RBF into CandleCoder (whose flaky test and
+    bp-space contract argue against churn) would be fishing for a win. Available, not forced.
+  * archive verify() pattern -> other memories -- does NOT transfer: HolographicMemory/
+    PartitionedMemory are intentionally LOSSY (finite capacity is a measured feature, already
+    instrumented by capacity_curve/recall_all), so "verify exact recall" is the wrong check for them.
+    The archive's verify() is specific to an exact-recall store with stored ground truth.
+
+Net: one genuine unlock (FDR over the ablation family), one consistent safe application, one kept
+negative with a sharp lesson about why bit-exactness matters more in the creature than elsewhere,
+and three capabilities honestly left unforced rather than wired in decoratively.
+
+## ADVISORY-PANEL DESIGN REVIEW -- sixteen lenses, debated to one build + three queued
+
+Ran the cross-disciplinary panel as a design review: each seat proposed one change grounded in
+its field's real published method, then the proposals were clustered, cross-examined against
+holostuff's constraints, and measured before belief. (Attributed to seats/methods, not to the
+individuals as personal opinion.) Two proposals were measured during the debate to keep the
+convergence evidence-based:
+  * Duda/ANS: the int8 stream carries ~6.85 bits/symbol of entropy vs 8 bits stored -> ANS would
+    save ~14% losslessly on top of int8. Real but modest; a bit-exact NumPy coder is fiddly. QUEUED.
+  * Tarter/Cranmer null-calibration: the random-query null is already well-behaved; a clean match
+    sits far above it. Cheap, low-risk, broadly useful. BUILT.
+
+BUILT -- RecallNull (holographic_honesty.py): turns a recall/cleanup similarity into an HONEST
+false-alarm probability. fit() draws random queries against a codebook and records the best-match
+cosine each reaches (the empirical noise floor); pvalue(score) = fraction of that null reaching
+score or higher = the chance noise alone would look this good. calibrated_recall(query, codebook)
+returns (idx, score, p). MEASURED: a clean stored atom -> p~0; random queries are well-calibrated
+(P(p<=0.05)=0.043, P(p<=0.20)=0.201, so a p<=alpha gate has false-alarm rate ~alpha); it tracks the
+capacity cliff per recall (recalling pair-0 from a filling key->value trace, score 0.71->0.15 but p
+stays ~0 because it is still above the noise floor -- the calibration CONFIRMS each recall is real);
+and it refuses to over-claim when a signal is genuinely swamped (p rises toward 1). Complements the
+two existing abstention signals: HoloForest cross-tree AGREEMENT (structural) + RecallNull FALSE-
+ALARM PROBABILITY (statistical). Pinned in test_holographic_honesty, demoed in the tour.
+
+QUEUED with evidence (in priority order, for a future round):
+  1. Tero (2007) flow-conductance Physarum solver (Adamatzky seat) -- tubes thicken with Poiseuille
+     flux; a genuinely different algorithm from the current elitist-ant pheromone. Bar: beat
+     elitist-ant on the braided maze at equal cost.
+  2. ANS entropy-coded save level (Duda seat) -- measured ~14% lossless on int8, if a bit-exact
+     NumPy coder round-trips cleanly.
+  3. L1 / compressed-sensing archive recovery (Ozcan seat) -- behind a measurement: does it beat the
+     archive's CG least-squares past ~60% plate erasure?
+
+PARKED with rationale: sparse thinning / exact-inverse unbind / XPBD cleanup (overlap FHRR +
+resonator, small expected gain, hot-path risk); SAH tree split (the ablation already shows median
+split is not the bottleneck -- "scale win, not accuracy"); tensor-train codebook + Stam Helmholtz
+binding (research-grade); SDF / quality-diversity (peripheral to the core algebra, fine as app
+extensions). The panel's real output was the DEBATE cutting 15 proposals to 1 build + 3 evidenced
+queue items + honest parks -- the engine's own method applied to its own roadmap.
+
+## DENOISING & GAUSSIAN SPLATS -- the measured cluster shipped (panel addendum II)
+
+Built the four measured breakthroughs that share one engine ("one operation seen several ways":
+a denoiser is a map of the manifold signals live on, and holostuff already owned those maps).
+All additive, opt-in, backward-compatible, pure NumPy, deterministic.
+
+B1 -- holographic_hopfield.py: modern continuous Hopfield cleanup (Ramsauer 2020 / Krotov &
+Hopfield 2016 / Demircigil 2017). dense_cleanup(q, codebook, beta, steps) = z<-V^T softmax(beta Vq)
+iterated; HopfieldCleanup.fit/cleanup/denoise. KEPT NEGATIVE: ties one-shot NN on IDENTITY (NN
+already optimal; at beta->inf it REPRODUCES the hard decision exactly -> backward compatible).
+The real win is CONTINUOUS-VECTOR DENOISING: a recovered vector at cosine 0.45 cleans to ~1.0
+(measured, mean over trials = 1.000 across dim/noise). A single high-noise draw can occasionally
+miss; the mean is what we ship (test averages over trials).
+
+B10 -- generate() in holographic_hopfield.py: iterate the cleanup from PURE NOISE with annealed
+beta-up / noise-down = a tiny holographic diffusion. Measured: nearest-pattern cosine 0.5->1.0 in
+~8-12 steps; generation and denoising are the SAME operation in different regimes. KEPT NEGATIVE:
+over a BARE codebook this returns stored atoms (degenerate sampler) -- the interesting regime is a
+COMPOSED/continuous manifold.
+
+B8 -- holographic_splat.py: a splat scene IS a superposition (bundle). splat_fit (matching pursuit
+with isotropic Gaussian atoms) / splat_render / splat_denoise. MEASURED on a real (log-return,
+log-volume) SOL density: ~20 superposed Gaussians -> ~31 dB at ~3.5% of pixels; fitting few splats
+to NOISY data denoises it (+~5 dB to clean, no capacity for noise). BRIDGE pinned in test: the RBF
+ScalarEncoder's similarity profile is a Gaussian bump (peaks at the encoded value) = Gaussian
+splatting in the hypervector domain. SCOPE/kept-negative: isotropic matching pursuit only;
+anisotropic covariances + gradient refinement (full 3DGS) deliberately out of scope.
+
+B7 -- holographic_denoise.py: denoising as MANIFOLD PROJECTION (Milanfar: a denoiser is a map of
+the signal manifold; consolidation IS that map) + the Plug-and-Play/RED loop (Venkatakrishnan 2013;
+Romano-Elad-Milanfar 2017). fit_manifold (SVD = consolidation) / manifold_denoise (project) /
+codebook_denoise (re-exports dense_cleanup) / pnp_restore (data-fidelity <-> denoise, any denoiser).
+MEASURED on real SOL price windows: projection denoising WINS as noise grows (+3.85 dB at sigma=0.8)
+but HURTS at low noise (-1.4 dB over-smoothing -- the Donoho/Milanfar threshold-selection problem,
+KEPT NEGATIVE) and DESTROYS random no-manifold data (-5 dB, honest control, pinned in test). pnp
+inpainting test: restoration beats the masked measurement.
+
+Tests: test_holographic_hopfield.py (3), test_holographic_splat.py (3), test_holographic_denoise.py
+(3) = +9 (569 -> 578). Tour block added (denoise+splats line). Wired as standalone opt-in modules;
+no change to bind/value/decide/cleanup-defaults -> creature tie-sensitive path untouched (canary not
+required). STILL QUEUED (each behind its measurement bar, next passes): B2 sparse block codes +
+scaled resonator; B3 SPRT streaming recall; B4 propagator binding (needs a learnable-dynamics
+signal); B5 rate-distortion ANS save level (bit-exact coder is the fiddly part); B6 Tero flow /
+fragment assembly; B9 non-local-means via content-addressable recall (bar: beat manifold projection
+on textured/non-low-rank signals).
+
+## B9 -- NON-LOCAL-MEANS DENOISING VIA CONTENT-ADDRESSABLE RECALL (shipped)
+
+Built B9 from the queue. "Find the patches that look like this one and average them" (Buades-Coll-
+Morel NLM 2005; BM3D Dabov 2007) IS content-addressable recall -- so it runs on holostuff's own
+index. Added HoloForest.recall_k(query, k, beam) -> (indices, cosines) ranked over the same unioned
+candidate set recall() uses (stays SUB-LINEAR; default recall() untouched, byte-identical). Added
+nlm_denoise(patches, k, h, use_forest) in holographic_denoise.py: per patch, recall its k nearest
+(forest sub-linear, or exact cosine fallback for small sets / determinism), softmax(cosine/h) weight,
+average -- cancels iid noise across near-duplicates (~1/sqrt(k)).
+
+MEASURED (real SOL motif-windows, M motifs x R=8 repeats + noise): NLM-via-forest 11.7 dB vs rank-8
+projection 7.3 dB vs raw 4.6 dB -- and the sub-linear forest path (11.67) matches exact kNN (11.77).
+COMPLEMENTARITY confirmed and pinned as a KEPT NEGATIVE test: on low-rank-but-NOT-self-similar data
+(every patch unique), projection WINS (2.8 dB) and NLM has nothing to average (0.5 dB). So B7
+(manifold projection) and B9 (NLM) cover DIFFERENT structure: low-rank-not-similar vs
+self-similar-not-low-rank. Tests: +3 in test_holographic_denoise.py (nlm beats projection on
+self-similar; projection beats nlm without self-similarity; recall_k finds near-duplicates) ->
+578 -> 581. Tour line added. recall_k is a pure addition; default forest recall path unchanged.
+
+REMAINING QUEUE (each behind its bar): B3 SPRT streaming recall (builds on RecallNull; clean
+optimality bar); B2 sparse block codes + scaled resonator; B5 rate-distortion ANS save level (fiddly
+bit-exact coder); B4 propagator binding (mechanism real, prediction an honest near-negative on
+markets -- ship as content-addressable-trajectory capability); B6 Tero flow / fragment assembly.
+
+## B3 -- SPRT STREAMING RECALL (shipped): sample-optimal sequential detection
+
+Built B3 from the queue. RecallNull turns ONE recall into a calibrated false-alarm probability;
+SPRTRecall (holographic_honesty.py) turns a STREAM of cues for the same hypothesis into a Wald
+sequential test: accumulate the per-cue log-LR log(p(score|match)/p(score|null)) and decide the
+moment it crosses a Wald boundary A=log((1-beta)/alpha) / B=log(beta/(1-alpha)). RecallNull's noise
+floor IS p(score|null); match density is fit from genuine noisy-target recalls. API: SPRTRecall(
+null_scores, match_scores, alpha, beta).reset()/.update(score)->MATCH|REJECT|CONTINUE/.decide(stream,
+cap)->(decision, n). Gaussian-fit densities.
+
+MEASURED on real recall scores (the optimality bar): across the overlapping regime SPRT reaches a
+target (alpha,beta) error pair in ~HALF the samples of the best fixed-N rule -- e.g. avg 2.8 cues vs
+fixed-N 6 at ~2% error (also 1.7 vs 3, and 4.8 vs 9 at heavier overlap). Wald optimality confirmed.
+KEPT NEGATIVE / boundary: when the cue carries NO per-sample information (signal fully swamped, match
+and null distributions identical -- e.g. sigma=9 noise), neither SPRT nor fixed-N can decide and SPRT
+just hits the cap; streaming only helps when each cue carries SOME evidence. Tests: +2 in
+test_holographic_honesty.py (clear streams decide MATCH/REJECT; SPRT uses fewer samples than fixed-N
+at matched error) -> 581 -> 583. Tour line added (sequential recall). Pure addition; nothing else
+touched.
+
+REMAINING QUEUE: B2 sparse block codes + scaled resonator; B5 rate-distortion ANS save level (fiddly
+bit-exact coder); B4 propagator binding (mechanism real, prediction honest near-negative on markets
+-- ship as content-addressable-trajectory capability); B6 Tero flow / fragment assembly.
+
+## B4 -- PROPAGATOR BINDING (shipped): dynamics as an algebra of binds
+
+Built B4 from the queue. holographic_dynamics.py / Propagator: learn a fixed bind operator U so
+state(t+1) ~ bind(U, state(t)). In HRR's Fourier domain bind is elementwise multiply, so the learned
+operator is a per-frequency least-squares transfer H[k]=sum X1 conj(X0)/sum|X0|^2 (Koopman-in-Fourier
+/ DMD / the same FFT-on-a-torus Stam and Puckette use). step(state)=bind(U,state) LITERALLY (pinned
+in a test) -> prediction is one bind; recall_at(state,k) applies a Wiener-regularised inverse operator
+k times -> the trajectory is CONTENT-ADDRESSABLE.
+
+MEASURED (honest, complete picture):
+  * POSITIVE CONTROL (dynamics that ARE a bind): next-state prediction cosine 0.997 vs persistence
+    0.528 -- when dynamics are bind-shaped the propagator recovers the operator and predicts full
+    states. This is the method's honest SCOPE.
+  * DURABLE WIN: content-addressable round-trip (forward k / back k) cosine ~0.9995 -- past states
+    recoverable regardless of predictability.
+  * KEPT NEGATIVE (real SOL returns, scalar next-return): propagator RMSE 0.0088 vs mean 0.0063 --
+    ties/loses to mean; near-efficient-market returns have no linear structure. Also a structural
+    kept-negative: the bind operator is a CIRCULAR convolution, so as a next-VALUE predictor on a
+    shifted signal it suffers wrap-around and an unconstrained full operator would do better -- the
+    bind framing buys the exact content-addressable round-trip, not best-in-class scalar prediction.
+  * Inverse uses conj(H)/(|H|^2+eps) (Wiener-regularised) -- the Plate tradeoff made explicit (exact
+    deconvolution is precise but amplifies near-null frequencies; regularised is robust).
+
+Tests: test_holographic_dynamics.py (+4: step IS a bind; predicts bind-shaped dynamics; trajectory
+content-addressable; rollout shape) -> 583 -> 587. Tour line added. Pure new module, nothing else
+touched.
+
+REMAINING QUEUE: B2 sparse block codes + scaled resonator; B5 rate-distortion ANS save level (fiddly
+bit-exact coder); B6 Tero flow / fragment assembly. (B1,B3,B4,B7,B8,B9,B10 shipped.)
+
+## MÖBIUS / NON-ORIENTABLE TOPOLOGY (shipped): matching representation topology to data
+
+Prompted by a question -- circles, sign flips, and noise recur throughout the engine; would a Mobius
+strip define some things better than a circle? Searched the literature (neural population activity
+traces a manifold whose TOPOLOGY MATCHES the variable: ring for head-direction, torus for grid cells,
+Klein bottle / Mobius for ORIENTATION). holostuff binds by circular convolution, so its native shape
+is the circle/torus -- right for a directed angle, WRONG for two cases:
+
+  * AXIAL data (theta == theta+pi: orientation, director/nematic fields, phase-mod-pi). On a circle
+    theta and theta+pi are ANTIPODAL (sim -1) though they are identical. Correct base = projective
+    line RP^1 = the Mobius double-cover's base. Fix = double-angle map theta -> 2*theta.
+  * SIGN-FLIPPING data f(t+T) = -f(t) (antiperiodic, a Mobius double-cover in time): all energy in
+    ODD harmonics; the periodic/circular basis is blind to it.
+
+Built holographic_mobius.py: AxialEncoder (double-angle phasor encoder, theta and theta+pi map to the
+SAME hypervector), antiperiodic_fraction / antiperiodic_split (diagnose + extract the sign-flipping
+component).
+
+MEASURED:
+  * axial recovery error (values reported as theta OR theta+pi at random): naive circle 0.470 rad vs
+    Mobius double-angle 0.002 rad; sim(theta,theta+pi) naive -0.22 vs Mobius +1.00.
+  * sign-flipping signal: ~100% of energy antiperiodic (periodic component ~1e-14).
+
+KEPT NEGATIVE / SCOPE: use ONLY for genuinely axial or sign-flipping data -- on DIRECTED data the
+circle is correct and the double-angle encoder WRONGLY merges theta with theta+pi (it discards the
+half-turn on purpose). Also NAMES an old kept negative: binary quantization maps to +-1, itself a
+Z2/antipodal (Mobius) identification -- exactly why it distorted circular geometry, and exactly why it
+would be right for axial/sign-flip data. Same lesson: topology must match the data.
+
+Tests: test_holographic_mobius.py (+6: axial identifies theta==theta+pi; naive circle disagrees;
+recovers orientation despite pi-flips; merges half-turn on purpose [scope]; antiperiodic fraction
+detects sign flip; split reconstructs) -> 587 -> 593. Tour block added. Pure new module.
+
+## STRUCTURE-FIRST COMPUTATION + REORGANIZATION (measured, no module): the fruit-fly-connectome parallel
+
+Prompted by the embodied fly-connectome result (Shiu et al. Nature 2024 wired a leaky-integrate-and-
+fire model STRAIGHT FROM the FlyWire connectome, no training, ~95% sensorimotor accuracy; Eon 2026
+drove a physics fly from the wiring alone). Load-bearing claim across the coverage: STRUCTURE CARRIES
+COMPUTATION (biological wiring beat random graphs / standard nets). That is holostuff's thesis. Backed
+it with proofs on real Brown-corpus data:
+  * PROOF 1 (structure = computation, no training): bundled per-class prototypes (just bind+bundle, no
+    gradients) classify held-out documents at 0.76 vs 0.17 chance (6 classes). The structure IS the
+    classifier -- the engine's analog of wiring driving behavior.
+  * PROOF 2 (learning = structural REORGANIZATION, honest): the RAW document cloud's effective rank
+    GROWS with samples (8.9 -> 45) -- accumulation is NOT learning. But the TASK structure is low-rank:
+    consolidating the prototypes (SVD, = our consolidation faculty) to rank 6 preserves accuracy
+    exactly (0.76), rank 4 keeps most (0.70), rank 2 breaks it (0.43). Learning is the reorganization
+    onto the low-rank task subspace, separating it from high-rank sample noise -- consolidation is the
+    holostuff move that mirrors a connectome being a specific low-complexity wiring that holds behavior.
+Written up with the Mobius findings in MOBIUS_AND_STRUCTURE.md (outputs).
+
+REMAINING QUEUE: B2 sparse block codes + scaled resonator; B5 rate-distortion ANS save level; B6 Tero
+flow / fragment assembly. (B1,B3,B4,B7,B8,B9,B10 shipped; Mobius shipped.)
+
+## HOLOGRAPHIC MACHINE (shipped): inception -- a program encoded as a vector, executed by the substrate
+
+Prompted by an inception question: a hard drive has physical structure, data in that structure, and --
+executed -- an OS, a VM, an OS inside the VM. holostuff had the lower rungs (vector = platter,
+derived_atom = format, role-filler + nested composition = file system); the missing rung is an OS that
+EXECUTES. Built holographic_machine.py / HoloMachine: a program is encoded as ONE hypervector and run by
+the engine's own bind/bundle/cleanup. Instructions and data share one vector space (von Neumann,
+holographically). "Format the drive" = fix a seed (lays down roles OP/ARG/SLOT, opcode atoms, data atoms,
+POS(i) addresses, all via derived_atom). Instruction set: LOAD/BIND/BUNDLE/PERMUTE/HALT.
+  instruction = bundle(bind(OP,opcode), bind(ARG,operand)); program = bundle_i bind(POS(i), instruction_i).
+run() unbinds each address, CLEANS opcode+operand against codebooks (wide-margin, robust to crosstalk),
+dispatches. Operands are cleaned to exact atoms before use, so ACC is EXACT despite noisy reads.
+
+MEASURED:
+  * Correctness: LOAD a; BIND b; BUNDLE c -> ACC == bundle(bind(a,b),c) cosine 1.0000; trace exact.
+  * DRIVE SIZE (capacity cliff, KEPT NEGATIVE): instruction-decode ~100% up to a length that scales with
+    dim -- ~32 instructions reliable at dim 1024, ~128 at dim 4096 -- then bundling crosstalk overwhelms
+    cleanup. Capacity is finite; the cliff is the honest HRR wall.
+  * INCEPTION DEPTH (the law): a program nested as the ONLY file at each level survives 8+ levels deep
+    (a pure unitary bind chain barely degrades); a program buried among OTHER files on each disk corrupts
+    after ~3-4 levels. Depth is set by clutter per level -- nest as deep as you like if each level is
+    clean, only a few levels on a busy disk. Both scale with dim.
+
+The stack: platter (vector) -> format (derived_atom) -> file system (bind/bundle/compose_nested) -> OS
+(HoloMachine.run) -> VM-in-OS (nest a program inside a disk inside a disk). Written up in
+HOLOGRAPHIC_INCEPTION.md (outputs).
+
+Tests: test_holographic_machine.py (+6: executes exactly; HALT stops; PERMUTE; 32-instr decodes fully;
+clean nesting deep; busy-disk depth floor [kept negative]) -> 593 -> 599. Tour block added. Pure new module.
+
+REMAINING QUEUE: B2 sparse block codes + scaled resonator; B5 rate-distortion ANS save level; B6 Tero
+flow / fragment assembly. (B1,B3,B4,B7,B8,B9,B10 shipped; Mobius shipped; HoloMachine shipped.)
+
+## HOLOGRAPHIC FUNCTIONS + CALL (shipped): functions embedded and executed in the holographic space
+
+Prompted by an inception follow-up: can we embed and execute FUNCTIONS within the holographic space
+(not as Python files)? Folders/partitions to reduce confusion? What does it enable, including things
+we didn't plan for? Measured all of it on the substrate, then shipped the load-bearing piece.
+
+MEASURED (real numbers):
+  * A function you DEMONSTRATE instead of write: a key->value (or input->output) mapping stored as ONE
+    vector M=bundle(bind(k_i,v_i)); apply f(k)=cleanup(unbind(M,k)). 100% to ~120 pairs at dim 4096,
+    cliff at ~240 (87%). This is HolographicMemory used as a learned, content-addressable function --
+    no code written, only examples given.
+  * Functions in a holographic LIBRARY, called by name: define ACC->ACC sub-programs, bundle them into
+    ONE library vector, CALL by name -> the body is extracted (unbind) and run on the current ACC.
+    'LOAD a; CALL tag_b; CALL shift' == permute(bind(a,b)) cosine 1.0. Functions compose like data.
+  * FOLDERS/PARTITIONS reduce confusion: at 256 items a flat HolographicMemory recalls 86%, a 16-folder
+    PartitionedMemory recalls 100% -- partitioning cuts crosstalk per query (folders already exist as a
+    primitive; this just names/measures the benefit).
+  * DIDN'T PLAN FOR: (a) behavioral content-addressing -- retrieve a function by an EXAMPLE of what it
+    does (a->permute(a) retrieves 'shift'); (b) function arithmetic -- bundle(f1,f2) is a function that
+    carries BOTH answers (0.18/0.18 symmetric), i.e. you can average programs like vectors.
+
+SHIPPED: holographic_machine.py extended -- OPCODES gains CALL; HoloMachine.define(name, program) embeds
+a named ACC->ACC function into a single library vector; run() gains init_acc + CALL dispatch (extract by
+name, run on current ACC, recursion-guarded). Backward compatible (init_acc defaults None; non-CALL
+programs unchanged). The other capabilities use existing primitives (HolographicMemory = demonstrated
+function; PartitionedMemory = folders), so they were measured/named, not re-implemented.
+
+WHY IT MATTERS (the multiplier): code and data now share one algebra, so EVERY engine faculty applies to
+programs too -- consolidate (compress a program), denoise (clean a corrupted program), factorize a
+program into parts, index programs for content-addressable retrieval, even generate new programs with the
+B10 sampler. The honest boundary: this is not a fast general CPU (Python is faster); its edge is
+deterministic, inspectable, composable, content-addressable code-as-data. Written up in
+HOLOGRAPHIC_FUNCTIONS.md (outputs).
+
+Tests: test_holographic_machine.py (+4: CALL runs a library function; CALL composes; library is one
+vector; run backward-compatible) -> 599 -> 603. Tour line added.
+
+REMAINING QUEUE: B2 sparse block codes; B5 rate-distortion ANS; B6 Tero flow. Also teed up: adaptive-rank
+denoising (cash B7's low-noise kept negative). (B1,B3,B4,B7,B8,B9,B10 + Mobius + HoloMachine + CALL shipped.)
+
+## B5 -- RATE-DISTORTION GEOMETRY-PRESERVING CODE (shipped): KLT -> quantize -> rANS
+
+Built B5 from the queue. holographic_ratedistortion.py: spend the minimum bits that preserve the
+DECISION GEOMETRY (cosines), not raw values, by chaining three pieces the engine half-owned -- the
+classic transform-coding pipeline:
+  consolidate (KLT/SVD)  ->  uniform scalar quantize the coefficients  ->  rANS entropy code
+Consolidation IS the KLT (decorrelates), so one quantization step on the coefficients is near
+rate-distortion-optimal and the entropy coder spends bits proportional to each component's entropy
+(water-filling for free). rANS (Duda's ANS) codes to the Shannon limit.
+
+THE FIDDLY PART, DONE FIRST (the gate): a pure-NumPy bit-exact static rANS coder. Verified 40/40 random
+streams round-trip EXACTLY (the determinism rule depends on it), coding within ~0.3% of entropy vs
+int8's flat 8 bits/sym. Only after the gate passed was anything wired to it.
+
+MEASURED (honest, complete):
+  * WIN on genuinely low-rank engine state (bundled sense states, energy fully at rank 16): matches
+    int8 fidelity (cosine 0.99998) at ~191 bits/vec vs int8's 2048 -- ~11x smaller than int8, ~43x vs
+    float32. At target 0.9999, ~7x. File format (save_rd/load_rd) measured 6.2x smaller than int8.
+  * KEPT NEGATIVE: on full-rank data (SOL RETURNS, ~rank 64/64) no subspace to exploit -> rd loses;
+    it auto-falls-back to int8 in the save path so it is never larger. Like B7, helps only where real
+    low-rank structure exists.
+  * METHODOLOGICAL NEGATIVE: participation-ratio "effective rank" misleads -- smooth SOL PRICE windows
+    looked rank ~4 but a heavy spectral tail needs rank ~40 for high cosine (rank-8 only reaches 0.93).
+    Judge low-rank-ness by energy concentration / truncation cosine, not the participation ratio.
+
+WIRED: holographic_core.save gains quant="rd" (beside int8/auto): for low-rank 2D float arrays it stores
+the packed rd code (basis f32 + rANS bytes) and falls back to int8 where rd wouldn't beat it -- so it is
+always at least as small as int8 and never breaks a save (SelfOrganizingMind round-trips, classifications
+preserved). load reconstructs. Standalone save_rd/load_rd (.rdc) provided too. Bit-exact rANS keeps the
+determinism guarantee.
+
+Tests: test_holographic_ratedistortion.py (+5: rANS bit-exact; rANS ~entropy; geometry code preserves
+cosines; beats int8 on low-rank; kept-negative full-rank) + test_core_persistence.py (+2: rd save level
+safe/non-breaking; rd activates+shrinks low-rank) -> 603 -> 610. Tour line added.
+
+REMAINING QUEUE: B2 sparse block codes + scaled resonator (the +5-orders-of-magnitude capacity lever,
+freshly grounded -- Hersche/Langenegger); B6 Tero flow / fragment assembly. Also teed up: adaptive-rank
+denoising (cash B7's low-noise kept negative). (B1,B3,B4,B5,B7,B8,B9,B10 + Mobius + HoloMachine + CALL shipped.)
+
+## HOLOGRAPHIC KAN (shipped): a deterministic Kolmogorov-Arnold readout on holostuff encoders
+
+A panel/user question -- KANs (Kolmogorov-Arnold Networks: a function as a SUM of learnable univariate
+splines, F(x)=sum_j psi_j(x_j)) sounded related to our encoder/bundle work. Checked the literature (Liu
+et al. 2024; learnable univariate functions on edges, nodes just sum; B-spline basis; adaptive grid;
+interpretable; slower than MLP, curse-of-dimensionality on splines). It IS related, and we built the
+connection deterministically. Two threads, one module holographic_kan.py:
+
+  * THREAD 1 -- AdaptiveScalarEncoder: a ScalarEncoder whose grid ADAPTS to the data via a monotonic
+    empirical-CDF warp -- KAN's "move the spline knots to where the data is", fit once and frozen
+    (stays deterministic). basis(x) = similarities of encode(warp(x)) to grid anchors = the spline
+    basis (the RBF encoder's similarity profile is a Gaussian BUMP, exactly a B-spline-like basis).
+  * THREAD 2 -- HolographicKAN: a single-layer KAN. Each feature -> its encoder's basis activations ->
+    psi_j(x_j)=a_j . basis_j(x_j); prediction = SUM over features (the Kolmogorov-Arnold inner sum =
+    holostuff's bundle). Output is LINEAR in the coefficients a, so they are fit by ridge LEAST SQUARES
+    -- NO backprop. psi_j are recoverable/plottable (KAN's interpretability), all deterministic.
+
+So: a KAN whose splines are holostuff encoder bumps and whose training is a linear solve -- KAN's idea
+in holostuff's idiom (deterministic, interpretable, structure-first).
+
+MEASURED:
+  * additive target f=sin(2pi x1)+4(x2-.5)^2: test R^2 0.999; recovered psi_1 vs sin corr 1.000,
+    psi_2 vs quadratic corr 1.000 (interpretable parts recovered); linear readout only R^2 0.54.
+  * adaptive grid beats uniform on a SKEWED feature (R^2 0.41 vs 0.25 -- resolution follows density);
+    on UNIFORM data the warp is ~identity, a kept tie (no help, no harm, costs a stored CDF).
+  * KEPT NEGATIVE: the single-layer additive form cannot represent feature INTERACTIONS (x1*x2 -> R^2
+    ~0), while the additive control x1^2+x2^2 -> R^2 0.997. Boundary shown; needs a 2nd layer or
+    explicit interaction features.
+
+Relation kept honest: cousins not twins -- KAN learns its univariate functions by backprop and is a
+neural-net approximator; ours fixes the encoder, learns only the linear readout, and is structure-first.
+The shared heart (sum of univariate basis-bump functions = bundle of per-feature encodings) is real.
+
+Tests: test_holographic_kan.py (+6: additive fit+recovery; beats linear; adaptive>uniform on skewed;
+kept-negative interactions; warp maps skewed->uniform; warp identity before fit) -> 610 -> 616. Tour
+line added. Pure new module (encoders + cosine + least squares; no kernel/compute-path change).
+
+REMAINING B-QUEUE (on hold per user): B2 sparse block codes + scaled resonator; B6 Tero flow / fragment
+assembly. Teed up: adaptive-rank denoising (B7 low-noise negative). (B1,B3,B4,B5,B7,B8,B9,B10 + Mobius +
+HoloMachine + CALL + Holographic-KAN shipped.)
+
+## GENERATIVE COMPRESSOR, part 1: the recipe-store (shipped)
+
+Follows the "proven structure has no noise" debate. A structure BUILT by a deterministic proof carries no
+noise, so it serialises to its generator losslessly: store the recipe, not the expanded vectors, and
+replaying reproduces it BIT-EXACT. This is the easy, exact half -- when we are the builder we already hold
+the proof, so there is no search and no residual.
+
+holographic_recipe.py -- StructureRecipe: a tiny replayable build-graph. Ops atom/bind/bundle/permute/
+normalize each produce one result from a seed + earlier results; you build THROUGH the recipe so you get
+both the vectors and the generator. `raw` stores a literal vector verbatim -- the escape hatch for
+non-constructed data (the measured/lossy regime; stored float32). save/load is JSON (readable) with raw
+payloads as binary float32.
+
+MEASURED: a 2000x512 derived codebook (~4.1 MB) -> ~68 KB recipe (~60x), replay max abs error 0.0
+(bit-exact). Deep nested structure recovered exactly at depth 8 -- no capacity cliff, because the recipe
+names its leaves and replays rather than reading them out of a bounded superposition. KEPT NEGATIVE: the
+`raw` escape hatch -- non-constructed/random data has no short recipe, so ratio ~0.99x (no win, no harm);
+the compression is exactly the constructed fraction (half/half -> ~2x). Constructed ops replay bit-exact;
+raw payloads are float32 (the regime where a residual coder belongs).
+
+Tests: test_holographic_recipe.py (+5). 616 -> 621.
+
+## GENERATIVE COMPRESSOR, part 2: the decompose search (shipped)
+
+The hard half: find the construction behind FOREIGN data. holographic_symbolic.py -- MDL-gated symbolic
+regression. Rather than enumerate EML/operator trees (combinatorial; EML eval is expensive -- the EML
+debate's kept negative), search a dictionary of elementary basis functions (SINDy-style; Brunton-Proctor-
+Kutz 2016) by deterministic greedy forward selection, and choose the model by Minimum Description Length:
+total bits = model bits (#terms x [index + coefficient]) + residual bits (Gaussian coding cost). MDL is
+the gate: a term is kept only if it shortens the code, so the law is the shortest program explaining the
+data -- the parsimony that makes extrapolation valid. On noise it adds nothing (honest refusal).
+
+MEASURED: recovered 2*sin(1.5x)+0.5x from noisy data (2 terms of 17), seed ~70x smaller than the data,
+extrapolation RMS 0.016. THE MDL GATE CURES OVERFITTING (solves the generative-compression debate's kept
+negative): MDL extrapolation 0.016 vs un-gated max-fit 7.6e5 (explodes out of range). On pure noise MDL
+keeps 0 terms -> just the mean -> refuses to manufacture a law (no free lunch, enforced). The recovered
+Formula is a generative SEED -- the measured-regime analogue of a StructureRecipe: build 2 finds the
+recipe, build 1 stores it, the residual is what a B5 rate-distortion coder takes.
+
+KEPT NEGATIVES: the dictionary bounds what is discoverable (a law outside the basis, or a rate off the
+frequency grid, is not found); the MDL coefficient-cost is a knob not a law; this is the tractable proxy
+for the full EML-tree search (the uniform single-operator tree remains the theoretical, far larger space).
+
+Tests: test_holographic_symbolic.py (+5). 621 -> 626.
+
+THE TWO HALVES TOGETHER = the generative compressor the panel mapped: decompose (build 2) -> seed ->
+generate/store (build 1) -> residual coder (B5), with the MDL/RecallNull parsimony gate keeping
+extrapolation honest. CONSTRUCTED data: exact, no search (build 1). MEASURED data: search + residual
+(build 2 + B5). Two regimes, two tools, one pipeline.
+
+REMAINING B-QUEUE (still on hold per user): B2 sparse block codes + scaled resonator; B6 Tero flow /
+fragment assembly. Also teed up: adaptive-rank denoising (B7 low-noise negative).
+
+## RECIPE-STORE macro op + one-call decompose pipeline (shipped)
+
+Two follow-ups closing loose ends before resuming the B-list.
+
+(1) MACRO/LOOP OP for the recipe-store. The straight-line recipe stored N explicit ops for a regular
+structure (a 2000-atom codebook -> ~60x). Added a `repeat(count, template)` op: a parameterised iteration
+captured as ONE op, with a declarative template (local refs; {i} substituted in atom names; permute shift
+can be the loop index "i"); the iteration's output is its last template result, so repeat emits `count`
+results. `atom_range(prefix, count, unitary)` is sugar over it. Refactored handles to absolute RESULT
+indices (a counter `_n_results`) since a macro produces many results per op. MEASURED: the 2000-atom
+codebook now collapses to a 96-byte recipe -> ~42,000x (was 60x), replay BIT-EXACT, save/load round-trips.
+A positional sequence (bundle_i permute(item_i, i)) is a 201-byte recipe matching the manual build exactly.
+The win: the recipe now compresses REGULAR structure to its rule, not just per-vector.
+
+(2) ONE-CALL DECOMPOSE PIPELINE. Gave the symbolic `Formula` the SAME seed interface as StructureRecipe
+(to_recipe/from_recipe/save/load/recipe_bytes/compression_ratio) -- a Formula IS the measured-regime
+recipe (it generates a scalar signal where StructureRecipe generates vectors). Added `compress_signal(x,y,
+path=None)`: decompose -> seed in one call. MEASURED: foreign data -> 135-byte seed file that reloads and
+regenerates (in-window RMS 0.005) + extrapolates (RMS 0.016); to_recipe round-trips exact; residual (B5's
+job) reported. This closes the pipeline end-to-end and is a concrete step toward the integration review's
+"unify the seed/structure representation" recommendation (both regimes now share one seed interface).
+
+Tests: +3 recipe (atom_range ratio+bit-exact; repeat template vs manual; macro save/load), +2 symbolic
+(Formula save/load roundtrip; compress_signal end-to-end). 626 -> 631. Additive (no compute-path change).
+
+NOW RESUMING THE B-LIST. Standing queue: B2 (sparse block codes + scaled resonator), B6 (Tero flow /
+fragment assembly), plus the integration-review additions B7 (typed holographic structure: recipe=EML-tree
+=program=scene), B8 (denoised structure decoding -- push the inception cliff deeper), B9 (manifold-aware
+decompose). Also teed up: adaptive-rank denoising (B7-original low-noise negative).
+
+## B2 -- SPARSE BLOCK CODES + SCALED RESONATOR (shipped)
+
+The long-queued capacity lever, and -- per the blend discussion -- the deconfounder a superposition search
+needs. holographic_sbc.py. An SBC atom is B integers (one active position per block); dense form is the
+one-hot expansion, D = B*L. bind = (a+b) mod L per block (block-local circular convolution of one-hots) --
+EXACT, lossless, where dense circular-convolution binding accumulates crosstalk. The resonator factors a
+product into one atom per codebook by annealed alternating projection (soft superposition estimates;
+deterministic annealing beta 0.5->12 to explore-then-commit; random init to break the symmetric trap;
+restarts), and verifies itself with a hard CONFIDENCE check: do the recovered factors RECONSTRUCT the
+product? validated=True <=> correct.
+
+WHY annealing+restarts: a fixed-temperature softmax collapses to spurious fixed points (measured: ~0.13
+accuracy); signed-linear cleanup stalls too; deterministic annealing + reconstruction-validated restarts
+fixed it.
+
+MEASURED (head-to-head at fixed D=256, F=3): SBC beats dense at every alphabet with signal -- N=10 1.00 vs
+0.90, N=25 0.25 vs 0.15, N=50 0.05 vs 0.00 (consistent, modest edge). The confidence check tracks
+correctness EXACTLY (validated<=>correct, precision ~1.0); coverage drops with alphabet so it verifies or
+abstains rather than guessing. KEPT NEGATIVES: absolute capacity modest (both collapse by N~100; more
+blocks/restarts raise both); SBC is a PARALLEL representation requiring sparse-block-coded data (beside the
+dense kernel, not inside it); exact reconstruction-validation makes it abstain under product corruption
+(honest but conservative).
+
+Tests: test_holographic_sbc.py (+5: exact block bind/unbind; clean factorization; confidence=>correctness;
+high coverage at N=10; abstains on corruption). 631 -> 636. New standalone module, no compute-path change.
+
+THREAD TO CIRCLE BACK TO: the resonator's verified-factorization is the deconfounder for the underexploited
+"superposition-parallel candidate search" in the decompose pipeline (blend candidate sub-expressions, let
+the resonator factor which are present, verify by reconstruction). That is the next step on the blend thread.
+
+B-LIST STANDING: B2 DONE. Remaining: B6 (Tero flow / fragment assembly), B7 (typed holographic structure),
+B8 (denoised structure decoding), B9 (manifold-aware decompose); teed up: adaptive-rank denoising.
+
+## STRUCTURAL DECOMPOSE: the verified resonator as the inverse of build-1 (shipped, blend thread)
+
+Picking the blend thread back up with B2's resonator now in hand. The honest scoping: the resonator's
+unique power is factoring a BOUND PRODUCT of unknowns -- and a bound product is DISSIMILAR to its factors,
+so you cannot read them off naively (measured: per-factor readout of a product is chance). That is exactly
+where the superposition-parallel + deconfounded + VERIFIED search earns its keep -- and it applies to
+compositional STRUCTURE (scenes, recipes, trees), not flat numeric sums (where greedy/matching-pursuit
+already deconfounds, so the resonator adds nothing there -- kept scope).
+
+holographic_sbc.py gains `decompose_structure(composed, codebooks, L)` -> {picks, factors, verified,
+present}: recover the generating recipe of a composed structure via the verified resonator -- the
+structural INVERSE of build-1's recipe-store (build 1: recipe->structure forward; this: structure->recipe
+inverse). `sbc_identity` lets a factor be detected ABSENT, so you can blend candidates INCLUDING an
+'absent' option and factor which are PRESENT -- the literal "blend candidate sub-expressions, factor which
+are present" idea.
+
+MEASURED: naive per-factor readout of a product (2,5,8) gives (2,0,0) = chance; the resonator recovers
+(2,5,8) verified. Presence detection: a structure missing its third factor -> present=[True,True,False],
+verified. Recovered recipe reconstructs the structure exactly. Superposition-parallel: resolves 1 of N^F
+combinations (1000) without enumerating them. KEPT NEGATIVES: applies to compositional/product structure
+with known codebooks, NOT to numeric-signal decompose (greedy already deconfounds sums); capacity is the
+resonator's (modest, from B2); aliasing -- if two factor-combos reconstruct the same product, verification
+cannot distinguish them (rare).
+
+This closes the loop the integration review wanted: build-1 (store known structure as recipe, forward) and
+this (decompose foreign structure to recipe, inverse), with build-2 the numeric-signal analogue. Three
+decompose regimes now: numeric signal -> law (build 2, greedy/MDL); composed structure -> recipe (this,
+verified resonator); known structure -> recipe (build 1, no search).
+
+Tests: +3 in test_holographic_sbc.py (recover+verify; detect absent factor; naive-fails-resonator-succeeds).
+636 -> 639. Additive (extends holographic_sbc; no compute-path change).
+
+## DECOMPOSE: multiplicative mode via the log transform (shipped)
+
+From the prime-factorization discussion: the deep takeaway was that MULTIPLICATIVE structure becomes
+ADDITIVE in the right basis (a logarithm to a prime basis turns x into +). The transferable nugget: our
+greedy/MDL decompose only finds ADDITIVE (sum-of-terms) laws, but a multiplicative law a*x^p*exp(cx)*...
+becomes additive under log y. So holographic_symbolic.py gains a multiplicative path:
+  * `_eval_atom` gains a `log` kind (log|x|); `log_dictionary()` = {log|x|, x, x^2, x^3} -- the log-images
+    of power and exp-of-polynomial factors.
+  * `Formula` gains `log_space`: generate() exponentiates, so the additive log-fit becomes a PRODUCT law.
+  * `symbolic_regress(..., multiplicative=True)` fits log(y) (requires y>0); term selection runs in log
+    space, resid_rms is reported in the ORIGINAL space (comparable across modes).
+  * `compress_signal(..., mode='additive'|'multiplicative'|'auto')`. auto switches to multiplicative only
+    if it is COMPETITIVE in-sample AND generalizes better on a held-out tail.
+
+MEASURED: recovered exp(0.707 + 1.51 log x + 0.29 x) = 2*x^1.5*exp(0.3x) -- the exact product law, extrap
+relRMS 0.017, which the flat additive basis only approximates. auto-selection over 6 seeds: additive data
+-> additive 6/6 (never a false positive), multiplicative data -> multiplicative 4/6 (else falls back to
+additive, which still fits). KEPT NEGATIVES: needs y>0 (and x>0 for the log|x| power-law basis);
+multiplicative mode FAILS on additive laws (log of a sum is not a sum -- measured resid 0.378 vs 0.031);
+auto-selection between the two FAMILIES is genuinely hard when both fit in-sample, so the selector is a
+conservative heuristic (never false-positive; ~4/6 true-positive), erring toward additive.
+
+Tests: +5 in test_holographic_symbolic.py (recovers product law; requires y>0; log_space roundtrip;
+auto never false-positives on additive; multiplicative beats additive extrapolation). 639 -> 644.
+Additive (extends the decompose; no kernel/compute-path change).
+
+## B7 KEYSTONE: one typed holographic structure (shipped)
+
+The integration review's headline was "substrate-integrated, orchestration-siloed": the engine's four
+"structure" types -- a build RECIPE, an assembled PROGRAM (HoloMachine), an EML/expression TREE, and a
+composed nested SCENE (UnifiedMind.compose_nested) -- are not four things. They are ONE directed graph of
+the same primitives replayed to a vector, and StructureRecipe already IS that graph. holographic_typed.py
+makes the unification concrete and MEASURED with adapters that reproduce each source bit-exactly:
+  * program_to_recipe(machine, program)   == HoloMachine.assemble   (cosine 1.000000, max|diff| 0.0)
+  * tree_to_recipe(dim, seed, tree)        == encode_tree (direct)   (cosine 1.000000, max|diff| 0.0)
+  * nested_scene_to_recipe(mind, groups)   == mind.compose_nested    (cosine 1.000000, max|diff| <1e-9)
+The union alphabet across all three is just {atom, raw, bind, bundle, superpose} -- one small primitive
+set, not five class hierarchies. A new `superpose` op (un-normalized sum) was added to StructureRecipe so
+it can reproduce compose_nested's raw np.sum (the renormalizing `bundle` could not); backward-compatible.
+
+WIRED INTO UnifiedMind (the de-siloing): typed_structure() -> a fresh recipe at the mind's dim/seed;
+realize(recipe) -> the single replay path; tree_structure(tree) and nested_scene_structure(groups) emit the
+mind's own compositions AS typed structures (verified cosine 1.0 against the source ops).
+
+WHAT IS / ISN'T UNIFIED (kept honestly):
+  * Unified: the forward ENCODING. Name-addressable leaves (program opcodes, tree roles, scene group keys)
+    become atoms; rng-drawn leaves (a SceneCoder sub-scene) ride as `raw` payloads -- so the scene's
+    constructed STRUCTURE unifies into named atoms while its rng leaves stay raw (the constructed-vs-measured
+    split again; raw round-trips to float32 ~1e-8, constructed all-atom round-trips truly bit-exact).
+  * NOT unified: SEMANTICS (program execution / the CALL library, an EML node's scalar eval) -- those are
+    layers above the encoding; program_to_recipe rejects CALL as out of scope. And the INVERSE (decode a
+    foreign vector to a structure) is the resonator's job (decompose_structure), bounded by crosstalk -- a
+    structure here is a GENERATOR, not a parser. B8 (denoised decode) and B9 (manifold) target this one type.
+
+Tests: +7 in test_holographic_typed.py (program/tree/scene bit-exact; one-alphabet; CALL out of scope;
+UnifiedMind wiring; superpose constructed round-trip). 644 -> 651. Additive: a new recipe primitive +
+a new module + new UnifiedMind methods; no kernel/compute-path change.
+
+## B8: denoised structure decoding -- per-peel cleanup pushes the decode depth cliff (shipped)
+
+The B7 keystone unified the forward ENCODING; B8 attacks the INVERSE. A composed structure decoded by
+ITERATED unbinding accumulates crosstalk, and -- the crux -- without cleanup that noise is carried into
+the next query and COMPOUNDS. holographic_peel.py demonstrates this on a linked list
+M = superpose_i bind(node_i, node_{i+1}) (itself a B7 typed structure via chain_recipe):
+  * MEASURED (16-node chain, dim 512): raw traversal (no cleanup) decodes ~2/15 hops then craters and
+    the carried vector diverges; per-peel cleanup decodes 15/15. ~2 -> full chain. Per-peel cleanup is
+    the whole game.
+  * Hard argmax cleanup and the B1 dense-Hopfield cleanup TIE on the discrete pointer (both 15/15) --
+    exactly B1's kept negative: snapping to the nearest atom is Bayes-optimal for identity, so soft
+    cannot beat it there.
+  * The soft (Hopfield) update earns its keep on CONTINUOUS payloads: recovering off-grid scalar-encoded
+    values from a superposition, the soft blend beats hard snap-to-grid (cosine ~0.996 vs ~0.990) -- it
+    returns a mixture of nearby grid atoms, landing between grid points where the true value lives.
+
+KEPT NEGATIVES / scope: a commutative-bind chain has an INTRINSIC predecessor leak (unbinding node_i
+surfaces node_{i-1} as a clean atom, since node_{i-1} bound it as its value and node_i*involution(node_i)
+=delta). A forward traversal KNOWS its predecessor, so traverse() explains it away -- standard history-aware
+decode, reported not hidden. Permuting the key/value does NOT fix it (permute distributes through the
+convolution and the cancellation returns); disjoint key/value codebooks would, at the cost of chainability.
+SBC block codes (B2) bind losslessly -> no leak and no cliff to push (so this is a DENSE-HRR technique).
+The soft-vs-hard continuous win is modest (~0.6%). Reuses dense_cleanup (B1) and StructureRecipe (B7).
+
+Tests: +6 in test_holographic_peel.py (full-chain decode vs raw crater; hard/soft tie on pointers; correct
+sequence; chain is a typed structure bit-exact; soft beats hard on continuous values; diverged hop marked).
+651 -> 657. Additive: a new module; no kernel/compute-path change.
+
+## B9: manifold-aware decompose -- detect topology, decompose on the right manifold (shipped)
+
+The build-2 decompose assumes a flat line (a sum of elementary functions over an open interval). Many
+signals live on a curved domain -- a RING (periodic), an antiperiodic MOBIUS band (only odd harmonics),
+or a TORUS (two periods). On the wrong manifold a periodic signal needs many terms and EXTRAPOLATES BY
+DIVERGING (a polynomial shoots off where the true signal repeats). holographic_manifold.py detects the
+topology, then decomposes on the matched basis -- the decompose-side twin of the Mobius/AxialEncoder.
+
+DETECTION: detrend -> FFT for a candidate fundamental (the LOWEST significant peak; a strong harmonic is
+not the fundamental) -> VALIDATE by how well a harmonic basis at that period actually fits (robust to FFT
+leakage). Commensurate peaks -> periodic (ring; mobius if the odd-only fit is as good); an incommensurate
+peak -> torus. A poor best-fit (R^2<0.9) is guarded back to "line" (no spurious rings).
+
+MEASURED: detected an OFF-GRID period (P~5, off the elementary freq grid) as ring; the matched harmonic
+basis EXTRAPOLATES (RMS 0.024) where the flat-line polynomial DIVERGES/fails (RMS ~1.0 ring, ~5.4 mobius).
+line/ring/mobius classify correctly and survive 5% noise (3/3 seeds each) on a 2-cycle window.
+
+KEPT NEGATIVES:
+  * TORUS needs a window long enough to RESOLVE the two incommensurate tones (Rayleigh, span>=1/df). On a
+    short 2-cycle window the tones merge into one blurred peak and detection falls back to line rather than
+    guessing -- a reported limitation, not a silent error (resolved correctly on a long window).
+  * The MOBIUS (odd-only) basis vs the full ring basis is a TIE on extrapolation under noise (~0.005 each):
+    MDL on the full-ring basis already prunes the spurious even harmonics, so the odd-only restriction's
+    value is STRUCTURAL (guaranteed antiperiodicity, half the basis size), not measured accuracy.
+
+Feeds straight into symbolic_regress (build 2) via a topology-matched dictionary -- no new search machinery.
+Tests: +8 in test_holographic_manifold.py (detect line/ring/mobius; noise robustness; accurate period;
+matched extrapolates vs flat-line diverges; dictionary shapes incl odd-only; records topology; torus window
+requirement; line not forced to ring). 657 -> 665. Additive: a new module; no kernel/compute-path change.
+
+## B6: Physarum flow-conductance maze solver (Tero et al. 2007) -- shipped
+
+The elitist-ant slime solver (holographic_slime) is stochastic: random walkers laying pheromone into one
+HRR field, needing many rounds + elitist reinforcement on a braided maze to avoid a longer tube.
+holographic_flow.py implements the PRINCIPLED dynamics the organism actually uses (Tero, Kobayashi,
+Nakagaki 2007): the maze is a tube network, flux from source(start) to sink(goal) is a weighted
+graph-Laplacian solve L p = b (Poiseuille Q_ij = D_ij(p_i-p_j), conservation at every node), and tubes
+adapt dD/dt = f(|Q|)-D with saturating f(Q)=|Q|^mu/(1+|Q|^mu). Iterate solve->adapt and the network
+collapses onto the shortest source-sink path.
+
+MEASURED vs the elitist ant on braided 16x16 mazes (same maze, same optimum): both find the OPTIMAL path
+(seeds 3/7/11/15 -> 84/38/46/42 steps); Tero is DETERMINISTIC (identical reruns) and ~100-340x FASTER
+(~90ms vs the ant's 10-32s). The bar -- beat elitist-ant on the braided maze at equal cost -- cleared
+decisively. Path extracted by thresholding surviving tubes (BFS), falling back to a widest-path
+(Dijkstra on 1/D) route.
+
+KEPT NEGATIVES / scope: Tero is CENTRALIZED -- each step solves the WHOLE graph's Laplacian (O(N^3) dense),
+whereas the ant is decentralized (local diffusion, one holographic field, plus the hierarchical partition
+for huge mazes). So this is the principled-physics complement to the holographic ant, operating on the
+DECODED adjacency, not itself a holographic method. It needs an explicit source+sink (the ant can diffuse
+with no goal). The Baker/Rosetta-seat extension -- fragment assembly as a flow over an energy-conductance
+landscape -- is NOT built; this delivers the maze bar, which was the gate.
+
+Tests: +6 in test_holographic_flow.py (optimal on braided mazes; deterministic; picks short route through a
+loop; disconnected/missing-endpoint -> None; wrapper reports optimum + determinism). 665 -> 671. Additive:
+a new module; no kernel/compute-path change.
+
+## Adaptive-rank denoising -- cashing the fixed-rank low-noise negative (shipped)
+
+B7-original's manifold denoiser (fixed rank-8 projection) had a kept negative: at LOW noise it over-smooths
+(projecting onto rank-8 discards real signal detail), measured -0.57 dB harm on real SOL windows. The
+teed-up fix (Donoho/Milanfar threshold selection) is now in holographic_denoise.py:
+  * fit_manifold_full(samples, rank) -> a GENEROUS basis + its singular values.
+  * estimate_sigma(x) -> Donoho's MAD-of-finest-detail noise estimate (parameter-free).
+  * adaptive_manifold_denoise(x, basis, mean, sigma=None) -> project, then HARD-THRESHOLD the coefficients
+    at the universal level kappa*sigma*sqrt(2 ln r) (Donoho-Johnstone shrinkage in the manifold basis).
+MEASURED on real SOL windows: at sigma=0.3 fixed rank-8 HARMS (-0.57 dB) while adaptive is neutral (-0.10);
+at sigma=0.8 fixed +5.56 dB, adaptive +4.23 dB. The negative is cashed -- adaptive never meaningfully harms
+across the noise range. KEPT NEGATIVE: adaptive does NOT match the ORACLE fixed-rank's peak high-noise gain
+(when the true rank is known); the value is robustness to UNKNOWN noise, not beating the oracle. A contiguous
+top-r* variant was rejected (it truncates real detail at low noise just like fixed rank); individual
+coefficient thresholding keeps detail wherever it sits. +5 tests in test_holographic_denoise_adaptive.py.
+
+## B6 part 2 -- fragment assembly as flow search (the Baker/Rosetta seat) (shipped)
+
+The maze solver finds a min-cost path on a grid; the Baker/Rosetta seat's fragment assembly -- choose a
+fragment per position to minimise an energy, consecutive fragments overlap-agreeing -- is a min-cost path on
+a layered (position x fragment) TRELLIS. Same search. holographic_assembly.py builds the trellis (placement
+energy encoded as unit hops via relay nodes, so the unit-length Tero solver's shortest path == the min-energy
+assembly) and recovers the chosen fragments as a B7 StructureRecipe (each fragment bound to its position).
+MEASURED vs exact DP (Viterbi): complete library -> assembles the target EXACTLY (energy 0); with a true
+fragment missing -> forced mismatches, and the flow assembly MATCHES the DP optimum (energy 9 == 9), i.e. the
+GLOBAL best, not a greedy one. KEPT NEGATIVE: this is the combinatorial CORE (a placement-mismatch energy, a
+Rosetta-score stand-in), not a protein force field; the relay encoding bloats the graph by total energy
+(fine small; weight edges by length directly for large). +4 tests in test_holographic_assembly.py.
+
+These two finish the B-list: every breakthrough (B1-B10), the three integration-review items (typed
+structure / denoised decode / manifold decompose), B6 (Tero flow) and its fragment-assembly generalisation,
+plus the teed-up adaptive-rank denoiser, are shipped and measured with negatives intact. 671 -> 680.
+
+## Integration plan, Tier 1 -- the DECOMPOSE / DENOISE / FIT faculties wired into UnifiedMind (shipped)
+
+The integration plan's audit found 14 modules built since the last review with ZERO references in
+UnifiedMind: the substrate was shared (every module is bind/bundle/cleanup on the one kernel) but the
+orchestration was siloed. UnifiedMind was strong on one half of the loop -- COMPOSE / RECALL / PREDICT /
+GENERATE (build structure, act) -- and everything built since is the OTHER half: DECOMPOSE / DENOISE /
+SEARCH (take a foreign signal apart, on the right manifold, cleaned). This ships Tier 1: the three
+highest-value, mostly-thin-wrapping faculties, each unifying several modules behind one honest entry
+point -- the same move B7's typed_structure() made for composition.
+
+  * decompose_signal(x, y) -- one faculty over manifold + symbolic + the multiplicative mode + mobius.
+    Detect the domain topology (detect_topology), then route the basis: line -> compress_signal(mode=
+    'auto') picks an additive OR multiplicative (log-transform) law by the measured conservative rule
+    (competitive in-sample AND better on a held-out tail); ring/mobius/torus -> decompose_on_manifold's
+    matched harmonic basis (mobius = ODD harmonics only, the antiperiodic space). Returns a Formula --
+    already a savable seed (.generate/.save/.load), the measured-regime twin of a StructureRecipe.
+    info normalised across both branches: topology, period, mode, n_terms, resid_rms, compression_ratio.
+    Ergonomic shorthand: decompose_signal(y) fits a lone signal on a unit index grid.
+  * denoise(x, method='auto', samples=/codebook=) -- one callable over denoise + hopfield. 'adaptive'
+    (noise-thresholded low-rank projection, the safe default), 'manifold' (fixed-rank), 'codebook'
+    (modern-Hopfield cleanup), 'nlm' (non-local means on x's own near-duplicates), 'pnp' (Plug-and-Play
+    /RED restoration with the adaptive map as prior). 'auto' picks codebook if a codebook is given else
+    adaptive manifold if samples are given. DECISION KEPT HONEST: NLM and PnP stay opt-in -- deciding
+    self-similar-vs-low-rank automatically is itself a measurement, not faked with an unvalidated
+    heuristic. And denoise REFUSES a lone vector with no prior (samples/codebook): a denoiser is a map
+    of a manifold, and there is no free lunch.
+  * fit_function(X, y) -- the KAN readout as a faculty: a single-layer Kolmogorov-Arnold fit
+    (HolographicKAN) at this mind's seed, exposing .predict and .feature_function(j, ts). A lone feature
+    vector is taken as one column.
+
+KEPT NEGATIVES, surfaced through the faculties rather than buried in the modules: fixed-rank projection
+over-smooths at low noise (use 'adaptive', ~neutral there); a manifold projection only helps where real
+low-rank structure exists (it destroys structureless signal); NLM only helps where near-duplicates exist;
+a single-layer additive KAN cannot represent feature interactions (e.g. x1*x2) -- additive by construction.
+And the multiplicative law is auto-selected only on a LINE domain and needs y > 0; a torus needs a window
+long enough to resolve both tones or detection falls back to line (the Rayleigh limit).
+
+THE WIRING IS PROVEN, NOT NOMINAL. The plan's hardest prior lesson (its section 6) was that naive
+cross-module chaining once REGRESSED -- a denoiser fed a recall output dropped cosine -- because a shared
+KERNEL is not a shared MANIFOLD. So Tier 1 lands with test_integration.py running a cross-faculty pipeline
+THROUGH the mind end to end: detect topology -> decompose_signal -> seed.save -> realize (reload + generate)
+-> denoise, with each hop's prior matched to its input, asserting the END materially improves on the noisy
+input (no silent regression). A faculty that only imports is still a silo; these run. A live confirmation
+fell out of writing the test: the pipeline signal sin(x) + 0.4 sin(3x) is purely odd-harmonic, so the
+topology detector correctly classified it as MOBIUS (not ring) -- the antiperiodic branch firing on real
+input, exactly as the manifold work intended.
+
+Tests: +7 in test_integration.py (faculties present; periodic-law recovery + bit-exact seed roundtrip +
+bounded periodic extrapolation; multiplicative auto-select + single-array shorthand; the end-to-end
+pipeline with a no-regression assertion; denoise routing + the honest no-prior refusal + the codebook map;
+real-SOL high-noise denoise gain; KAN additive recovery + the interaction-limit boundary). 680 -> 687.
+Additive: three new methods on UnifiedMind, each a thin lazy-import wrapper over already-measured modules;
+no kernel or compute-path change; fully backward-compatible (new methods only, no signature changes).
+
+NOT YET WIRED (the rest of the integration plan, sequenced next): Tier 2 -- resolve the factor_composite
+duplication by delegating to the B2 SBC resonator (the real de-siloing), decode_structure via peel, and the
+opt-in energy cleanup; Tier 3 -- the flow-search and dynamics faculties; Tier 4 -- rd-quant save and the
+generative reconcile. This entry covers Tier 1 only.
+
+## Integration plan, Tier 2 (item 5) -- the factor_composite de-siloing (shipped)
+
+The plan's "real de-siloing": the audit found TWO factorizers -- the original dense MAP/bipolar
+ResonatorNetwork (reached via UnifiedMind.factor_composite) and the newer SBC resonator
+(holographic_sbc.decompose_structure / sbc_resonator) with measured higher capacity and a
+reconstruction-confidence check -- and called for one. Reading both made the honest shape of the fix
+clear, and it is NOT the literal "replace factor_composite's internals" the one-line plan implied:
+
+  * The two factor DIFFERENT objects in DIFFERENT algebras. Dense MAP binding is the elementwise
+    sign-product (self-inverse); SBC binding is per-block modular addition of one-hots (block-local
+    circular convolution). The SBC resonator CANNOT factor a dense MAP composite, and you cannot
+    faithfully transcode an existing dense composite into SBC and recover the same indices. Verified by
+    reading the modules; the B2 module states it outright ("SBC lives beside the dense kernel, not
+    inside it").
+  * factor_composite's dense contract is PINNED by test_brain_factor_composite (dense codebooks, a
+    MAP-bound triple, must solve) and by the backward-compatibility rule. So the dense path could not be
+    deleted -- only delegated-past and deprecated.
+
+What shipped, the honest version:
+  * NEW FACULTY UnifiedMind.decompose_structure(composed, codebooks, L) -- the SBC factorizer, which had
+    NO mind-level entry point before (only a bare module fn and a tour line), is now a first-class faculty
+    the mind speaks directly. Returns {picks, factors, verified, present}: verified<=>the picks rebuild the
+    product (it verifies or abstains, never guesses), and present[f] is False when factor f resolved to the
+    SBC identity (presence detection).
+  * factor_composite is now ONE entry point: given an `L` it routes to decompose_structure (the preferred,
+    validated path) and maps the result onto a superset of the old contract (factors/solved + verified/
+    present + backend='sbc'); without `L` it runs the legacy dense ResonatorNetwork and emits a
+    DeprecationWarning steering new code to the SBC path (backend='dense'). The dense return keys are
+    unchanged, so the pinned test still passes.
+
+This is genuine de-siloing -- one factorizer for new code, exposed by name -- without faking an algebra
+bridge. KEPT NEGATIVE / boundary, on the record: the dense MAP path is RETAINED (deprecated, not removed)
+because the SBC resonator is a different algebra that cannot factor dense MAP composites; "one factorizer"
+means one PREFERRED, mind-exposed factorizer with the legacy path honestly labelled, not a single
+implementation covering both algebras. CI runs plain `pytest -q` (no warning escalation), so the
+DeprecationWarning is informative, not breaking; the one legacy test that triggers it now asserts it via
+pytest.warns, keeping CI output clean and the intent explicit.
+
+Tests: +3 in test_integration.py (decompose_structure faculty factors + verifies + presence; factor_composite
+routes to SBC and agrees with decompose_structure, presence survives routing; the dense path is
+backward-compatible AND deprecated). test_holographic_resonator.py's brain test updated to expect the
+deprecation (no count change). 687 -> 690. Additive: one new method + a router on the existing method; no
+kernel/compute-path change; the dense path's behaviour and return keys are unchanged.
+
+NEXT (still queued): Tier 2 remainder -- decode_structure via peel (the B8 denoised per-peel decode), and
+opt-in energy cleanup (cleanup(..., energy=True) -> hopfield.dense_cleanup, pinned to argmax at high beta);
+then Tier 3 (flow-search + dynamics faculties) and Tier 4 (rd-quant save + generative reconcile).
+
+## Integration plan, Tier 2 (items 4 & 6) -- decode_structure (peel) + opt-in energy cleanup (shipped)
+
+The two smaller Tier 2 wirings, finishing the DECODE side. Both modules were already shipped and measured
+(B8 peel, B1 dense-Hopfield); the work was exposing them on the mind, with their negatives intact.
+
+  * NEW FACULTIES chain_structure(n) and decode_structure(memory, nodes) -- B7's forward chain object and
+    its B8 inverse, on the one substrate. chain_structure builds the linked list M = superpose_i
+    bind(node_i, node_{i+1}) as a StructureRecipe at the mind's dim/seed (realize() gives M); decode_structure
+    traverses it back by iterated unbinding with PER-PEEL CLEANUP. The crux B8 measured, now visible through
+    the mind: each recovered pointer is noisy and that noise COMPOUNDS into the next hop, so a raw traversal
+    (cleanup=None) craters after ~1-2 hops while per-peel cleanup decodes all 15 of a 16-node chain. cleanup
+    in {None, 'hard', 'soft'}; hard and soft TIE on the discrete pointer (B1's kept negative -- argmax is
+    Bayes-optimal for identity). Named distinctly from decompose_structure on purpose: decode_structure is the
+    SEQUENCE inverse (traverse a chain), decompose_structure is the PRODUCT inverse (factor a bound product) --
+    different structures, different inverses; the docstrings cross-reference so the pair is not confused.
+  * OPT-IN ENERGY CLEANUP -- the B1 plan, finally wired exactly where B1 specified: Vocabulary.cleanup gained
+    an energy=False flag (beta, steps). With energy=True the query is first denoised by the modern-Hopfield
+    update z <- V^T softmax(beta*V z) against the candidate codebook, THEN the usual nearest-symbol readout
+    runs. At beta->inf the softmax is one-hot, so the returned identity is BIT-FOR-BIT the plain argmax (the
+    pinned guarantee). It is a kernel change but purely additive and default-off, so every existing caller is
+    unaffected (verified: the full core suite passes unchanged). KEPT NEGATIVE, restated: on identity it ties
+    hard argmax -- the value is cleaning CONTINUOUS vectors (the Tier 1 denoise faculty and peel's soft path),
+    not changing which discrete symbol wins.
+
+With these, the mind speaks the whole inverse half of the loop: decompose_signal (a law), decompose_structure
+(a product's factors), decode_structure (a chain's sequence), denoise (a manifold), fit_function (a function) --
+each a thin faculty over measured code, each proven through the mind.
+
+Tests: +2 in test_integration.py (decode_structure round-trips a chain through the mind -- per-peel decodes 15/15,
+raw craters <=3, soft ties hard; energy cleanup is opt-in and matches argmax bit-for-bit at high beta). 690 -> 692.
+Additive: two new mind faculties + one default-off optional kwarg on Vocabulary.cleanup; no change to any existing
+code path (core engine, algebra, peel, typed, recipe, unified suites all pass unchanged).
+
+TIER 2 IS COMPLETE (items 4, 5, 6). REMAINING: Tier 3 -- one flow-search faculty (solve_maze via flow.solve_maze_flow,
+assemble via assembly.assemble) and learn_dynamics (dynamics.Propagator, keeping the market kept-negative); Tier 4 --
+UnifiedMind save requesting quant='rd' on low-rank arrays, and reconciling the generative paths (vector generate ->
+hopfield.generate, splat -> scene/archive). Also pending from the modules' own B-list: NEW B7/B8 were the typed
+structure and denoised decode (now both wired); no further B-list items remain unshipped per the last close-out.
+
+## Integration plan, Tier 3 -- the SEARCH & DYNAMICS faculties (shipped)
+
+Min-cost search (on a graph, on a trellis) and learned linear dynamics, now faculties of the mind. All
+three modules were shipped and measured already; the work was exposing them on UnifiedMind with their
+negatives intact, and -- where natural -- returning the search result as a B7 typed structure.
+
+  * NEW FACULTY solve_maze(world) -> delegates to flow.solve_maze_flow (the deterministic Tero
+    flow-conductance model: Physarum tubes thicken with Poiseuille flux until the network collapses onto
+    the shortest path). Same (path, info) interface as the stochastic slime solver, but DETERMINISTIC and
+    ~100x faster, and it lands EXACTLY on the optimum on braided mazes (extracted_len == optimal).
+  * NEW FACULTY assemble(target, library) -> delegates to assembly.assemble, built at the mind's dim/seed.
+    Rosetta-style fragment assembly (a fragment per position minimising a placement energy, consecutive
+    fragments overlap-agreeing) cast as the SAME min-cost flow the maze solver runs, on a (position x
+    fragment) trellis. Returns the assembled string, energy, chosen (pos, fragment) list, and a B7
+    StructureRecipe binding each fragment to its position -- the search result AS a typed structure the mind
+    can realize(). It attains the GLOBAL (Viterbi) optimum, not a greedy one. KEPT NEGATIVE: the energy is a
+    placement-mismatch / Rosetta-score STAND-IN, the combinatorial core, not a protein force field. Per the
+    plan, the DP oracle assemble_optimal_energy stays a module reference function, NOT a mind method.
+  * NEW FACULTY learn_dynamics(states) -> delegates to dynamics.Propagator.learn. Learns a fixed operator U
+    with state(t+1) ~ bind(U, state(t)) -- in HRR's Fourier domain a per-frequency complex transfer, i.e. the
+    Koopman/DMD operator in Fourier coordinates. The Propagator exposes .step (one-step prediction = a single
+    bind), .rollout(state, k), and .recall_at(state, k) (recover the state k steps BEFORE one now). KEPT
+    NEGATIVE on real SOL returns: prediction only TIES a trivial mean predictor (near-efficient-market returns
+    have almost no linear structure for a fixed operator to exploit) -- it shines on signals with genuine
+    linear dynamics (audio, fluids, a bind-shaped control). The CONTENT-ADDRESSABLE round-trip (forward k then
+    back k -> the start at cosine ~1.0) is the durable win regardless, and is what the integration test pins.
+
+Tests: +3 in test_integration.py (solve_maze finds the optimal path and is deterministic; assemble is optimal,
+matches the exact DP under forced mismatch, and returns a realizable B7 typed structure; learn_dynamics predicts
+bind-shaped dynamics far past persistence and round-trips a trajectory at cosine >0.99). 692 -> 695. Additive:
+three new mind faculties, each a thin lazy-import delegate over an already-measured module; no kernel or
+compute-path change; backward-compatible (new methods only).
+
+TIER 3 COMPLETE. REMAINING: Tier 4 (lowest urgency) -- (9) UnifiedMind's save path requesting quant='rd' on
+low-rank arrays (B5 is already in holographic_core.save; just request it from the mind), and (10) reconciling the
+generative paths: point a vector-level generate at hopfield.generate (B10 diffusion) and connect splat (B8) to
+the scene/archive representation.
+
+## Integration plan, Tier 4 -- persistence (rate-distortion) + the generative faculties (shipped)
+
+The last tier, and the one where the plan's estimate was furthest off: item 9 ("UnifiedMind save uses
+quant='rd' -- just request it. Small.") assumed a save path existed. It did NOT -- UnifiedMind had no
+to_state/save at all. So this built one, honestly scoped, with a round-trip test (the project's bar for
+persistence), which makes it a real feature, not a flag flip.
+
+  * NEW: UnifiedMind.to_state / from_state / save / load, and UnifiedMind registered in
+    holographic_core._registry() (lazy import, no load-time cycle), so the kernel's versioned save handles
+    it like every other persistable object and quant='rd'/'auto'/'int8' all apply. save persists the mind's
+    LEARNED GENERALIZATION: the encoder (perception), the SelfOrganizingMind (the prototype classifier), the
+    HolographicMind decision brain, and the routing/format bookkeeping classify reads. MEASURED: classify AND
+    decide are bit-for-bit identical after save->load across quant levels (the encoder, memory, and brain each
+    already had verified round-trips; this composes them).
+    DOCUMENTED BOUNDARY / KEPT NEGATIVE: the verbatim recall index of individuals (`_recall`) is NOT persisted
+    -- its payloads are arbitrary original inputs (raw arrays, dicts, strings) that do not round-trip through a
+    structured array save -- and the lazy/derived faculties (sequence & plan memory, the text/word generators,
+    meaning predictors, the scene coder, the FHRR high-capacity memory) are rebuilt on use, not stored. What
+    round-trips is the trained generalization (classify + decide), proven; recall raises "nothing learned yet"
+    after a bare load (re-learn for it). Also honest: on a SMALL mind quant='rd' finds no low-rank 2D array to
+    activate on and falls back to int8 (marginally larger only by per-array qspec overhead) -- rd's ~11x win is
+    on genuinely low-rank consolidated/bundled state, exactly as the B5 module documents.
+  * NEW FACULTY generate_vector(codebook) -> delegates to hopfield.generate (B10): generate a hypervector by
+    denoising FROM PURE NOISE -- anneal beta up and injected noise down, walking onto the codebook manifold.
+    Generation and denoising are the same operation in different regimes; this is the vector-level twin of the
+    text generate(). KEPT NEGATIVE: over a bare codebook it converges to a stored atom (degenerate) -- feed a
+    composed/continuous manifold for novel-but-valid samples.
+  * NEW FACULTY splat_field(target, k, denoise=False) -> delegates to holographic_splat: represent a 2-D field
+    as a SUPERPOSITION of K Gaussian primitives by matching pursuit (a splat scene IS a bundle; the RBF
+    ScalarEncoder is already a Gaussian splat in hypervector space). Reconstructs compactly and, with
+    denoise=True, denoises (smooth Gaussians have no capacity for noise). KEPT NEGATIVE / SCOPE: isotropic
+    splats + fixed scales (the honest matching-pursuit baseline); anisotropic covariances, gradient refinement
+    (full 3DGS), and storing archive images AS splat bundles are documented build targets, not done here.
+
+Tests: +3 in test_integration.py (the mind save/load round-trips classify AND decide identically with quant='rd',
+and the un-persisted recall index raises after a bare load -- the boundary asserted; generate_vector lands on the
+manifold and is seed-deterministic; splat_field reconstructs >25 dB and denoises). 695 -> 698. Additive: four new
+mind methods (save/load/to_state/from_state) + two generative faculties + one lazy registry key in core; no change
+to any existing save/load logic or compute path (the full persistence suite passes unchanged).
+
+=== THE INTEGRATION PLAN IS COMPLETE (Tiers 1-4, all ten items). ===
+UnifiedMind now speaks both halves of the loop on one substrate:
+  FORWARD : perceive / classify / recall / decide / generate (text) / compose (recipe, typed, nested scene)
+  INVERSE : decompose_signal (a law) / decompose_structure (a product's factors) / decode_structure (a chain) /
+            denoise (a manifold) / fit_function (a function)
+  SEARCH  : solve_maze (Tero flow) / assemble (fragment assembly, as a typed structure)
+  DYNAMICS: learn_dynamics (prediction is one bind; content-addressable trajectories)
+  STORAGE : save / load (rate-distortion), GENERATIVE: generate_vector (B10 diffusion) / splat_field (B8 splats)
+The de-siloing is real -- one factorizer for new code (the dense path deprecated, not faked away); the wiring is
+proven by test_integration.py running each faculty THROUGH the mind end to end (the §6 lesson: a shared kernel is
+not a shared manifold); and every faculty carries its measured negatives. The corollary the plan set out to
+enforce holds: there is one MIND the primitives serve, not a drawer of disconnected experiments beside it.

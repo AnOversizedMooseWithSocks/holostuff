@@ -64,8 +64,10 @@ def _registry():
     from holographic_creature import HolographicMind
     from holographic_tree import HoloForest
     from holographic_organizer import SelfOrganizingMind
+    from holographic_unified import UnifiedMind
     return {"Vocabulary": _Vocab, "HolographicMind": HolographicMind,
-            "HoloForest": HoloForest, "SelfOrganizingMind": SelfOrganizingMind}
+            "HoloForest": HoloForest, "SelfOrganizingMind": SelfOrganizingMind,
+            "UnifiedMind": UnifiedMind}
 
 
 def to_state(obj):
@@ -224,6 +226,12 @@ def save(obj, path, compress=True, quant=None):
     save compresses as hard as each array individually allows while matching a float32 save's
     decisions on any object type (the per-array margin gate guarantees it). Integer/structural
     arrays (rng state, counts) always keep their dtype.
+
+    quant="rd" is the RATE-DISTORTION code (B5): for low-rank 2D float arrays -- the engine's
+    consolidated/bundled state, which lives in a small subspace -- it stores the KLT (consolidation)
+    coefficients, uniformly quantized and rANS-entropy-coded, spending only the bits needed to preserve
+    the cosines (~11x smaller than int8 on genuinely low-rank state). Where there is no low-rank
+    structure it falls back to int8, so it is never larger. The rANS coder is bit-exact.
     """
     import json
     state = to_state(obj)
@@ -231,7 +239,24 @@ def save(obj, path, compress=True, quant=None):
     out, scales, qspec = {}, {}, {}
     for k, arr in flat.items():
         is_f64 = isinstance(arr, np.ndarray) and arr.dtype == np.float64
-        if quant == "auto" and is_f64:
+        if quant == "rd" and is_f64:
+            # rate-distortion code: for low-rank 2D float arrays (consolidated/bundled state) spend the
+            # minimum bits that preserve the cosines (KLT -> quantize -> rANS). Falls back to int8 where
+            # there is no low-rank structure to exploit, so it is always at least as small as int8.
+            from holographic_ratedistortion import geometry_preserving_code, pack_code, bits_per_vector
+            used_rd = False
+            if arr.ndim == 2 and arr.shape[0] >= 256:
+                code = geometry_preserving_code(arr, target_cos=0.9999)
+                if bits_per_vector(code) < 8 * arr.shape[1]:       # only when it actually beats int8
+                    out[k] = np.frombuffer(pack_code(code), dtype=np.uint8)
+                    qspec[k] = {"k": "rd"}
+                    used_rd = True
+            if not used_rd:
+                peak = float(np.abs(arr).max()) if arr.size else 0.0
+                scale = (peak / 127.0) or 1.0
+                out[k] = np.round(arr / scale).astype(np.int8)
+                qspec[k] = {"k": "int8", "scale": scale}
+        elif quant == "auto" and is_f64:
             kind = _auto_quant_kind(arr)
             if kind == "int8":
                 peak = float(np.abs(arr).max()) if arr.size else 0.0
@@ -281,6 +306,9 @@ def load(path):
                     store[k] = z[k]
                 elif spec["k"] == "int8":
                     store[k] = z[k].astype(np.float64) * spec["scale"]
+                elif spec["k"] == "rd":
+                    from holographic_ratedistortion import unpack_code, reconstruct
+                    store[k] = reconstruct(unpack_code(bytes(z[k])))
                 else:                                    # f32
                     store[k] = z[k].astype(np.float64)
             state = _rebuild(meta, store)

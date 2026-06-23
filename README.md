@@ -88,6 +88,75 @@ associative recall. That is the honest end of the list: perception, classificati
 recall, decision, and a generator's prediction all share the one space and its
 primitives; generation's indexing is the measured exception, kept exact on purpose.
 
+**The inverse half of the loop is now wired in too.** Those operations -- perceive,
+classify, recall, decide, generate -- are the *forward* direction: build structure and act.
+The studies that grew up alongside them are the *backward* direction: take a foreign signal
+APART. Three of those are now faculties of the one mind rather than disconnected modules
+beside it. `decompose_signal(x, y)` detects a signal's domain topology (line / ring / Mobius /
+torus), decomposes it on the matched basis (harmonics for a periodic signal, an odd-harmonic
+basis for an antiperiodic Mobius one, an auto-selected additive-or-multiplicative law on a flat
+line), and returns a `Formula` -- a tiny savable seed that regenerates and extrapolates the
+signal, the measured-regime twin of a structure recipe. `denoise(x, ...)` exposes the engine's
+manifold maps as one callable that cleans a signal by projecting it onto a low-rank subspace, a
+codebook (the modern-Hopfield cleanup), or its own near-duplicates (non-local means) -- Milanfar's
+thesis that *a denoiser is a map of the manifold clean signals live on*, with the modules' kept
+negatives carried through (fixed-rank projection over-smooths at low noise; a projection only
+helps where real structure exists; it refuses to denoise a lone vector with no prior, because
+there is no free lunch). `fit_function(X, y)` fits an interpretable additive function as a
+single-layer Kolmogorov-Arnold readout on the engine's encoders -- one deterministic ridge solve,
+per-feature parts you can plot, and the honest boundary that an additive form cannot represent
+feature interactions. Each is a thin wrapper over already-measured code, and each lands with an
+end-to-end pipeline test (`test_integration.py`) that runs it THROUGH the mind -- because the
+wiring's one hard lesson was that a shared *kernel* is not a shared *manifold*, so a faculty that
+only imports is still a silo.
+
+That same de-siloing pass resolved a genuine duplication on the FACTORIZATION side. The mind grew two
+ways to pull a bound product apart: the original dense MAP/bipolar resonator (reached through
+`factor_composite`) and the newer, higher-capacity sparse-block-code resonator that factors more
+factors-by-alphabet at a fixed dimension and *verifies or abstains* rather than guessing. The SBC
+factorizer had no mind-level entry point at all, so it is now a first-class faculty, `decompose_structure`,
+and `factor_composite` became one entry point that delegates to it for sparse-block problems. The dense
+path is kept but deprecated -- not deleted -- because it works in a different algebra (a sign-product bind,
+not per-block modular addition) that the SBC resonator genuinely cannot factor; pretending one could
+replace the other would have been the kind of unmeasured claim this project refuses. One factorizer for
+new code, the old one honestly labelled, the boundary between them on the record.
+
+Two smaller wirings finished the decode side. `decode_structure` is the inverse of the chain typed
+structure: a linked list stored as a superposition is read back by iterated unbinding, and the whole point
+-- measured -- is that each recovered pointer is noisy and that noise *compounds* into the next hop unless
+you snap it back onto the node codebook first, so a raw traversal craters after a hop or two while per-peel
+cleanup decodes the entire chain. And the dense associative ("modern Hopfield") cleanup from the capacity
+work is now an opt-in flag on the core `cleanup` -- off by default, and at high temperature it reproduces
+the existing nearest-neighbour decision bit-for-bit, so it is a strict superset whose real value is cleaning
+*continuous* vectors, not changing which discrete symbol wins. With those, the mind speaks the full inverse
+half of the loop: decompose a signal, factor a product, decode a chain, denoise on a manifold, fit a function
+-- each a thin faculty over already-measured code, each proven through the mind, each with its negatives kept.
+
+The mind also gained a **search** faculty and a **dynamics** faculty. `solve_maze` runs the deterministic
+Tero flow-conductance model -- Physarum tubes thickening with flux until the network collapses onto the
+shortest path, the same min-cost search the maze panel demonstrates but exact and ~100x faster than the
+stochastic ant. `assemble` casts Rosetta-style fragment assembly as that *same* flow on a position-by-fragment
+trellis, attains the global (Viterbi) optimum, and hands back the assembly as a B7 typed structure the mind can
+realize -- with the honest note that the energy is a placement-mismatch stand-in, not a protein force field.
+And `learn_dynamics` learns a fixed operator so that the next state is one bind of the current one (the Koopman
+operator in Fourier coordinates); prediction shines on signals that genuinely have linear dynamics, only ties a
+mean predictor on near-efficient-market returns (kept negative, on record), and the content-addressable
+round-trip -- run a trajectory forward k steps, then back k, and land on the start -- is the durable win.
+
+Finally the mind became **persistable** and gained two **generative** faculties. `save`/`load` route through
+the kernel's versioned save, so the learned mind -- its perception, its self-organized prototype memory, its
+decision brain -- round-trips with classification and decisions bit-for-bit identical, and the rate-distortion
+save level (`quant='rd'`) applies to any low-rank arrays (falling back to int8 where there is none, so it is
+never larger). The honest scope is on the label: what persists is the mind's learned *generalization*, not the
+verbatim archive of every individual example it saw (its payloads are arbitrary inputs that do not round-trip
+through a structured save -- re-learn those). `generate_vector` is the vector-level twin of the text generator,
+pointed at the diffusion sampler: denoising run *backwards* from pure noise until it lands on the codebook
+manifold -- generation and denoising the same operation in different regimes. And `splat_field` represents a 2-D
+field as a superposition of Gaussian primitives (a splat scene IS a bundle), which both reconstructs compactly
+and, because smooth Gaussians have no room for noise, doubles as a denoiser. That closes the integration: the
+studies that grew up beside the mind are now faculties of it, each thin over already-measured code, each proven
+through the mind end to end, each with its negatives kept.
+
 **Try it.** `python unified_app.py` opens a console (http://127.0.0.1:5001) that PULLS a
 real corpus on request -- Reuters categories, Brown genres, Gutenberg authors, or Europarl
 languages, downloaded via NLTK from GitHub, the same place the test data came from --
@@ -232,13 +301,13 @@ in, and a Labyrinth mode has it learn the way out of a maze -- all on a prototyp
 **Test suite** (runs the full pytest suite), **Query & recall** (the interactive image demo - degrade an
 image, optionally destroy part of the plate, watch it get recalled), **Recall by description**
 (cross-modal recall - describe an image in words and get the matching one back from the tag address space),
-**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (555 at last count; up to six skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
+**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (698 at last count; up to six skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
 
 ### From the command line
     python tour.py                    # guided tour of all subsystems (~20s)
     python holographic_creature.py    # any module runs its own demo
     python holographic_encoders.py    # numbers / text / records demos
-    pytest -q                         # the whole test suite (555 tests)
+    pytest -q                         # the whole test suite (698 tests)
 
 ---
 
@@ -979,7 +1048,7 @@ The app and tour:
     tour.py       command-line tour of every subsystem
     run.bat       Windows launcher
 
-Tests (555 total):
+Tests (698 total):
 
     test_holographic.py           core engine (bind/bundle/memory/reflex/drift)
     test_holographic_image.py     image store / WHT / quantisation
@@ -1003,6 +1072,11 @@ Tests (555 total):
     test_holographic_brain.py     self-maintaining, autonomous, hard-shift recovery
     test_holographic_unified.py   top level: one memory across modalities, self-discovery,
                                   absorb, named schemas routed by the compression gate
+    test_integration.py           the recent modules wired into UnifiedMind as faculties, proven end to
+                                  end (the whole integration plan): decompose_signal -> save -> realize ->
+                                  denoise; SBC factorizer + decode_structure (peel); factor_composite
+                                  de-siloed; opt-in energy cleanup; solve_maze / assemble / learn_dynamics;
+                                  the mind saves/loads (quant='rd'); generate_vector + splat_field
     test_holographic_relations.py meaning as the recovered relationship: explain/name/map/chain
     test_creature_gauntlet.py     the maze gauntlet: gamified debugging, system lessons in mazes
     test_app_creature.py          the app's creature endpoint round-trip

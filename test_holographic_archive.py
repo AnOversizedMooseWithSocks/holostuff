@@ -65,3 +65,19 @@ class TestArchive:
 
 if __name__ == "__main__":
     import sys; sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_verify_confirms_exact_recall_on_the_hardest_images():
+    # verify() checks the disjoint-slot exact-recall property on THIS build: reconstruct the
+    # most collision-prone stored images and confirm each recalls back to its own index.
+    from holographic_archive import HolographicArchive, _gallery
+    imgs = _gallery(64)
+    a = HolographicArchive(shape=(64, 64, 3), capacity=len(imgs), seed=0)
+    for im in imgs:
+        a.add(im)
+    checked, exact = a.verify()
+    assert checked == len(imgs) and exact == checked          # every hard case recalls as itself
+    # the identity survives the lossy plate quantisation too (its whole point)
+    a.quantize(4)
+    c2, e2 = a.verify()
+    assert e2 == c2

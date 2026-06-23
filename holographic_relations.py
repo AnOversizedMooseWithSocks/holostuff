@@ -34,7 +34,7 @@ still provided for the raw algebraic object, with its noise documented.
 
 import numpy as np
 
-from holographic_ai import bind, bundle, involution, cosine, Vocabulary
+from holographic_ai import bind, bind_batch, bundle, involution, cosine, Vocabulary
 
 
 def _cleanup(vec, names, vocab, coarse=True):
@@ -124,8 +124,12 @@ class KnowledgeStore:
 
     def add(self, name, **attrs):
         self.attrs[name] = dict(attrs)
-        self.recs[name] = bundle([bind(self.roles.get(r), self.fillers.get(v))
-                                  for r, v in attrs.items()])
+        # role-bind every attribute and superpose; the binds run in one batched FFT
+        # (bind_batch), identical to the per-attribute loop but faster as records widen.
+        items = list(attrs.items())
+        roles = np.stack([self.roles.get(r) for r, _ in items])
+        fillers = np.stack([self.fillers.get(v) for _, v in items])
+        self.recs[name] = bundle(list(bind_batch(roles, fillers)))
         return self
 
     # -- vocabulary views ---------------------------------------------------

@@ -1103,15 +1103,67 @@ class UnifiedMind:
         toks = tokens.split() if isinstance(tokens, str) else list(tokens)
         return att.attribute(toks, topk=topk)
 
-    def factor_composite(self, composite, codebooks, restarts=20):
-        """Pull a single bound composite apart into the factors that built it -- the
-        inverse of binding, by searching in superposition (holographic_resonator).
-        codebooks: a list of (n, dim) bipolar matrices, one per factor slot. Returns
-        the recovered factor index per slot, whether it solved, and the combinatorial
-        search space it searched without enumerating. Uses MAP/bipolar binding (a
-        self-inverse algebra factorization needs; see the module)."""
+    def factor_composite(self, composite, codebooks, restarts=20, L=None, iters=None, seed=0):
+        """Pull a single bound composite APART into the factors that built it -- the inverse of binding,
+        by searching in superposition. ONE entry point for both factorizers the engine grew:
+
+          * SBC (PREFERRED) -- pass an integer-atom `composite` (B blocks), SBC `codebooks` (lists of
+            B-integer atoms), and the block length `L`. Delegates to the higher-capacity, confidence-
+            VALIDATED resonator (holographic_sbc.decompose_structure): block-local convolution makes each
+            block a clean channel, so it factors more (factors x alphabet) at a fixed dimension AND reports
+            whether the answer actually RECONSTRUCTS the product -- it verifies or abstains rather than
+            guessing. This is the SAME factorizer decompose_structure() exposes: one factorizer, not two.
+
+          * DENSE (LEGACY, deprecated) -- the original dense MAP/bipolar path (holographic_resonator):
+            `composite` a dense bipolar vector, `codebooks` dense (n, dim) bipolar matrices, no `L`. Kept
+            for backward compatibility because the SBC resonator works in a DIFFERENT algebra (per-block
+            modular add of one-hots, not the elementwise sign-product MAP bind) and CANNOT factor a dense
+            MAP composite -- so this path could not simply be removed, only delegated-past and deprecated.
+            New code should pass SBC codebooks + L, or call decompose_structure(); a DeprecationWarning
+            steers it there.
+
+        Returns a dict with at least 'factors' (recovered index per slot), 'solved' (True only if the
+        factors actually re-bind to the composite), 'search_space' (the combinatorial size searched without
+        enumerating), and 'backend' ('sbc'/'dense'). The SBC backend also returns 'verified' and 'present'."""
+        space = 1
+        for B in codebooks:
+            space *= (len(B) if L is not None else B.shape[0])
+
+        if L is not None:                              # SBC problem -> the preferred, validated factorizer
+            from holographic_sbc import decompose_structure
+            res = decompose_structure(np.asarray(composite), codebooks, L, restarts=restarts,
+                                      iters=(50 if iters is None else iters), seed=seed)
+            return {"factors": tuple(res["picks"]), "solved": bool(res["verified"]),
+                    "verified": bool(res["verified"]), "present": res["present"],
+                    "restarts": restarts, "search_space": space, "backend": "sbc"}
+
+        # dense MAP/bipolar -- the legacy path, kept for backward compatibility, gently deprecated
+        import warnings
+        warnings.warn("factor_composite's dense MAP/bipolar path is legacy; pass SBC codebooks + L (or "
+                      "call decompose_structure) to use the higher-capacity, validated SBC resonator.",
+                      DeprecationWarning, stacklevel=2)
         from holographic_resonator import ResonatorNetwork
-        return ResonatorNetwork(codebooks).factor(composite, restarts=restarts)
+        kw = {"iters": iters} if iters is not None else {}
+        out = ResonatorNetwork(codebooks).factor(composite, restarts=restarts, **kw)
+        out["backend"] = "dense"
+        return out
+
+    def decompose_structure(self, composed, codebooks, L, restarts=6, iters=50, seed=None):
+        """Recover the generating recipe of a COMPOSED structure -- the canonical, higher-capacity
+        factorizer (holographic_sbc.decompose_structure), exposed as a faculty the mind speaks directly.
+        A bound product is DISSIMILAR to its factors, so per-factor cleanup is chance; the SBC resonator
+        holds a superposition of all candidate factors per block, anneals from soft (explore) to sharp
+        (commit), and accepts ONLY reconstruction-VERIFIED answers -- so it verifies or abstains, never
+        guesses. If a codebook contains the SBC identity, that factor can be found ABSENT (presence
+        detection).
+
+        `composed` is an SBC product (B integers, active position per block); `codebooks` is a list of SBC
+        codebooks (each a list of B-integer atoms); `L` is the block length. Returns
+        {picks, factors, verified, present}. This is the SAME factorizer factor_composite delegates to when
+        given an `L` -- the de-siloing the integration review asked for: one factorizer, not two."""
+        from holographic_sbc import decompose_structure as _decompose
+        return _decompose(np.asarray(composed), codebooks, L, restarts=restarts, iters=iters,
+                          seed=self.seed if seed is None else seed)
 
     # -- one scene faculty, on the same substrate ---------------------------
     def scene(self):
@@ -1187,6 +1239,288 @@ class UnifiedMind:
             sub = unbind(super_scene, gr.get(str(k)))
             out[k] = sc.factor_scene(sub, n, sweeps=sweeps)
         return out
+
+    # ---- B7 keystone: ONE typed structure for all composition (see holographic_typed) -----------
+    def typed_structure(self):
+        """A fresh StructureRecipe bound to this mind's dim and seed -- the single replayable build-graph
+        that recipes, programs, expression trees, and scenes all reduce to. Build through it
+        (atom/bind/bundle/permute/superpose), then realize() to a vector or save() the seed. This is the
+        de-siloing the integration review asked for: one structure type the mind speaks directly."""
+        from holographic_recipe import StructureRecipe
+        return StructureRecipe(self.dim, self.seed)
+
+    def realize(self, recipe):
+        """Replay a StructureRecipe to its output vector(s) -- the single realize path for any structure."""
+        outs = recipe.outputs()
+        return outs[0] if len(outs) == 1 else outs
+
+    def tree_structure(self, tree):
+        """Encode an expression tree as a typed structure at this mind's dim/seed. A leaf is a str symbol;
+        an internal node is (op, *children). The EML-tree's holographic encoding, generalised."""
+        from holographic_typed import tree_to_recipe
+        return tree_to_recipe(self.dim, self.seed, tree)
+
+    def nested_scene_structure(self, groups):
+        """compose_nested AS a typed structure: the same super-scene vector, now a replayable build-graph
+        (group-role atoms + bind + superpose, rng sub-scenes as raw leaves) that can be saved and inspected."""
+        from holographic_typed import nested_scene_to_recipe
+        return nested_scene_to_recipe(self, groups)
+
+    def chain_structure(self, n):
+        """Build an n-node linked-list CHAIN as a typed structure (B7), at this mind's dim/seed:
+        M = superpose_i bind(node_i, node_{i+1}). Returns (recipe, nodes) -- realize(recipe) gives the
+        chain-memory vector, and decode_structure(memory, nodes) traverses it back. The smallest honest
+        forward object whose INVERSE (per-peel decode) is the interesting part (holographic_peel)."""
+        from holographic_peel import chain_recipe
+        return chain_recipe(self.dim, self.seed, n)
+
+    def decode_structure(self, memory, nodes, steps=None, cleanup="hard", beta=8.0):
+        """DECODE a composed CHAIN structure by iterated unbinding with PER-PEEL CLEANUP (B8) -- the
+        inverse of the B7 chain typed structure, on the same object. The crux the module measured: each
+        recovered pointer is noisy, and without cleanup that noise is carried into the next hop and
+        COMPOUNDS, so a raw traversal craters after ~1-2 hops and its carried vector diverges; snapping
+        each pointer back onto the node codebook BEFORE the next hop bounds the noise and the whole chain
+        decodes. Cleaning structure AS it is decoded.
+
+        `memory` is the chain vector (realize() of chain_structure's recipe); `nodes` is the node codebook.
+        cleanup in {None, 'hard', 'soft'}: None carries the raw peel (it craters -- the kept negative made
+        visible); 'hard' snaps to the nearest atom (Bayes-optimal for identity); 'soft' is the B1 dense-
+        Hopfield update (ties hard on discrete pointers -- the value is continuous payloads, see the module's
+        recover_continuous_values). Returns the recovered node-index sequence (-1 marks a diverged hop).
+
+        NOTE: this is the SEQUENCE inverse (traverse a chain); decompose_structure is the PRODUCT inverse
+        (factor a bound product). Different structures, different inverses -- both on the one substrate."""
+        from holographic_peel import traverse
+        nodes = np.asarray(nodes)
+        steps = (len(nodes) - 1) if steps is None else steps
+        return traverse(np.asarray(memory), nodes, steps, cleanup=cleanup, beta=beta)
+
+    # ---- the DECOMPOSE / DENOISE / FIT half of the loop (integration plan, Tier 1) -------------
+    # UnifiedMind was already strong on one half of the loop: COMPOSE / RECALL / PREDICT / GENERATE.
+    # These three faculties add the inverse half -- take a FOREIGN signal APART into a generator (a
+    # law), CLEAN it on the right manifold, or FIT an interpretable function to it. Each one unifies
+    # several already-shipped modules behind a single honest entry point, the same move
+    # typed_structure() made for composition: one faculty the mind speaks directly, not a drawer of
+    # disconnected experiments beside it.
+
+    def decompose_signal(self, x, y=None, max_terms=6, coef_bits=20, n_harmonics=5):
+        """Take a foreign 1-D signal APART into the law that generates it -- the measured-regime twin
+        of compose()/typed_structure(). One faculty over four shipped modules:
+
+          1. detect the domain TOPOLOGY            (holographic_manifold.detect_topology)
+          2. choose the matched basis:
+               line           -> elementary functions, additive OR multiplicative (auto-selected)
+               ring / mobius  -> harmonics of the detected period (mobius = ODD harmonics only, the
+                                 antiperiodic basis -- holographic_mobius's own function space)
+               torus          -> harmonics of both periods
+          3. fit an MDL-gated law on that basis    (holographic_symbolic.symbolic_regress / compress_signal)
+          4. return the Formula -- which already IS a savable generative seed (.generate() to regenerate
+             or extrapolate, .save()/.load() to persist), the scalar-signal analogue of a StructureRecipe.
+
+        x is the independent coordinate, y the observed signal. As a shorthand, decompose_signal(y) with
+        a single array treats it as the signal on a unit-spaced index grid.
+
+        Returns (Formula, info). info carries: topology, period, mode ('additive'/'multiplicative'),
+        n_terms, resid_rms (ORIGINAL-space residual a B5 coder would take), and compression_ratio.
+
+        SCOPE (kept honest, surfaced from the modules, not new): the multiplicative (log) family is
+        auto-selected only on a LINE domain and needs y > 0 (it fits log y); a periodic signal is
+        decomposed additively on its harmonic basis. A torus needs a window long enough to resolve both
+        tones or detection falls back to line (the Rayleigh limit -- see holographic_manifold)."""
+        from holographic_manifold import detect_topology, decompose_on_manifold
+        from holographic_symbolic import compress_signal
+        if y is None:                                  # single-array shorthand: signal on an index grid
+            y = np.asarray(x, float)
+            x = np.arange(len(y), dtype=float)
+        x = np.asarray(x, float); y = np.asarray(y, float)
+
+        topo, _ = detect_topology(x, y, n_harmonics=n_harmonics)
+        if topo == "line":
+            # Flat domain: an additive fit and a multiplicative (log-basis) fit are both candidates, so
+            # let compress_signal's measured auto-rule choose -- it switches to multiplicative only when
+            # that law is competitive in-sample AND generalizes better on a held-out tail (the conservative
+            # criterion that refuses to reward additive overfitting). Catches a*x^p*exp(cx) laws a flat
+            # additive dictionary would miss.
+            f, info = compress_signal(x, y, max_terms=max_terms, coef_bits=coef_bits, mode="auto")
+            info["topology"] = "line"; info["period"] = None
+        else:
+            # Periodic / antiperiodic / quasiperiodic: decompose on the manifold-matched harmonic basis
+            # so the recovered law extrapolates PERIODICALLY instead of diverging the way a polynomial
+            # forced onto a ring would. (mobius -> odd harmonics only -- the antiperiodic space.)
+            f, info = decompose_on_manifold(x, y, n_harmonics=n_harmonics,
+                                            max_terms=max_terms, coef_bits=coef_bits)
+            info["mode"] = "multiplicative" if f.log_space else "additive"
+            info["compression_ratio"] = f.compression_ratio(len(y))
+        return f, info
+
+    def denoise(self, x, method="auto", samples=None, codebook=None, sigma=None,
+                rank=8, beta=25.0, steps=3, forward=None, adjoint=None, mu=0.5, pnp_steps=30):
+        """Clean a noisy signal by projecting it onto a manifold -- Milanfar's thesis that a denoiser
+        IS a map of the manifold clean signals live on. One call over holographic_denoise +
+        holographic_hopfield, picking the map by the structure you supply a prior for:
+
+          method='adaptive' : project onto a low-rank SVD subspace fit from `samples`, then
+                              noise-THRESHOLD the coefficients (Donoho-Johnstone). The safe default for
+                              low-rank signals -- estimates the noise level itself, so it does not
+                              over-smooth at low noise.
+          method='manifold' : plain FIXED-rank projection onto the subspace fit from `samples`.
+          method='codebook' : modern-Hopfield cleanup of `x` toward a discrete `codebook` manifold.
+          method='nlm'       : non-local means -- `x` is a (N, dim) patch set; average each patch with
+                              its near-duplicates via the engine's own content-addressable recall.
+          method='pnp'       : Plug-and-Play / RED restoration of a degraded measurement x = forward(clean)
+                              + noise, using the adaptive manifold map as the prior (needs forward/adjoint).
+          method='auto'      : codebook if a `codebook` is given, else adaptive manifold if `samples`
+                              are given. NLM and PnP stay OPT-IN: deciding self-similar-vs-low-rank
+                              automatically is itself a measurement we will not fake -- name them.
+
+        A denoiser needs a PRIOR; a single vector with no manifold cannot be cleaned (no free lunch), so
+        `samples` (clean rows) or `codebook` (atoms) is required for every method but 'nlm' (which uses
+        `x`'s own redundancy). Returns the cleaned vector (or, for 'nlm', the cleaned (N, dim) set).
+
+        KEPT NEGATIVES (the modules', surfaced not hidden): FIXED-rank projection over-smooths at low
+        noise -- use 'adaptive', which is ~neutral there; manifold projection only helps where real
+        low-rank structure exists (it destroys structureless signal); NLM only helps where near-duplicates
+        exist."""
+        from holographic_denoise import (fit_manifold, manifold_denoise, fit_manifold_full,
+                                          adaptive_manifold_denoise, codebook_denoise,
+                                          nlm_denoise, pnp_restore)
+        x = np.asarray(x, float)
+
+        if method == "auto":                          # pick by the prior you handed me, conservatively
+            method = "codebook" if codebook is not None else ("adaptive" if samples is not None else None)
+            if method is None:
+                raise ValueError("denoise needs a prior: pass samples=<clean rows> or codebook=<atoms> "
+                                 "(a denoiser is a map of a manifold; a lone vector has none)")
+
+        if method == "nlm":                           # self-similarity: x IS the patch set to clean
+            P = np.atleast_2d(x)
+            return nlm_denoise(P, k=min(12, len(P)))
+
+        if method == "codebook":
+            if codebook is None:
+                raise ValueError("method='codebook' needs codebook=<(n, dim) atoms>")
+            return codebook_denoise(x, np.asarray(codebook, float), beta=beta, steps=steps)
+
+        if method in ("manifold", "adaptive", "pnp"):
+            if samples is None:
+                raise ValueError(f"method='{method}' needs samples=<clean rows> to fit the manifold")
+            S = np.atleast_2d(np.asarray(samples, float))
+            if method == "manifold":
+                basis, mean = fit_manifold(S, rank=rank)
+                return manifold_denoise(x, basis, mean)
+            # 'adaptive' and 'pnp' both want a GENEROUS basis whose coefficients get noise-thresholded
+            basis, _, mean = fit_manifold_full(S, rank=min(4 * rank, S.shape[1]))
+            if method == "adaptive":
+                return adaptive_manifold_denoise(x, basis, mean, sigma=sigma)
+            if forward is None or adjoint is None:    # pnp
+                raise ValueError("method='pnp' needs forward and adjoint callables (the operator A and A^T)")
+            prior = lambda v: adaptive_manifold_denoise(v, basis, mean, sigma=sigma)
+            return pnp_restore(x, forward, adjoint, prior, mu=mu, steps=pnp_steps)
+
+        raise ValueError(f"unknown denoise method: {method!r}")
+
+    def fit_function(self, X, y, n_grid=24, bandwidth=8.0, ridge=1e-2):
+        """Fit an interpretable function y ~ F(X) as a single-layer Kolmogorov-Arnold readout on this
+        mind's encoders (holographic_kan): F(x) = sum_j psi_j(x_j), each per-feature psi_j a sum of
+        adaptive-grid RBF bumps, all coefficients fit by ONE deterministic ridge least-squares solve
+        (no backprop). The fitted model exposes .predict(X) and .feature_function(j, ts) -- the plottable
+        learned univariate part for feature j, KAN's interpretability pitch.
+
+        X is (N, n_features) (a 1-D array is taken as one feature); y is (N,). Returns the fitted
+        HolographicKAN, built at this mind's seed so it stays seed-reproducible like the rest.
+
+        KEPT NEGATIVE: a single-layer additive KAN cannot represent feature INTERACTIONS (e.g. x1*x2) --
+        it is additive by construction. That needs a second layer or explicit interaction features; the
+        boundary is shown, not hidden."""
+        from holographic_kan import HolographicKAN
+        X = np.asarray(X, float)
+        if X.ndim == 1:                                # a lone feature vector -> a single column
+            X = X.reshape(-1, 1)
+        model = HolographicKAN(X.shape[1], dim=min(self.dim, 512), n_grid=n_grid,
+                               bandwidth=bandwidth, seed=self.seed, ridge=ridge)
+        return model.fit(X, np.asarray(y, float))
+
+    # ---- the SEARCH & DYNAMICS faculties (integration plan, Tier 3) -----------------------------
+    # Min-cost search on a graph or a trellis (a maze; a fragment assembly) and learned linear
+    # dynamics -- the last modules built beside the mind, now faculties of it. Where the structure is
+    # natural the search returns a B7 typed structure (assemble); dynamics is, literally, an algebra
+    # of binds.
+
+    def solve_maze(self, world, steps=200, mu=1.5, dt=0.2):
+        """Solve a GridWorld maze by the DETERMINISTIC Tero flow-conductance model (holographic_flow):
+        Physarum-style tubes thicken with flux (Poiseuille conductance) until the network collapses onto
+        the shortest path. Same (path, info) interface as the stochastic slime solver, but deterministic
+        and ~100x faster, and it lands EXACTLY on the optimum on braided mazes. info reports
+        reached / optimal / extracted_len / cells / deterministic. Returns (path, info)."""
+        from holographic_flow import solve_maze_flow
+        return solve_maze_flow(world, steps=steps, mu=mu, dt=dt)
+
+    def assemble(self, target, library, frag_len=2, steps=300, mu=1.5, dt=0.2):
+        """Assemble `target` from a `library` of overlapping fragments by MIN-ENERGY flow search
+        (holographic_assembly) -- Rosetta-style fragment assembly (choose a fragment per position to
+        minimise a placement energy, consecutive fragments overlap-agreeing) cast as the SAME min-cost-
+        path flow the maze solver runs, on a (position x fragment) trellis. Returns a dict: the assembled
+        string, its total energy, the chosen (position, fragment) list, and a B7 StructureRecipe binding
+        each fragment to its position -- the assembly AS a typed holographic structure (realize() it,
+        save() it). Built at this mind's dim/seed.
+
+        It finds the GLOBAL optimum (it matches the exact Viterbi DP), not a greedy one. KEPT NEGATIVE:
+        the energy is a placement-mismatch / Rosetta-score STAND-IN -- the combinatorial core, not a
+        protein force field."""
+        from holographic_assembly import assemble as _assemble
+        return _assemble(target, library, frag_len=frag_len, steps=steps, mu=mu, dt=dt,
+                         dim=self.dim, seed=self.seed)
+
+    def learn_dynamics(self, states, ridge=1e-3):
+        """Learn a fixed dynamics operator U so that state(t+1) ~ bind(U, state(t)) -- dynamics as an
+        ALGEBRA OF BINDS (holographic_dynamics). In HRR's Fourier domain a learned bind is a per-frequency
+        complex transfer, i.e. the Koopman/DMD operator in Fourier coordinates (the object Stam's FFT
+        fluid step and Puckette's phase vocoder also manipulate). Returns a Propagator with .step(state)
+        (one-step prediction = a SINGLE bind), .rollout(state, k), and .recall_at(state, k) -- recover the
+        state k steps BEFORE one now, so the trajectory is content-addressable, not just forward-runnable.
+
+        `states` is a sequence of state rows (T, dim). KEPT NEGATIVE on real market RETURNS: prediction
+        only TIES a trivial mean predictor -- near-efficient-market returns have almost no linear structure
+        for a fixed operator to exploit (the correct, expected result, kept on record). It shines on signals
+        that DO have linear dynamics (audio, fluids, a bind-shaped control). The CONTENT-ADDRESSABLE
+        round-trip (forward k then back k returns the start at cosine ~1.0) is the durable win regardless."""
+        from holographic_dynamics import Propagator
+        return Propagator.learn(np.asarray(states, float), ridge=ridge)
+
+    # ---- the GENERATIVE faculties (integration plan, Tier 4) -----------------------------------
+    # Generation is denoising run backwards, and a splat scene is a bundle -- so the last two modules
+    # built beside the mind reconcile straight into it: generate a vector by the cleanup-attractor
+    # diffusion, and represent a 2-D field as a superposition of Gaussian primitives.
+
+    def generate_vector(self, codebook, steps=12, beta0=4.0, beta1=40.0, noise0=0.6, seed=None):
+        """GENERATE a hypervector by denoising FROM PURE NOISE (B10) -- the cleanup attractor as a tiny
+        holographic diffusion (holographic_hopfield.generate): start from a random unit vector, anneal
+        beta UP (vague -> sharp) and injected noise DOWN across `steps`, and walk onto the codebook
+        manifold. Generation and denoising are the SAME operation in different regimes -- this is the
+        vector-level twin of the text generate(), pointed at the B10 diffusion sampler. Returns a unit
+        vector, deterministic in `seed` (this mind's seed by default).
+
+        KEPT NEGATIVE: over a BARE codebook this converges to a stored atom (a degenerate sampler) --
+        feed it a COMPOSED or continuous manifold for novel-but-valid samples."""
+        from holographic_hopfield import generate as _generate
+        return _generate(np.asarray(codebook, float), steps=steps, beta0=beta0, beta1=beta1,
+                         noise0=noise0, seed=self.seed if seed is None else seed)
+
+    def splat_field(self, target, k=20, denoise=False):
+        """Represent a 2-D field/image as a SUPERPOSITION of K Gaussian primitives (holographic_splat) --
+        the structural twin of bundle (a Gaussian-splat scene IS a bundle, and the RBF ScalarEncoder is
+        already a Gaussian splat in hypervector space). Fits the splats by matching pursuit (greedy
+        superposition); returns (splats, rendered) where `splats` is a compact (cy, cx, amplitude, sigma)
+        code and `rendered` is their sum. With denoise=True returns just the rendered field, which is a
+        DENOISER -- a few smooth Gaussians have no capacity for high-frequency noise.
+
+        KEPT NEGATIVE / SCOPE: isotropic splats and a fixed scale set (the honest matching-pursuit
+        baseline); anisotropic covariances and gradient refinement (full 3DGS), and storing archive
+        images AS splat bundles, are documented build targets, not done here."""
+        from holographic_splat import splat_fit, splat_render
+        splats = splat_fit(np.asarray(target, float), k)
+        rendered = splat_render(splats, np.asarray(target).shape)
+        return rendered if denoise else (splats, rendered)
 
     def render_scene(self, tag_list, S=96, seed=0):
         """Render composed attribute tags to an actual RGB image via the scene renderer."""
@@ -1785,6 +2119,73 @@ class UnifiedMind:
             plural = "s" if len(self._gens) > 1 else ""
             parts.append(f"sequence schema{plural} ({'; '.join(descs)})")
         return "UnifiedMind: " + "; ".join(parts)
+
+    # -- persistence: save the LEARNED MIND (its generalization), via the kernel's save -----------
+    # The save captures what the mind LEARNED -- its perception (encoder), its self-organized
+    # prototype memory (the classifier), its decision brain, and the routing bookkeeping classify
+    # reads. It deliberately does NOT persist the verbatim recall index of every individual example
+    # (`_recall`), whose payloads are arbitrary original inputs -- raw arrays, dicts, strings -- that
+    # do not round-trip through a structured array save; re-learn() those if you want recall back.
+    # Lazy/derived faculties (sequence & plan memory, the text/word generators, meaning predictors,
+    # the scene coder, the FHRR high-capacity memory) are rebuilt on use, not stored. What round-trips
+    # is the trained generalization: classify and decide are bit-for-bit identical after save/load.
+    _STATE_KIND = "UnifiedMind"
+
+    def to_state(self):
+        """Snapshot the learned mind for holographic_core.save (so quant='rd'/'auto'/'int8' all apply).
+        See the persistence note above for exactly what is and is not captured."""
+        nr = self.encoder.to_state().get("number_range", [-4.0, 4.0])
+        return {
+            "kind": self._STATE_KIND,
+            "config": {"dim": int(self.dim), "seed": int(self.seed), "maintain": self.maintain,
+                       "check_every": int(self.check_every), "number_range": [float(nr[0]), float(nr[1])],
+                       "text_window": int(self.encoder._text.window)},
+            "encoder": self.encoder.to_state(),
+            "memory": self.memory.to_state(),
+            "label_modality": dict(self._label_modality),
+            # sets aren't JSON-able: store each role's fillers as a list, restore to a set on load
+            "fillers": {k: sorted(v, key=str) for k, v in self._fillers.items()},
+            "format_corpus": dict(self._format_corpus),
+            "taught": int(self._taught),
+            "actions": list(self._actions) if self._actions is not None else None,
+            "brain": self._brain.to_state() if self._brain is not None else None,
+        }
+
+    @classmethod
+    def from_state(cls, state):
+        """Rebuild a UnifiedMind from to_state(). The reloaded mind classifies and decides identically;
+        its recall index and lazy faculties start empty and rebuild on use (see the persistence note)."""
+        from holographic_mind import UniversalEncoder
+        from holographic_organizer import SelfOrganizingMind
+        cfg = state["config"]
+        m = cls(dim=int(cfg["dim"]), seed=int(cfg["seed"]), number_range=tuple(cfg["number_range"]),
+                maintain=cfg.get("maintain", "auto"), check_every=int(cfg.get("check_every", 60)),
+                text_window=int(cfg.get("text_window", 2)))
+        m.encoder = UniversalEncoder.from_state(state["encoder"])      # replace the fresh encoder/memory
+        m.memory = SelfOrganizingMind.from_state(state["memory"])      # with the saved, trained ones
+        m._label_modality = dict(state.get("label_modality", {}))
+        m._fillers = {k: set(v) for k, v in state.get("fillers", {}).items()}
+        m._format_corpus = dict(state.get("format_corpus", {}))
+        m._taught = int(state.get("taught", 0))
+        if state.get("brain") is not None:
+            from holographic_creature import HolographicMind
+            m._actions = list(state["actions"])
+            m._brain = HolographicMind.from_state(state["brain"])
+        return m
+
+    def save(self, path, quant="auto", compress=True):
+        """Persist the learned mind to `path` (.npz) via the kernel save. quant='rd' uses the B5
+        rate-distortion code on any low-rank float arrays (KLT -> quantize -> rANS, ~11x under int8),
+        falling back to int8 where there is no low-rank structure, so it is never larger; 'auto' picks
+        the coarsest decision-safe precision per array; 'int8'/None as in holographic_core.save."""
+        from holographic_core import save as _save
+        return _save(self, path, compress=compress, quant=quant)
+
+    @classmethod
+    def load(cls, path):
+        """Reload a mind saved with save(); dispatches through the kernel's versioned loader."""
+        from holographic_core import load as _load
+        return _load(path)
 
 
 # ---------------------------------------------------------------------------

@@ -782,6 +782,12 @@ class CreatureEncoder:
             return np.zeros(self.vocab.dim)
         for role, value in senses.items():
             self.seen.setdefault(role, set()).add(value)
+        # NOTE (kept negative): bind_batch here is ~1.4x faster and identical to the loop at
+        # 1e-12, BUT batched vs scalar FFT differ at ~1e-16, and that is enough to flip a
+        # knife-edge tie-break in the starved-maze rescue trajectory -- the rescue_cracks
+        # canary fails. The creature's deterministic reproducibility outweighs a per-step
+        # 1.4x, so the per-sense loop stays. (RecordEncoder tolerates the same change because
+        # classification is wide-margin; the maze rescue is tie-sensitive. See NOTES.)
         tokens = [bind(self.vocab.get(role), self.vocab.get(value))
                   for role, value in sorted(senses.items())]
         return bundle(tokens)

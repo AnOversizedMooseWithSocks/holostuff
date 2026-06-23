@@ -173,9 +173,44 @@ class HoloForest:
             t.build(self.items)
         return self
 
-    def recall(self, query, beam=4):
+    def recall(self, query, beam=4, with_agreement=False):
         """Union the candidate leaves from every tree, then cosine-rank once over
-        that combined (de-duplicated) candidate set."""
+        that combined (de-duplicated) candidate set.
+
+        with_agreement=True also returns a reliability score in [0, 1]: the fraction of
+        trees whose OWN best candidate equals the forest's chosen index. 1.0 means every
+        tree agreed; near 1/n_trees means they split and the answer is a guess -- the
+        trees are independently seeded, so their agreement is a free abstention signal
+        (act when they agree, hold back when they don't). The default path
+        (with_agreement=False) is unchanged, byte-for-byte, including cosine-tie order."""
+        query = np.asarray(query, float)
+        cand = set()
+        per_tree_best = [] if with_agreement else None
+        for t in self.trees:
+            tcand = set() if with_agreement else None
+            for leaf in t._route(query, beam):
+                leaf["flux"] += 1
+                ids = [int(i) for i in leaf["idx"]]
+                cand.update(ids)
+                if with_agreement:
+                    tcand.update(ids)
+            if with_agreement and tcand:                 # this tree's own pick
+                tc = np.fromiter(tcand, int)
+                per_tree_best.append(int(tc[int((self.items[tc] @ query).argmax())]))
+        cand = np.fromiter(cand, int)
+        self.last_comparisons = len(cand)
+        best = int(cand[int((self.items[cand] @ query).argmax())])
+        if not with_agreement:
+            return best
+        agree = float(np.mean([b == best for b in per_tree_best])) if per_tree_best else 0.0
+        return best, agree
+
+    def recall_k(self, query, k=8, beam=4):
+        """Return the top-k nearest stored items to `query` as (indices, cosines), ranked over the
+        same unioned candidate set recall() uses -- so it stays sub-linear (it ranks only the
+        routed candidates, not every item). This is the neighbour-search step that non-local-means
+        denoising needs: "find the patches that look like this one." Fewer than k candidates ->
+        returns however many were found."""
         query = np.asarray(query, float)
         cand = set()
         for t in self.trees:
@@ -184,8 +219,10 @@ class HoloForest:
                 cand.update(int(i) for i in leaf["idx"])
         cand = np.fromiter(cand, int)
         self.last_comparisons = len(cand)
-        sims = self.items[cand] @ query
-        return int(cand[int(sims.argmax())])
+        qn = np.linalg.norm(query) + 1e-12
+        sims = (self.items[cand] @ query) / (np.linalg.norm(self.items[cand], axis=1) + 1e-12) / qn
+        order = np.argsort(sims)[::-1][:k]
+        return cand[order], sims[order]
 
     # -- persistence: the trees are seed-derived, so we save only the items + config
     # and rebuild deterministically (a saved-then-loaded forest recalls identically).

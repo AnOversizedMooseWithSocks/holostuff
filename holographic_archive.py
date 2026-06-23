@@ -179,6 +179,29 @@ class HolographicArchive:
         keep[rng.permutation(self.dim)[:int(self.dim * destroy_fraction)]] = 0
         return keep
 
+    def verify(self, hardest=50):
+        """Self-check the exact-recall property on THIS build rather than assume it.
+
+        The disjoint-slot orthonormal keys are supposed to make every stored image
+        recoverable from the shared plates without cross-talk -- so reconstructing image i
+        and recalling it should return i. verify() checks that round-trip on the most
+        COLLISION-PRONE images first (those whose fingerprint sits nearest another's, where
+        any cross-talk would bite soonest). It converts 'exact recall, trust me' into
+        'exact recall, checked on the worst cases' -- a few lines to run once after add()s
+        (or after quantize(), which adds a noise floor that this will catch if it ever
+        corrupts identity). Returns (checked, exact)."""
+        if self.n < 2:
+            return 0, 0
+        F = np.stack(self.fingerprints)
+        S = F @ F.T
+        np.fill_diagonal(S, -np.inf)
+        order = np.argsort(S.max(axis=1))[::-1][:min(hardest, self.n)]   # most collision-prone first
+        exact = 0
+        for i in order:
+            j, _ = self.recall(self.recover(int(i)))    # reconstruct i, then recall it -> must be i
+            exact += (j == int(i))
+        return int(len(order)), int(exact)
+
 
 # ---------------------------------------------------------------------------
 # DEMO

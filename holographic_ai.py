@@ -124,8 +124,30 @@ def bind(a, b):
     The result is dissimilar to BOTH inputs -- binding hides its operands --
     but the association can be undone later with unbind(). Think of it as the
     'multiply' of this algebra. It is commutative: bind(a, b) == bind(b, a).
+
+    Uses the REAL FFT: the atoms are real, so rfft computes only the non-redundant
+    half of the spectrum -- about half the arithmetic of the complex transform and
+    exact (not approximate) for real input, matching the old complex-fft bind to
+    machine epsilon (~7e-17). involution-based unbind is unchanged.
     """
-    return np.real(np.fft.ifft(np.fft.fft(a) * np.fft.fft(b)))
+    return np.fft.irfft(np.fft.rfft(a) * np.fft.rfft(b), n=a.shape[0])
+
+
+def bind_batch(A, B):
+    """bind() over stacks of shape (k, dim) at once -- the vectorised form of the
+    single-pair bind. Same circular convolution, done over every row in one call
+    so the work happens in C rather than a Python loop. A and B must share shape;
+    bind_batch(A, B)[i] == bind(A[i], B[i]) to machine epsilon."""
+    return np.fft.irfft(np.fft.rfft(A, axis=1) * np.fft.rfft(B, axis=1),
+                        n=A.shape[1], axis=1)
+
+
+def bind_fixed(role, B):
+    """Bind one fixed role against every row of a stack B (k, dim) -- the common
+    case when tagging many fillers with the same role. The role's spectrum is
+    computed once and reused, so this is ~5x faster than a Python bind() loop."""
+    return np.fft.irfft(np.fft.rfft(role)[None, :] * np.fft.rfft(B, axis=1),
+                        n=B.shape[1], axis=1)
 
 
 def involution(a):
@@ -229,7 +251,7 @@ class Vocabulary:
                 self.vectors[name] = mint(self.dim, self.rng)
         return self.vectors[name]
 
-    def cleanup(self, noisy, candidates=None):
+    def cleanup(self, noisy, candidates=None, energy=False, beta=25.0, steps=3):
         """Snap a noisy vector to the nearest known symbol.
 
         Returns (name, similarity). If 'candidates' is given (a list of names),
@@ -240,7 +262,28 @@ class Vocabulary:
         matrix-vector product against a cached stack of the stored atoms instead of a
         Python loop of per-name cosines, which is ~100x faster on a large vocabulary
         and bit-for-bit the same answer (stored atoms are unit length, so the dot is
-        the cosine up to the query's norm, which doesn't change the argmax)."""
+        the cosine up to the query's norm, which doesn't change the argmax).
+
+        With energy=True the query is first DENOISED by the modern-Hopfield (dense associative)
+        update z <- V^T softmax(beta*V z) against the candidate codebook (Krotov-Hopfield 2016;
+        Ramsauer et al. 2020) before this nearest-symbol readout -- an opt-in, strict superset
+        (B1) that at beta->inf reproduces EXACTLY the argmax decision below (the softmax becomes
+        one-hot on the nearest atom). The continuous-vector denoising is the value; on identity it
+        ties hard argmax (B1's kept negative). Default off, so every existing caller is bit-for-bit
+        unaffected."""
+        if energy:
+            # B1 dense-associative cleanup: pull the query onto the stored-pattern manifold, then
+            # read out the nearest symbol as usual. At high beta this changes nothing about WHICH
+            # symbol wins; it cleans the continuous vector the readout sees. Default-off keeps the
+            # engine's backward-compatibility rule.
+            from holographic_hopfield import dense_cleanup
+            if candidates is None:
+                if not self.vectors:
+                    return None, -1.0
+                _, cb = self._matrix()
+            else:
+                cb = np.stack([self.vectors[name] for name in candidates])
+            noisy = dense_cleanup(noisy, cb, beta=beta, steps=steps)
         nn = float(np.linalg.norm(noisy))
         if candidates is None:
             if not self.vectors:

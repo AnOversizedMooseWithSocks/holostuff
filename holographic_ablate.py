@@ -23,6 +23,7 @@ from collections import defaultdict, Counter
 import numpy as np
 
 from holographic_measure import measure
+from holographic_honesty import bh_fdr
 
 
 def verdict(holo, base):
@@ -34,6 +35,69 @@ def verdict(holo, base):
     if bl > hh:
         return "baseline wins"
     return "uniformity"
+
+
+def _paired_perm_p(holo_scores, base_scores):
+    """One-sided p-value for 'holo > base' by permutation -- the engine's own threshold-free
+    instrument. When the two arms share seeds (equal length) the seeds pair, so it is a
+    SIGN-FLIP test on the paired differences (how often a random re-signing reaches the
+    observed mean difference). When the seed counts differ (an arm ran fewer seeds) the
+    scores cannot pair, so it falls back to a TWO-SAMPLE label-permutation test (how often
+    relabelling the pooled scores reaches the observed gap of means). Small families are
+    enumerated exactly; larger ones are sampled. No-difference returns 1.0."""
+    h = np.asarray(holo_scores, float)
+    b = np.asarray(base_scores, float)
+    if len(h) == len(b):                                  # paired: sign-flip the differences
+        d = h - b
+        n = len(d)
+        if n == 0 or not np.any(d):
+            return 1.0
+        obs = d.mean()
+        if n <= 20:
+            signs = ((np.arange(2 ** n)[:, None] >> np.arange(n)) & 1) * 2 - 1
+            return float(((signs * np.abs(d)).mean(axis=1) >= obs - 1e-12).mean())
+        rng = np.random.default_rng(0)
+        flips = rng.choice([-1.0, 1.0], size=(20000, n))
+        return float(((flips * np.abs(d)).mean(axis=1) >= obs - 1e-12).mean())
+    # unpaired: permute which pooled scores are labelled 'holo'
+    obs = h.mean() - b.mean()
+    if obs == 0:
+        return 1.0
+    pool = np.concatenate([h, b])
+    nh = len(h)
+    rng = np.random.default_rng(0)
+    perms = np.array([rng.permutation(pool) for _ in range(20000)])
+    diffs = perms[:, :nh].mean(axis=1) - perms[:, nh:].mean(axis=1)
+    return float((diffs >= obs - 1e-12).mean())
+
+
+def fdr_verdicts(rows, alpha=0.1):
+    """Apply false-discovery control across the WHOLE ablation family at once.
+
+    The per-subsystem verdict() decides on that subsystem's own 95% CIs -- but the table is a
+    SCAN over many subsystems, and scanning enough of them means one can clear a per-test bar
+    by luck. This is the exposure bh_fdr exists for. Each subsystem gets a paired permutation
+    p-value (holo > baseline); bh_fdr (Benjamini-Yekutieli, dependent=True -- the subsystems
+    share data and methodology) then holds the false-discovery rate among the surviving calls
+    at alpha across the family. Returns (augmented_rows, n_load_bearing, n_survive) where each
+    augmented row is (name, holo, base, base_name, verdict, p, survives_fdr)."""
+    testable = [(i, r) for i, r in enumerate(rows)
+                if r[1] is not None and "scores" in r[1] and "scores" in r[2]]
+    pvals = [_paired_perm_p(r[1]["scores"], r[2]["scores"]) for _, r in testable]
+    reject, _ = bh_fdr(np.array(pvals), alpha=alpha, dependent=True) if pvals \
+        else (np.zeros(0, bool), 0)
+    survive = {}
+    for (idx, _), p, rj in zip(testable, pvals, reject):
+        survive[idx] = (float(p), bool(rj))
+    out, n_lb, n_surv = [], 0, 0
+    for i, r in enumerate(rows):
+        p, rj = survive.get(i, (float("nan"), False))
+        out.append((*r, p, rj))
+        if r[4] == "VSA load-bearing":
+            n_lb += 1
+            if rj:
+                n_surv += 1
+    return out, n_lb, n_surv
 
 
 # ---------------------------------------------------------------------------
@@ -267,20 +331,27 @@ def ablation_table(seeds=range(6)):
 
 def _demo():
     rows = ablation_table()
+    aug, n_lb, n_surv = fdr_verdicts(rows, alpha=0.1)
     print("ABLATION TABLE -- is VSA load-bearing? (holographic vs dumbest honest baseline,")
     print("real data, judged by 95% CIs from the variance harness)\n")
-    print(f"  {'subsystem':28} {'holo':>14} {'baseline':>14}  verdict")
-    for name, h, b, base_name, v in rows:
+    print(f"  {'subsystem':28} {'holo':>14} {'baseline':>14}  {'verdict':18} {'p':>7} {'FDR':>9}")
+    for name, h, b, base_name, v, p, rj in aug:
         if h is None:
             print(f"  {name:28} (skipped: {base_name})")
             continue
         extra = ""
         if "comparison_fraction" in h:
             extra = f"  [forest @ {h['comparison_fraction']*100:.0f}% comparisons -> the win is SCALE]"
-        print(f"  {name:28} {h['mean']:.3f}+/-{h['std']:.3f} {b['mean']:.3f}+/-{b['std']:.3f}  {v}{extra}")
-    print("\nReading: 'VSA load-bearing' = superposition/binding/cleanup is the reason it works;")
+        tag = "survives" if rj else ("LUCK?" if v == "VSA load-bearing" else "--")
+        print(f"  {name:28} {h['mean']:.3f}+/-{h['std']:.3f} {b['mean']:.3f}+/-{b['std']:.3f}  "
+              f"{v:18} {p:7.4f} {tag:>9}{extra}")
+    print(f"\n{n_surv}/{n_lb} 'load-bearing' verdicts survive family-wise false-discovery control "
+          f"(BH-Yekutieli, alpha=0.1)")
+    print("Reading: 'VSA load-bearing' = superposition/binding/cleanup is the reason it works;")
     print("'uniformity' = the simple baseline ties it (the idea works, not the VSA encoding);")
     print("'baseline wins' = VSA is decorative here (but the forest row buys sublinear SCALE).")
+    print("FDR: the per-test CI decides one subsystem; the p-column + FDR judge the WHOLE scan,")
+    print("so a verdict that cleared its own CI by luck across many subsystems is caught.")
 
 
 if __name__ == "__main__":

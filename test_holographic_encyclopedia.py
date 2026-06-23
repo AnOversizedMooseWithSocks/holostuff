@@ -130,3 +130,37 @@ def test_wordnet_scale_if_available():
         assert got == truth
         checked += 1
     assert checked > 20
+
+
+def test_scalar_encoder_is_its_kernel_and_rbf_reads_density_better():
+    # kernel_at lets you ASSERT the kernel rather than eyeball it: the measured cosine
+    # between two encodings dx apart matches the analytic kernel. And RBF (non-negative,
+    # tunable bandwidth) recovers a bimodal density that sinc -- one lobe over the range --
+    # cannot resolve.
+    import numpy as _np
+    from holographic_encoders import ScalarEncoder
+    from holographic_ai import cosine, bundle
+
+    enc = ScalarEncoder(2048, 0.0, 10.0, seed=1, kernel="rbf")
+    for dx in (0.0, 0.5, 1.0, 2.0):
+        assert abs(cosine(enc.encode(3.0), enc.encode(3.0 + dx)) - enc.kernel_at(dx)) < 0.03
+    assert all(enc.kernel_at(dx) >= 0 for dx in _np.linspace(0, 20, 100))   # RBF never negative
+    sinc = ScalarEncoder(2048, 0.0, 10.0, seed=1, kernel="sinc")
+    assert min(sinc.kernel_at(dx) for dx in _np.linspace(0, 20, 100)) < -0.05  # sinc does dip
+
+    # bimodal density recovery within [0,1]
+    rng = _np.random.default_rng(0)
+    samples = _np.concatenate([rng.normal(0.30, 0.05, 500), rng.normal(0.70, 0.05, 500)])
+    grid = _np.linspace(0, 1, 150)
+    from math import sqrt, pi
+    true = _np.array([0.5 * _np.exp(-(g - 0.3) ** 2 / (2 * 0.05 ** 2)) / (0.05 * sqrt(2 * pi))
+                      + 0.5 * _np.exp(-(g - 0.7) ** 2 / (2 * 0.05 ** 2)) / (0.05 * sqrt(2 * pi))
+                      for g in grid])
+
+    def corr(kernel, bw=8.0):
+        e = ScalarEncoder(4096, 0.0, 1.0, seed=2, kernel=kernel, bandwidth=bw)
+        b = bundle([e.encode(s) for s in samples])
+        r = _np.array([cosine(b, e.encode(g)) for g in grid])
+        return float(_np.corrcoef(r, true)[0, 1])
+
+    assert corr("rbf") > corr("sinc") + 0.1        # RBF tracks the bimodal density far better

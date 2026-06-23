@@ -74,3 +74,23 @@ def test_forest_recall_is_correct_on_clean_keys():
     forest = HoloForest(256, n_trees=3, leaf_size=48, seed=0).build(items)
     ok = sum(int(forest.recall(items[i], beam=4) == i) for i in range(0, 600, 5))
     assert ok == len(range(0, 600, 5))                              # exact cues -> exact hits
+
+
+def test_forest_recall_agreement_is_an_abstention_signal():
+    # The trees are independently seeded, so their agreement is a free reliability signal.
+    # A stored item recalls with full agreement; random queries split the trees. The
+    # default recall (with_agreement=False) is unchanged byte-for-byte.
+    import numpy as _np
+    from holographic_tree import HoloForest
+    rng = _np.random.default_rng(0)
+    V = _np.stack([rng.standard_normal(256) for _ in range(300)])
+    V /= _np.linalg.norm(V, axis=1, keepdims=True)
+    f = HoloForest(256, n_trees=8, seed=0).build(V)
+    # default path unchanged
+    for i in range(60):
+        assert f.recall(V[i]) == f.recall(V[i], with_agreement=True)[0]
+    hit, a_hit = f.recall(V[7], with_agreement=True)
+    assert hit == 7 and a_hit > 0.7
+    rand_agree = _np.mean([f.recall(rng.standard_normal(256), with_agreement=True)[1]
+                           for _ in range(40)])
+    assert a_hit > rand_agree + 0.1                 # agreement separates known from unknown

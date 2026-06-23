@@ -141,3 +141,27 @@ def test_brain_prototype_arrays_stay_in_lockstep_under_maintenance():
         for a in range(4):
             assert len({len(m._unit[a]), len(m._sum[a]),
                         len(m._ret[a]), len(m._cnt[a])}) == 1
+
+
+def test_bind_batch_and_fixed_match_scalar_bind():
+    # The vectorised binds must equal the scalar bind row-for-row (to machine epsilon),
+    # so any caller can batch a Python bind loop for free.
+    from holographic_ai import bind, bind_batch, bind_fixed
+    rng = np.random.default_rng(0)
+    A = np.stack([random_vector(512, rng) for _ in range(8)])
+    B = np.stack([random_vector(512, rng) for _ in range(8)])
+    batched = bind_batch(A, B)
+    for i in range(8):
+        assert np.allclose(batched[i], bind(A[i], B[i]), atol=1e-12)
+    role = random_vector(512, rng)
+    fixed = bind_fixed(role, B)
+    for i in range(8):
+        assert np.allclose(fixed[i], bind(role, B[i]), atol=1e-12)
+
+
+def test_rfft_bind_recovers_under_unbind():
+    # The real-FFT bind keeps the unbind round-trip (exact for a unitary key).
+    from holographic_ai import bind, unbind, unitary_vector, random_vector, cosine
+    rng = np.random.default_rng(1)
+    a, b = unitary_vector(1024, rng), random_vector(1024, rng)
+    assert cosine(unbind(bind(a, b), a), b) > 0.99

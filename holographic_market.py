@@ -104,6 +104,43 @@ def load_ohlcv(path="data/dai_weth_ohlcv.json"):
     return np.array(data["ohlcv"], float)
 
 
+def load_sol_market(path="data/sol_market.npz", timeframe="1h"):
+    """Real SOL/USDT bars from Binance (vendored from a sibling project that exercised
+    this engine on market data). Multi-timeframe and richer than the DAI/WETH set above:
+    each row is [time, open, high, low, close, volume, taker_buy, ofi] where taker_buy is
+    aggressive buy volume and ofi is the order-flow-imbalance sign -- microstructure the
+    permutation tests and CandleCoder can actually chew on.
+
+    timeframe is one of "5m", "1h", "1d" for SOL, or "btc"/"eth" for the 1d cross-asset
+    series (same column layout), or "funding" for the [time, rate] funding-rate series.
+    Returns (rows, field_names). All ascending in time."""
+    d = np.load(path, allow_pickle=False)
+    fields = [str(x) for x in d["fields"]]
+    key = {"5m": "sol_5m", "1h": "sol_1h", "1d": "sol_1d",
+           "btc": "btc_1d", "eth": "eth_1d", "funding": "funding"}.get(timeframe, "sol_1h")
+    rows = np.asarray(d[key], float)
+    if key == "funding":
+        return rows, ["time", "rate"]
+    return rows, fields
+
+
+def load_onchain_traders(path="data/onchain_traders.json"):
+    """Realized on-chain Jupiter Perpetuals trades, read off Solana's public ledger by the
+    sibling project (no live RPC needed here -- the produced data is vendored). Two parts:
+
+      profiles : per-wallet summaries -- trades, net_usd_per_trade, win_rate, edge_t_stat,
+                 avg_hold_hours, median_leverage, long_fraction, liquidations. Honest by
+                 construction: edge_t_stat sits next to PnL so a wallet green on a handful
+                 of trades reads as luck, not skill (the same n-problem the engine keeps
+                 flagging elsewhere).
+      realized : individual closed trades -- market, side, net_usd, leverage, hold_hours,
+                 liquidated, size_usd. Real labelled outcomes for a records mind.
+
+    Returns the parsed dict. The profiles/realized lists are records ready for RecordEncoder
+    or the records-world loader."""
+    return json.load(open(path))
+
+
 class CandleCoder:
     """Candles as holographic records, windows as motifs, anomalies by novelty.
 

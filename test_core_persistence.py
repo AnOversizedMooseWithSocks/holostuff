@@ -284,3 +284,40 @@ def test_auto_quant_size_floor_keeps_tiny_arrays_float():
     import numpy as _np
     small = _np.random.default_rng(1).standard_normal((2, 16))     # 32 elements, below floor
     assert core._auto_quant_kind(small) == "f32"
+
+
+def test_rd_quant_save_level_is_safe_and_preserves_decisions():
+    # quant="rd" (rate-distortion code): on a normal object it falls back to int8 where there is no
+    # low-rank structure, so it round-trips and preserves classifications -- the wiring is non-breaking.
+    import numpy as _np
+    from holographic_organizer import SelfOrganizingMind, _multimodal_world
+    enc, sample, K, _ = _multimodal_world(seed=0, modes=2)
+    m = SelfOrganizingMind(dim=512, seed=0)
+    rng = _np.random.default_rng(7)
+    for _ in range(400):
+        c = int(rng.integers(K)); m.observe(sample(c), c, "vector")
+    m.reorganize()
+    save(m, _tmp("rd_test.npz"), quant="rd")
+    back = load(_tmp("rd_test.npz"))
+    probes = [(sample(c), c) for c in (int(rng.integers(K)) for _ in range(120))]
+    agree = sum(m.classify(x, "vector")[0] == back.classify(x, "vector")[0] for x, _ in probes)
+    assert agree >= 118
+    os.remove(_tmp("rd_test.npz"))
+
+
+def test_rd_quant_activates_and_shrinks_low_rank_state():
+    # when a 2D float array IS low-rank, quant="rd" activates and the file is smaller than int8.
+    import numpy as _np
+    from holographic_core import save as _save, load as _load
+    from holographic_ai import random_vector, bundle, cosine
+    # a Vocabulary-like object isn't low-rank, so build the low-rank matrix and round-trip via the codec
+    from holographic_ratedistortion import geometry_preserving_code, pack_code, unpack_code, reconstruct, bits_per_vector
+    rng = _np.random.default_rng(0); D = 256; Kn = 16
+    senses = [random_vector(D, rng) for _ in range(Kn)]
+    X = _np.array([bundle([senses[j] for j in rng.choice(Kn, size=5, replace=False)]) for _ in range(400)])
+    X /= _np.linalg.norm(X, axis=1, keepdims=True)
+    code = geometry_preserving_code(X, target_cos=0.999)
+    assert bits_per_vector(code) < 8 * D                       # rd activates (beats int8) on low-rank data
+    back = reconstruct(unpack_code(pack_code(code)))           # full pack->unpack->reconstruct path
+    cos = _np.mean([cosine(X[i], back[i]) for i in range(len(X))])
+    assert cos >= 0.999

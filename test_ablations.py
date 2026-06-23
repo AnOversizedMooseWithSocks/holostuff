@@ -75,3 +75,34 @@ def test_segmentation_is_not_vsa_load_bearing_on_brown():
     assert verdict(h, b) in ("uniformity", "baseline wins")
     assert verdict(h, b) != "VSA load-bearing"
     assert b["mean"] >= h["mean"] - 0.02                 # exact is at least as good
+
+
+def test_fdr_pass_controls_the_ablation_family():
+    # The FDR pass over the whole table: a paired permutation p-value per subsystem, then
+    # bh_fdr across the family. A unanimous holo>base win clears; ties/losses do not; and
+    # a fabricated family of mostly-null rows must not over-declare discoveries.
+    import numpy as np
+    from holographic_ablate import _paired_perm_p, fdr_verdicts
+
+    win = (np.array([0.80, 0.82, 0.79, 0.81, 0.83, 0.80]),
+           np.array([0.70, 0.71, 0.69, 0.72, 0.70, 0.71]))
+    tie = (win[1], win[1])
+    assert _paired_perm_p(*win) < 0.05            # unanimous win -> small p
+    assert _paired_perm_p(*tie) == 1.0            # identical arms -> p = 1
+    # unequal seed counts must not crash (falls back to a two-sample permutation test)
+    assert 0.0 <= _paired_perm_p(np.array([0.8, 0.82, 0.79]), np.array([0.7, 0.71])) <= 1.0
+
+    # a synthetic table: one genuine, unanimous load-bearing win among nulls. BH-Yekutieli is
+    # honestly conservative, so the win needs enough seeds for its p to clear the top-rank bar
+    # of the whole family (6 seeds only reaches 1/64 -- too coarse; 10 reaches ~1e-3).
+    def stat(scores):
+        a = np.asarray(scores, float)
+        return {"mean": float(a.mean()), "std": float(a.std()), "ci": (0, 0), "n": len(a), "scores": a}
+    real = (np.array([0.80, 0.82, 0.79, 0.81, 0.83, 0.80, 0.81, 0.79, 0.82, 0.80]),
+            np.array([0.70, 0.71, 0.69, 0.72, 0.70, 0.71, 0.70, 0.69, 0.71, 0.70]))
+    rows = [("real", stat(real[0]), stat(real[1]), "base", "VSA load-bearing")]
+    for k in range(5):
+        s = 0.7 + 0.01 * np.random.default_rng(k).standard_normal(6)
+        rows.append((f"null{k}", stat(s), stat(s.copy()), "base", "uniformity"))
+    aug, n_lb, n_surv = fdr_verdicts(rows, alpha=0.1)
+    assert n_lb == 1 and n_surv == 1               # the one real win survives, nulls don't inflate

@@ -2,6 +2,7 @@
 resonator recovers the bound factors from a combinatorial space far larger than it
 enumerates, with random restarts, and reports honestly when it can't."""
 import numpy as np
+import pytest
 
 from holographic_resonator import ResonatorNetwork, map_codebook, map_bind
 
@@ -66,5 +67,8 @@ def test_brain_factor_composite():
     true = [int(rng.integers(40)) for _ in range(3)]
     c = map_bind(*[books[f][true[f]] for f in range(3)])
     m = UnifiedMind(dim=256, seed=0)
-    r = m.factor_composite(c, books, restarts=30)
+    # the dense MAP path is the LEGACY route (the SBC resonator cannot factor this algebra), so it is
+    # kept working but deprecated -- assert both: it still solves, and it warns.
+    with pytest.warns(DeprecationWarning):
+        r = m.factor_composite(c, books, restarts=30)
     assert r["solved"] and r["factors"] == tuple(true)

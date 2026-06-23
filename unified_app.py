@@ -317,6 +317,46 @@ def load_world():
                                      "learned from eight incomplete observations")
 
 
+def load_onchain_world():
+    """Real on-chain perp traders as role-bound records (vendored from a sibling project
+    that read them off Solana's public ledger). Each wallet becomes a record of its
+    behaviour -- win_rate, median_leverage, avg_hold_hours, long_fraction, liquidations --
+    LABELLED by skill judged HONESTLY: a wallet is "skilled" only if its per-trade edge
+    t-stat clears 2 (green-on-a-handful-of-trades reads as luck, not skill), "burned" if it
+    has liquidations and negative edge, else "neutral". So the relations panel can ask what
+    behaviour actually correlates with durable success on the engine's own absorbed memory,
+    not on raw PnL the n-problem would fool."""
+    from holographic_market import load_onchain_traders
+    data = load_onchain_traders()
+    items = []
+
+    def bucket(x, edges, names):
+        for e, nm in zip(edges, names):
+            if x <= e:
+                return nm
+        return names[-1]
+
+    for p in data["profiles"]:
+        if p["edge_t_stat"] >= 2.0 and p["net_usd_per_trade"] > 0:
+            label = "skilled"
+        elif p["liquidations"] > 0 and p["net_usd_per_trade"] < 0:
+            label = "burned"
+        else:
+            label = "neutral"
+        # categorical, graded attributes -- the records mind reads these straight
+        attrs = {
+            "win_rate": bucket(p["win_rate"], [0.33, 0.66], ["low", "mid", "high"]),
+            "leverage": bucket(p["median_leverage"], [2, 5], ["low", "mid", "high"]),
+            "hold": bucket(p["avg_hold_hours"], [4, 24], ["scalp", "intraday", "swing"]),
+            "bias": bucket(p["long_fraction"], [0.33, 0.66], ["short", "balanced", "long"]),
+            "blowups": "yes" if p["liquidations"] > 0 else "no",
+        }
+        items.append((attrs, label, "record"))
+    desc = (f"{len(items)} real on-chain perp wallets as records, labelled by honest per-trade "
+            f"edge (t-stat >= 2 = skilled, not raw PnL)")
+    return items, "", desc
+
+
 DATASETS = {
     "world": ("Countries (records)", [], load_world),
     "curriculum": ("Dictionary + encyclopedia (curriculum)", [], None),
@@ -325,6 +365,7 @@ DATASETS = {
     "brown": ("Brown genres", ["brown"], load_brown),
     "gutenberg": ("Books (Gutenberg authors)", ["gutenberg"], load_gutenberg),
     "europarl": ("Europarl languages", ["europarl_raw"], load_europarl),
+    "onchain": ("On-chain perp traders (records)", [], load_onchain_world),
 }
 
 

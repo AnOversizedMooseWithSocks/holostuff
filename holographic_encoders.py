@@ -24,7 +24,7 @@ Needs: numpy, and holographic_ai.py beside it.
 """
 
 import numpy as np
-from holographic_ai import (random_vector, cosine, bind, unbind, bundle,
+from holographic_ai import (random_vector, cosine, bind, bind_batch, unbind, bundle,
                             permute, Vocabulary)
 
 
@@ -48,13 +48,27 @@ class ScalarEncoder:
     cleanup memory.
     """
 
-    def __init__(self, dim, lo=0.0, hi=1.0, seed=0):
+    def __init__(self, dim, lo=0.0, hi=1.0, seed=0, kernel="sinc", bandwidth=1.8):
+        # kernel="sinc": uniform phases -> a sinc similarity (band-limited, but it
+        #   oscillates and goes NEGATIVE as the gap grows). Fine for decode()/cleanup.
+        # kernel="rbf":  Gaussian phases -> an RBF / squared-exponential kernel,
+        #   exp(-bandwidth^2 (scale*dx)^2 / 2): non-negative and monotone, so a BUNDLE
+        #   of encoded points reads as a proper kernel density estimate. Prefer it when
+        #   the encoder feeds a similarity / density read-out rather than a single decode.
+        # By Bochner's theorem the encoder IS a shift-invariant kernel either way -- the
+        # inner product depends only on the gap and equals the phase distribution's
+        # characteristic function at that gap (see kernel_at).
         self.dim = dim
         self.lo, self.hi = lo, hi
         self.scale = 1.0 / (hi - lo) if hi > lo else 1.0
+        self.kernel = kernel
+        self.bandwidth = bandwidth
         rng = np.random.default_rng(seed)
         # Random phases, made conjugate-symmetric so the inverse FFT is real.
-        phases = rng.uniform(-np.pi, np.pi, dim)
+        if kernel == "rbf":
+            phases = rng.normal(0.0, bandwidth, dim)   # Gaussian phases -> RBF kernel
+        else:
+            phases = rng.uniform(-np.pi, np.pi, dim)   # uniform phases -> sinc kernel
         phases[0] = 0.0
         for k in range(1, dim // 2 + 1):
             phases[dim - k] = -phases[k]
@@ -68,6 +82,19 @@ class ScalarEncoder:
         v = np.real(np.fft.ifft(spectrum))
         n = np.linalg.norm(v)
         return v / n if n > 0 else v
+
+    def kernel_at(self, dx):
+        """The similarity <encode(x), encode(x+dx)> this encoder analytically realises.
+
+        By Bochner's theorem the inner product depends only on the gap dx and equals the
+        characteristic function of the phase distribution at dx -- so you can ASSERT the
+        kernel rather than eyeball it: encode two points dx apart, take their cosine, and
+        it matches kernel_at(dx). RBF is exp(-(bandwidth*scale*dx)^2/2) and never goes
+        negative; sinc is sin(pi t)/(pi t) and does."""
+        t = self.scale * float(dx)
+        if self.kernel == "rbf":
+            return float(np.exp(-0.5 * (self.bandwidth * t) ** 2))
+        return float(np.sinc(t))                        # sin(pi t)/(pi t)
 
     def decode(self, vec, steps=200):
         """Read a vector back to a number: the grid value whose encoding is
@@ -202,9 +229,16 @@ class RecordEncoder:
         raise ValueError(f"unknown field kind: {kind}")
 
     def encode(self, record):
-        tokens = [bind(self.roles.get(field), self._filler(kind, value))
-                  for field, (kind, value) in sorted(record.items())]
-        return bundle(tokens)
+        # Bind every field's role to its filler, then superpose. The binds are done
+        # in ONE batched FFT (bind_batch) rather than a Python loop -- ~2x even for a
+        # few fields, more as records widen; the bundle is order-independent so the
+        # result is identical (to machine epsilon) to the per-field loop.
+        items = sorted(record.items())
+        if not items:
+            return np.zeros(self.dim)
+        roles = np.stack([self.roles.get(field) for field, _ in items])
+        fillers = np.stack([self._filler(kind, value) for _, (kind, value) in items])
+        return bundle(list(bind_batch(roles, fillers)))
 
     def read_number(self, vec, field):
         """Pull a numeric field back out of a record vector."""
