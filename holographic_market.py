@@ -197,8 +197,14 @@ class CandleCoder:
 
     def nearest_motif(self, query_vec, past_vecs):
         """RECALL (memory, not prophecy): the most similar past window."""
-        sims = [cosine(query_vec, pv) for pv in past_vecs]
-        j = int(np.argmax(sims))
+        P = np.atleast_2d(np.asarray(past_vecs, float))
+        if P.shape[0] == 0:
+            return -1, -1.0
+        qn = np.asarray(query_vec, float)
+        qn = qn / (np.linalg.norm(qn) + 1e-12)
+        Pn = P / np.maximum(np.linalg.norm(P, axis=1, keepdims=True), 1e-12)
+        sims = Pn @ qn                                   # cosine vs every past window in one matvec (was a loop)
+        j = int(sims.argmax())
         return j, float(sims[j])
 
     def novelty(self, ohlcv, warmup=10):

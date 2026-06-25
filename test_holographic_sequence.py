@@ -372,3 +372,47 @@ def test_replay_plan_navigates_and_detects_breaks():
     # in a different maze: the plan breaks, and says where -- not a false escape
     statuses = [replay_plan(world_b(), canon)[0] for _ in range(5)]
     assert all(s == "broke" for s in statuses)
+
+
+def test_ordered_recall_on_realistic_lists():
+    """Recipes / directions / instructions: full ordered recall is exact, and 'what is step i',
+    precedence, and constraint validation all hold on realistic (<= 20 step) lists."""
+    from holographic_unified import UnifiedMind
+    m = UnifiedMind(dim=2048, seed=0)
+    recipe = ["mix flour and sugar", "beat the eggs", "add the milk", "whisk the batter",
+              "heat the pan", "pour the batter", "flip the pancake", "serve warm"]
+    m.learn_plan("pancakes", recipe)
+    assert [m.step_at("pancakes", i) for i in range(len(recipe))] == recipe   # exact ordered recall
+    assert m.precedes("pancakes", "beat the eggs", "serve warm") is True
+    assert m.precedes("pancakes", "serve warm", "heat the pan") is False
+    ok, viol = m.validate_plan("pancakes", [("heat the pan", "pour the batter")])
+    assert ok and not viol
+    bad_ok, bad_viol = m.validate_plan("pancakes", [("serve warm", "beat the eggs")])
+    assert (not bad_ok) and ("serve warm", "beat the eggs") in bad_viol
+
+
+def test_sequence_capacity_is_far_past_eight():
+    """Pins the MEASURED capacity (the old '~8' note was far too conservative): at dim 2048,
+    forced-choice step recall is exact at length 20 and still strong (>= 88%) at length 120."""
+    short = SequenceMemory(dim=2048, seed=0)
+    s20 = [f"s{j}" for j in range(20)]
+    short.add("p", s20)
+    assert all(short.step("p", i) == s20[i] for i in range(20))               # exact at 20
+    accs = []
+    for t in range(5):
+        sm = SequenceMemory(dim=2048, seed=t)
+        s120 = [f"s{j}" for j in range(120)]
+        sm.add("p", s120)
+        accs.append(np.mean([sm.step("p", i) == s120[i] for i in range(120)]))
+    assert np.mean(accs) >= 0.88                                              # graceful, not a cliff
+
+
+def test_repeated_step_recall_and_the_position_of_limit():
+    """A recurring step: position -> element is correct at EVERY occurrence (the encoding is
+    position-indexed), but element -> position (position_of) collapses to a single slot. Kept
+    negative, pinned so it cannot silently change."""
+    sm = SequenceMemory(dim=2048, seed=0)
+    rep = ["add water", "stir", "add flour", "stir", "add eggs", "stir", "bake"]   # stir at 1,3,5
+    sm.add("dough", rep)
+    assert [sm.step("dough", i) for i in range(len(rep))] == rep              # every slot recalls right
+    assert sm.position_of("dough", "stir") in (1, 3, 5)                       # returns ONE of them only

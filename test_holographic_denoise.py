@@ -92,3 +92,31 @@ def test_forest_recall_k_finds_near_duplicates():
     assert len(idx) >= 1 and sims[0] >= sims[-1]        # ranked descending
     # the closest neighbours should come from the same motif block (the first 8 rows)
     assert np.mean(idx[:4] < 8) >= 0.5
+
+
+# ---- trajectory denoise: lone-1-D-signal prior, promoted out of the pipeline (above/below sweep) -----
+
+def test_trajectory_denoise_cleans_a_lone_1d_signal():
+    """trajectory_denoise gives a LONE 1-D signal the prior it lacks, from its own sliding windows (SSA):
+    a smooth/periodic signal's Hankel matrix is low-rank, so the windows project onto their own subspace and
+    the signal rebuilds by anti-diagonal averaging. On such a signal the error drops well below the noisy
+    input. (No free lunch: the prior IS the signal's structure, so a structureless signal has nothing to
+    recover -- the method can only shrink it, not restore a signal that was never there.)"""
+    from holographic_denoise import trajectory_denoise
+    t = np.linspace(0, 1, 256)
+    clean = np.sin(2 * np.pi * 3 * t) + 0.5 * t
+    noisy = clean + 0.4 * np.random.default_rng(0).standard_normal(256)
+    den = trajectory_denoise(noisy)
+    assert np.linalg.norm(den - clean) < 0.7 * np.linalg.norm(noisy - clean)
+
+
+def test_trajectory_method_is_the_pipeline_denoiser_promoted():
+    """The denoise faculty exposes the trajectory denoiser as method='trajectory', and the pipeline's private
+    _denoise_signal is now a thin delegate to it -- one shared implementation, bit-identical."""
+    from holographic_unified import UnifiedMind
+    m = UnifiedMind(dim=256, seed=0)
+    t = np.linspace(0, 1, 200)
+    sig = 1 + 2 * t + 3 * t ** 2 + 0.3 * np.random.default_rng(0).standard_normal(200)
+    faculty = np.asarray(m.denoise(sig, method="trajectory"))
+    private = np.asarray(m._denoise_signal(sig))
+    assert np.array_equal(faculty, private)

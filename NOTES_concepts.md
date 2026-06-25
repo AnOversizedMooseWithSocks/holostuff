@@ -4533,3 +4533,1795 @@ Tests: +5 (decide_confidence low for familiar / high for novel; the brain recogn
 noise; explore_if_unrecognized guesses randomly on novel states and commits on familiar; the SPRT spends more
 samples as densities overlap and beats fixed-N at matched error; the auto coherence floor matches the hand-set
 floor without an absolute threshold and round-trips). 711 -> 716.
+
+## The scan faculty: streaming detection + look-elsewhere control in one pass (shipped)
+
+A1 from the revised backlog -- the last piece of the honesty arc, and the one Tier-1 item with zero code:
+Siemion's seat asked for a single faculty that scans an astronomical channel count the way SETI must --
+decide each channel as fast as its own evidence allows, AND control the trials factor across all of them.
+`scan(channels, alpha, beta, fdr)` is pure assembly of parts already shipped: per channel, Wald's SPRT
+(B3) decides MATCH/REJECT over that channel's stream of cues; then Benjamini-Hochberg/Yekutieli FDR
+(`bh_fdr`) runs across the channels' calibrated p-values. A channel is a CONFIRMED detection only when the
+SPRT decided MATCH *and* its p-value survives FDR -- the two disciplines combined. Each channel is a stream
+bearing on one hypothesis (a frequency bin over time, a sky position, a recurring pattern).
+
+The load-bearing detail was a calibration bug caught and fixed before shipping -- the engine's usual lesson.
+The channel p-value needs a noise floor for the channel's mean score, and the obvious floor -- the existing
+`_recognition_null` -- is WRONG twice over: it scores prototype ROWS (noise mean ~0.086), but recognize()
+returns the max LABEL score (sub-prototypes aggregated); and recognize() first runs perceive(), which is NOT
+the identity even for a raw vector -- it lifts the vector onto the encoder geometry, raising the max label
+score of pure noise to ~0.117. Calibrating to either wrong floor made 69-76 of 80 pure-noise channels look
+significant. The fix is a PROCEDURE-MATCHED floor (the recurring principle): run random unit vectors through
+recognize() itself -- the exact path a channel cue takes, perceive and routing included -- and resample the
+channel-mean null from that, by channel length. With the right floor, pure-noise channel p-values are uniform
+again (~8 of 80 below 0.10, as a calibrated detector should be).
+
+Measured (a weak/drifting target, 256-d, eight clear + four faint signal channels among eighty noise):
+
+- **Detection.** All eight clear signal channels and all four faint ones detected; zero of eighty noise
+  channels detected -- false-discovery proportion 0.00 at an FDR target of 0.10.
+- **The look-elsewhere value.** Across the eighty pure-noise channels, naive per-channel thresholding at
+  p<=0.10 flags ~11 false positives (as uniform p-values should); BH-FDR holds the detections to 0. That gap
+  is exactly the trials factor the FDR controls.
+- **The sequential value.** The SPRT spends 1.0 samples on a clear channel but ~1.8 on a faint one -- it
+  decides as fast as each channel's own evidence allows, the Wald property, now per channel across a scan.
+- **Deterministic** run-to-run (the null draws are seeded per channel length -- Macklin's tie-break rule).
+
+Tests: +1 (scan detects signals, controls the look-elsewhere -- naive false positives cut by FDR -- spends
+more SPRT samples on faint channels than clear, and is bit-identical run-to-run). 716 -> 717.
+
+## Calibrated soft confidence for the resonator: a graded answer on approximate inputs (shipped)
+
+A2 from the revised backlog -- Olshausen's resonator network with Cranmer's calibrated detector. The SBC
+resonator already had a confidence signal: `verified`, True iff the recovered factors rebuild the product
+EXACTLY (precision ~1.0). That certificate is perfect on exact products and uselessly brittle on approximate
+ones: the moment the input is a noisy bind, exact reconstruction fails and `verified` goes False even when the
+resonator found exactly the right factors. `resonator_confidence` (exposed through `decompose_structure(...,
+confidence=True)` and `factor_composite(..., confidence=True)`) adds the graded answer -- (picks, verified,
+agreement, pvalue), where `agreement` is the fraction of blocks the factors rebuild (the soft version of the
+boolean, which is agreement==1.0) and `pvalue` is a calibrated false-alarm probability.
+
+The calibration is the whole subtlety, and it is the same lesson scan taught. The obvious null -- the agreement
+RANDOM PICKS would score -- assumes a factorization matching ~1/L of the blocks by chance (~0.06 here). But the
+resonator OPTIMISES reconstruction, so on pure noise it still manufactures ~0.27 agreement, far above that
+chance line. Calibrating to the random-picks null therefore rates pure noise as a near-certain detection
+(measured p ~ 0.02-0.003). The honest null is PROCEDURE-MATCHED: the agreement the SAME resonator reaches on
+STRUCTURELESS input (random SBCs through the real factorizer), which includes its overfitting. That null is a
+property of the search configuration -- stable across different random codebooks of the same shape (mean
+0.262-0.269 over three) -- so it is cached per codebook set; the first confidence call pays for it, the rest
+are free.
+
+Measured (B=16, L=16, three factors, eight atoms each; true factors (2,5,1)):
+
+- **The rescue.** Corrupting one to five of the sixteen product blocks, the resonator still recovers the true
+  factors every time -- but `verified` is True only at zero corruption, False for all the rest. The calibrated
+  p holds at 0.010 (trust) straight through, exactly where the boolean fails. Agreement falls smoothly 1.00 ->
+  0.94 -> 0.88 -> 0.81 -> 0.75 -> 0.69 as the blocks corrupt.
+- **Abstention on noise, calibrated.** Over eighty pure-noise products the median p is 0.84 -- it abstains.
+  Its false-alarm rate is conservative (3 of 80 below p=0.10, against a nominal 8): block agreement is discrete,
+  so the p-value is stepwise, and conservative is the safe direction for a detector.
+- **The kept lesson on one noise product** (agreement 0.250): the random-picks null gives p=0.022 (false
+  confidence); the procedure-matched null gives p=0.842 (abstains). Same principle that fixed scan's floor.
+
+Backward-compatible: `confidence` defaults False, so `decompose_structure` and `factor_composite` return exactly
+what they did. Tests: +1 (the rescue holds through three corrupted blocks with verified False; noise abstains
+with a controlled false-alarm rate). 717 -> 718.
+
+## Pluggable assembly energy + structure-compare: the Rosetta move and a fold comparator (shipped)
+
+A3 from the revised backlog -- the Baker seat, and the first Tier-2 item that was genuinely unbuilt. `assemble`
+already cast fragment assembly as the same min-cost flow search the maze solver runs, but with one hardcoded
+energy: Hamming mismatch, every disagreement costing the same. That is the documented stand-in, not a Rosetta
+score. Two additions make it the real thing.
+
+**Pluggable energy.** `assemble(target, library, ..., energy=callable)` (and `assemble_optimal_energy(...,
+energy=)`, and the mind's `assemble(..., energy=)`) lets the caller supply any non-negative placement energy;
+it defaults to the Hamming stand-in, so every existing call is unchanged. The point is the Rosetta move -- not
+every substitution costs the same. The energy is rounded to integer hops for the relay-encoded trellis (supply
+an integer energy for an exact search; the reported energy is the exact unrounded sum), and the flow search
+still finds the GLOBAL optimum under whatever energy it is given (it matches the Viterbi DP). Measured: with a
+toy substitution matrix where same-group swaps cost 1 and cross-group swaps cost 4, the target "EAAE" assembles
+to "BABE" under Hamming (three plain mismatches, cost 3) but to "EEEE" under substitution (cost 4) -- because
+"BABE"'s three mismatches are cross-group B-for-vowel swaps that cost 12 under the substitution energy. Each
+assembly is the unique global optimum under its OWN energy, both matching the DP.
+
+**Structure-compare.** `compare_structures(a, b)` superposes two assembled structures and reads their overlap
+two ways: `placement_overlap`, the exact overlap coefficient of the (position, fragment) sets (the shared
+local motifs of two folds); and `holographic_overlap`, the SAME quantity read from the SUPERPOSITION via
+consolidation -- stack both structures' role-bound (pos (x) frag) vectors and take the effective rank (the
+consolidation SVD), where a shared placement is the same vector so the combined rank COLLAPSES by the number
+shared, giving (rank_A + rank_B - rank_AB)/min as the overlap. On clean structures the two reads agree exactly
+(measured 1.00/1.00 identical, 0.33/0.33 sharing one of three, 0.00/0.00 disjoint) -- the holographic read
+validated against the exact count, and the form you use when a structure is only available as a hypervector.
+
+A tie-break caught the test first, which is on-theme for the Macklin determinism work next: the original test
+instance had a Hamming TIE (two assemblies both cost 2), and which one the flow search returned was sensitive to
+suite ordering -- it passed alone and failed in the full run. The fix was not to special-case the tie but to
+pick an instance with UNIQUE optima (enumerated to confirm), so the chosen assembly is deterministic. Atom names
+in the comparator are hashed deterministically (Python's str hash is process-randomised) for the same reason.
+
+Tests: +1 (the substitution energy changes the optimum and each matches the DP; the holographic overlap matches
+the exact placement overlap on identical / partial / disjoint structures; deterministic). 718 -> 719.
+
+## One iterate-a-projection engine + a determinism audit of the calibrated paths (shipped)
+
+A4 from the revised backlog -- the Macklin seat, two pieces.
+
+**One engine under three faculties.** Macklin's observation was that the resonator's alternating cleanup, the
+PnP/RED denoise loop, and a position-based-dynamics constraint sweep are the SAME object he builds: project onto
+each constraint in turn until they jointly hold. `project_onto_constraints(x, projections, iters, tol, omega)`
+(holographic_denoise, exposed as a mind faculty) is that engine -- sweep a list of projections, optionally
+under-relaxed (omega<1, PBD's stability trick), with early-stop on convergence. The unification is made
+load-bearing, not just claimed: `pnp_restore` now LITERALLY calls it (two projections -- a data-fidelity step
+then the denoiser), bit-for-bit identical to before (the denoise suite passes unchanged). Demonstrated as three
+instances of the one engine:
+
+- **POCS.** Alternating projection onto two subspaces (sharing a 1-D direction) converges in 29 sweeps to a
+  point in their intersection, off-axis residual ~5e-13 -- von Neumann's theorem, and it matches the exact
+  projection onto the intersection.
+- **A resonator.** Given factor-cleanup projections (unbind the others, snap to a codebook) the SAME engine
+  recovers a bound product's factors at reconstruction cosine 1.000 -- WITH restarts. A single restart converges
+  to a spurious fixed point (recovered the wrong factors): an honest reminder that the real resonator's restarts
+  are not decoration, they are how alternating projection escapes the non-convexity.
+- **PnP.** `pnp_restore` == `project_onto_constraints([data_fidelity, denoiser])`, bit-identical.
+
+**The determinism audit (the heart of the Macklin ask), expanded to the new paths.** The assemble tie-break two
+items ago -- a test that passed alone and failed under suite ordering -- is the class of bug this audit exists to
+catch. Every calibrated/null path added this program (recall_calibrated, decide_confidence, the auto coherence
+floor, scan, resonator confidence, compare_structures) is now run TWICE on a freshly rebuilt setup -- so its null
+is RECOMPUTED, not reused from cache -- with numpy's GLOBAL RNG scrambled in between. All return bit-identical:
+the paths draw only from their own seeded `default_rng(self.seed)`, never the global stream (the thing that, had
+it leaked in, would have made results depend on whatever ran before). A clean result, but the value is the
+guarantee it locks in -- and the cache-clear in the resonator case makes it test the null COMPUTATION, not just
+the cache. Determinism here is not luck; it is audited.
+
+Tests: +2 (the engine as POCS / resonator / PnP, all three matching; and the determinism audit -- six calibrated
+paths bit-identical across a fresh rebuild with the global RNG scrambled). 719 -> 721.
+
+## The inverse problem through the mind: inpaint an erased plate, and validate the noise estimate (shipped)
+
+A5 from the revised backlog -- the Milanfar/Ozcan seats, and a DEMO not a build (the re-audit found the machinery
+already wired). The genuine work was integration: the PnP/RED loop and the noise-adaptive denoiser were callable,
+but there was no clean mind entry for "restore a degraded measurement" -- a caller had to hand-build the forward
+and adjoint operators every time. `restore(y, mask=..., samples=...)` is that entry: pass a 0/1 mask and the
+forward operator and its transpose are filled in (a diagonal mask is its own transpose), the prior is THIS mind's
+adaptive manifold denoiser fit from `samples`. It does NOT reimplement anything -- it delegates to
+`denoise(method='pnp')`, so the inverse problem is one mind call built on the existing loop, not a silo.
+
+Measured end to end, through the mind, on an erased archive plate:
+
+- The mind's OWN splat archive holds a 40-image low-rank gallery (recover round-trips a plate at 29.9 dB).
+- One plate has a 5x5 block (25 of 256 px) erased plus light noise -- the degraded measurement.
+- A SINGLE adaptive denoise of the masked input reaches 19.3 dB; `restore` (the PnP/RED LOOP) reaches **38.5 dB**
+  -- the loop beats the one-shot by **19 dB**. The reason is exactly Milanfar's: the one-shot projection is
+  dragged toward zero by the erased pixels, while the loop holds the observed pixels to the measurement and fills
+  only the erased ones from the manifold. Reconstruction-under-erasure as a SOLVED inverse problem, in the mind.
+
+- **Noise-estimate validation, with its kept negative.** Donoho's MAD estimate is accurate at moderate-to-high
+  noise (true 0.20 -> estimated 0.221; true 0.10 -> 0.126) and the adaptive denoiser's `sigma=None` self-estimate
+  matches SUPPLYING the true sigma (identical PSNR-to-clean) -- no oracle needed, which is the whole point of the
+  adaptive path. The kept negative: at LOW noise it OVER-estimates (true 0.02 -> 0.061), because the estimate
+  assumes the clean signal is smoother than the noise, and a textured low-rank image's own finest detail inflates
+  the MAD. It is honest where it holds and honest where it does not.
+
+Tests: +1 (restore inpaints the erased plate through the mind and beats the one-shot by >5 dB, the archive
+round-trips the gallery, and the sigma estimate is accurate at the tested level with sigma=None matching the
+truth). 721 -> 722.
+
+## Capacity / SNR vs the cliff, and calibration coverage vs load (shipped)
+
+A6 from the revised backlog -- the Plate and Cranmer seats, and the ONE genuinely new diagnostic the re-audit
+identified (everything else on the list was either built or a demo). It answers two questions about the same
+store geometry in one report, `capacity_report`.
+
+**Where the store sits relative to the noise-wins cliff (Plate, HRR capacity theory).** Random unit vectors in
+D dimensions have pairwise cosine ~N(0, 1/D), so a random query's BEST cosine to N stored rows -- the noise
+floor -- is the max of N such, ~sqrt(2 ln N / D) by extreme-value theory. A genuine match sits at a much higher
+cosine. The report reads off:
+
+- `dprime` = (match - floor_mean) / floor_std: the SNR, in noise-sigmas, that a real match clears the crosstalk.
+  Measured: a roomy store (D=512, 8 classes) sits at d'=23; a loaded one (D=64, 20 classes) at d'=6.6 -- the
+  diagnostic CAPTURES load, the loaded store visibly closer to the cliff.
+- the measured floor vs the HRR bound: 0.063 vs 0.090 (roomy), 0.229 vs 0.306 (loaded) -- the same order, the
+  measured floor sitting a bit BELOW the asymptotic bound at small N (honest: sqrt(2 ln N) overestimates the
+  expected max for small N, so the store is slightly safer than the bound says). The geometry follows theory.
+- `headroom` = n_cliff / N where n_cliff = exp(D match^2 / 2): the roomy store could grow ~10^50x before the
+  rising floor reaches the match level; the loaded one only ~10^5x. That enormous high-D headroom IS the point
+  of distributed codes, now a live readout instead of a slogan.
+
+**Whether calibrated coverage holds as the store GROWS (Cranmer).** Tier 0 validated the false-alarm rate at a
+FIXED store; the open question was whether p<=alpha still holds the rate at alpha as N grows and the floor rises.
+The report builds random codebooks of increasing size (64 -> 256 -> 1024) in the mind's D, fits the procedure-
+matched null on each, and measures the false-alarm rate: it stays ~alpha (0.006 / 0.04 / 0.062 at alpha=0.05) --
+the null re-fits to the rising floor, so the look-elsewhere discipline is load-robust. Materially above alpha at
+the largest N would have meant the null was under-sampling the bigger store; it does not.
+
+The diagnostic is the capacity complement to `calibration_report` (fixed-store coverage) and `resolution_profile`,
+and is deterministic (seeded by the mind -- it passed the A4 audit's bit-identical bar by construction).
+
+Tests: +1 (the operating point ranks roomy above loaded, the measured floor tracks the HRR bound, headroom is
+larger for the high-D store, coverage holds <=~alpha at every load, and the report is bit-identical run-to-run).
+722 -> 723.
+
+## A spectral/audio FHRR modality, and dynamics on audio frames -- closing the market-returns loop (shipped)
+
+A7 from the revised backlog -- Puckette and Stam, and the close of a loop the dynamics work (B4) deliberately
+left open. B4's learned propagator (`learn_dynamics`: state(t+1) ~ bind(U, state(t)), a per-frequency transfer
+in HRR's Fourier domain) only TIED a trivial mean predictor on real market RETURNS, the correct result kept on
+record -- near-efficient-market returns have almost no linear structure for a fixed operator to exploit. The
+honest test was always going to be a signal that DOES have linear structure, and audio is the canonical one.
+
+**The audio modality (Puckette).** `spectral_encode(frame)` is the phase vocoder in the complex domain: a real
+frame's DFT splits into a unit-magnitude PHASOR per bin (the phase -- an FHRR vector, every component on the
+unit circle, so it binds / bundles / recalls in `high_capacity_memory` like any minted atom) and a MAGNITUDE
+per bin (the timbre). Silent bins take phasor 1 by convention so the phasor vector is unit-magnitude EVERYWHERE,
+a valid FHRR vector rather than a spectrum with holes. `spectral_decode` re-attaches the magnitudes and inverts
+the DFT, exact to 5e-14 (the phasor key plus the magnitude lose nothing). Encoding several BROADBAND sounds
+(fundamental plus harmonics plus a little noise) and cramming them into one phasor trace, each recalls by its
+key cleanly (3/3, off-diagonal phasor similarity ~0). **Negative on record:** a pure TONE is too sparse for
+phase alone to separate -- its silent bins dominate the unit-phasor encoding (three distinct tones sit at
+fhrr_sim ~0.99, indistinguishable), so for sparse sounds the MAGNITUDE carries identity, not the phase. The
+modality is honest about which half of the (phasor, magnitude) split is discriminative for which kind of sound.
+
+**Dynamics on audio (Stam, the proving ground).** A sustained multi-sinusoid framed with a hop evolves frame to
+frame by exactly the per-bin phase advance the propagator is built to learn (the same advance `spectral_encode`'s
+phasors carry -- the operator and the encoding are two faces of one spectral structure). Through `learn_dynamics`,
+held-out one-step prediction error is 0.001, against persistence 1.64 (it ignores the advance, so a hop that
+moves the phase a half-turn makes the last frame nearly anti-correlated) and mean 1.00 (it averages the
+oscillation away). The propagator beats both by three orders of magnitude -- audio HAS the linear structure
+market returns lacked, the loop closed with a positive set against the kept negative. On a HARDER case
+(non-integer-cycle frequencies plus noise -> spectral leakage and a corrupted transfer) the error rises to 0.169
+-- approximate, not exact, the honest cost of a fixed operator on non-stationary input -- but still beats
+persistence (1.59) and mean (1.00) by ~6-10x. And the content-addressable round-trip holds regardless of signal:
+forward four frames then back four returns the start at cosine 1.0.
+
+Tests: +1 (the modality round-trips exactly with unit-magnitude phasors; broadband sounds recall by key from one
+shared FHRR trace; dynamics through the mind beats persistence and mean on a sustained tone; the propagator's
+predicted next frame, run back through the modality, matches the true next frame's encoding -- the two faculties
+wired; and the forward-then-back round-trip returns the start). 723 -> 724.
+
+## learn_dynamics on a fluid field -- the second positive against the market negative (shipped)
+
+A8 from the revised backlog -- the Stam seat, and the third validated regime for the B4 dynamics operator after
+audio (A7) and the kept market negative. Stam's "Stable Fluids" and his FFT fluid solver work on a periodic
+(toroidal) domain, doing the hard step in Fourier space -- the same FFT-on-a-torus the engine's bind already
+is. A passive scalar's LINEAR advection-diffusion step is exact there: in Fourier each mode k just rotates
+(advection: phase -2*pi*k*shift/N) and decays (diffusion: e^{-nu*k^2}), i.e. a per-bin complex transfer --
+precisely the operator `learn_dynamics` fits.
+
+**The clean Stam case.** A bump plus two low modes, advected on a 256-point torus, framed into a sequence of
+fields. Through `m.learn_dynamics`, held-out one-step prediction error is 0.011, against persistence 0.34 (the
+field has moved, so the old field is stale) and mean 1.15 (averaging the moving structure away). The propagator
+recovers the advection-diffusion operator almost exactly -- a fluid field HAS the linear structure a fixed bind
+operator exploits, where near-efficient-market returns did not. Two further properties, both measured:
+
+- **Surrogate solver.** The learned operator rolls out 8 steps from a single field and tracks the true
+  simulation to ~3.5% relative error -- learn the fluid operator from a handful of frames, then simulate
+  forward with one bind per step.
+- **Content-addressable trajectory.** The operator's own forward-k-then-back-k returns the start at cosine 1.0
+  (even with diffusion: the Wiener-regularised inverse exactly undoes the operator's own forward map). The
+  earlier confusion -- recalling the TRUE future field gave cosine ~0 -- was the honest distinction that an
+  imperfect learned operator inverts its OWN trajectory, not the ground truth it only approximates.
+
+**The honest limit, kept on record.** A NONLINEAR Burgers field (u_t + u u_x = nu u_xx) forms shocks -- the wave
+steepens, energy cascades to high modes -- and no single fixed LINEAR operator captures that. Measured: the
+propagator does WORSE than persistence on a shock-forming Burgers field (error 0.054 vs 0.006; worse still,
+0.125 vs 0.015, for a stronger shock). The propagator is for linear or linearizable dynamics; nonlinear flow
+with shock formation is exactly where it fails, and that negative sits beside the audio and linear-fluid wins.
+
+The faculty's own docstring now records all three regimes (audio, linear fluid, the Burgers limit) so the
+measured boundary travels with the code. This is a validation of existing machinery through the mind, not a new
+build -- the same shape as the PnP restoration demo.
+
+Tests: +1 (linear advection-diffusion beats persistence and mean through the mind; the operator rolls out 8
+steps as a surrogate within 10%; the forward-then-back round-trip returns the start; and a shock-forming Burgers
+field is the honest case where the propagator loses to persistence). 724 -> 725.
+
+## Multi-terminal network design -- the Tokyo-rail Physarum, as a typed graph-memory (shipped)
+
+A9 from the revised backlog -- the Adamatzky seat, and a genuine BUILD (not a validation): the multi-terminal
+generalisation of the single-source `solve_maze` flow solver. Tero et al. (2010, *Rules for Biologically
+Inspired Adaptive Network Design*) showed Physarum grows a network connecting many food sources that rivals the
+Tokyo rail network on cost, efficiency, and fault tolerance. `tero_network` reproduces that on a graph: drive
+flow between ALL pairs of terminals, and the tubes that survive form the connecting network.
+
+**The mechanism, with two real improvements over a naive port.** (1) The Laplacian depends only on the
+conductivities, so every terminal pair is solved in ONE multi-right-hand-side factorisation per step (A P = B
+with a column per pair), not one solve per pair. (2) Summing raw flux over pairs pinned every tube open (the
+saturating response f = q^mu/(1+q^mu) hits 1 when flux is large, and most edges carry large summed flux). The
+fix is to adapt each tube toward the MEAN saturated response OVER pairs -- i.e. toward how many terminal pairs
+route through it -- so trunk tubes thicken and unused tubes die. Without it the network is the whole grid.
+
+**The cost / fault-tolerance trade-off, measured (7x7 grid, 5 terminals, MST baseline 24 hops).** The `mu`
+feedback tunes exactly what Tero describes:
+- mu=4: a near-minimal Steiner TREE -- 21 edges, 0 cycles, and SHORTER than the 24-hop terminal-MST (the flow
+  shares trunk segments through Steiner cells the pairwise-MST cannot), a genuine Steiner approximation.
+- mu=2: a fault-tolerant network -- 36 edges with 4 redundant loops (alternate routes that survive an edge cut)
+  at modest extra cost.
+- mu<=1: the full redundant mesh.
+
+**Wired in as a B7 typed structure.** `design_network` returns the network BOTH as raw edges and as a typed
+graph-memory: a StructureRecipe building M = superpose over edges of bind(node_u, node_v) -- the same
+construction `chain_structure` uses for a linked list. That realise()s to one hypervector, and the engine's own
+unbind + cleanup recalls a node's neighbours: unbind M by a node atom, snap the result to the node codebook,
+and the true network-neighbours come back above every non-neighbour (node (0,0) -> {(0,1),(1,0)} at similarity
+0.15 vs 0.06 for non-neighbours). The network is not a side artefact; it is an object the mind can store, query,
+and decode like any other structure.
+
+A note kept honest: the dense Laplacian solve is O(n^3) per step, so this is for modest graphs (tens of nodes),
+the regime where the flow model's interpretability is the point; a sparse/conjugate-gradient solve would be the
+scaling path if needed.
+
+Tests: +1 (high mu gives a tree no longer than the MST with zero cycles; low mu gives a strictly larger mesh
+with cycles; the default network connects every terminal and its typed graph-memory recalls a terminal's actual
+neighbours above all non-neighbours). 725 -> 726.
+
+## Cross-modal recall: the exact image archive, reachable from the mind, queried by description (shipped)
+
+A10 from the revised backlog -- the Ozcan seat. The re-audit found the cross-modal machinery was ALREADY built
+in `HolographicArchive` (the DCT/Walsh-Hadamard plate store): `add(image, tags=[...], nums={...})` attaches a
+hypervector address (a bundle of tag atoms, plus bind(attr, scalar.encode(v)) for numeric attributes), and
+`recall_by_tags(words=[...])` returns the best-matching image by cosine of the query address to the stored ones
+-- Ozcan's describe-then-retrieve. The gap was pure integration: only the LOSSY `splat_archive` was wired into
+the mind; the EXACT, tag-addressable archive was unreachable.
+
+**Wired in** as `image_archive`. The mind now has both archives and the right one for the job: splats for a
+compact resolution-independent bundle, plates for bit-exact recall AND cross-modal addressing. Measured through
+the mind on a 4-image gallery:
+
+- **Exact recovery** at full keep (all DCT coefficients): max pixel error 6e-15 -- a single adjoint per channel
+  inverts the superposition exactly. (Fewer coefficients trade exactness for compression, the archive's other
+  mode.)
+- **Tag -> image**, soft-AND over the query: `['round','large']` returns the ring, `['round','small']` the
+  circle -- the image matching the MOST query tags wins, because each shared tag adds its atom's correlation to
+  the address match.
+- **Robust under damage**: describe-then-retrieve still reconstructs the gradient from `['smooth']` at 0.002
+  error with 40% of the plate ERASED -- the joint masked recovery the archive is built for, now driven by a
+  text query instead of a degraded picture.
+
+**The improvement: the reverse direction.** The archive could go tag -> image but not image -> tags. Added
+`tags_of(i, candidates)`: rank a candidate vocabulary by each word's correlation to stored image i's address --
+the description the archive would give the image. 'ring' comes back as round + large (0.72 each) over smooth
+(0.01). Cross-modal recall is now bidirectional: describe to retrieve, or retrieve to describe.
+
+Tests: +1 (the mind's image_archive recovers every image exactly; tag queries return the right image including
+soft-AND; the reverse ranks an image's own tags on top; and describe-then-retrieve survives 40% plate erasure).
+726 -> 727.
+
+## Generation over a composed subspace -- the B10 sampler's interesting regime (shipped)
+
+A11 from the revised backlog -- the Eno seat, and the regime B10 (generative denoising) explicitly flagged as
+the one worth reaching. B10's sampler runs the denoiser BACKWARDS from pure noise -- anneal beta up, injected
+noise down, iterate the cleanup -- and walks a random vector onto the signal manifold, a sample generated by
+denoising. Its KEPT NEGATIVE: over a BARE codebook it converges to a stored atom (a degenerate sampler that can
+only return what is already in the box). The interesting regime, per the docstring, is a COMPOSED manifold.
+
+**The composed-manifold denoiser.** A valid composed structure is a bundle over slots of bind(role, filler) for
+fillers drawn from a vocabulary -- one of V^S structures, far too many to enumerate as a codebook. So the
+denoiser is slot-wise: for each role, unbind the slot, dense_cleanup its filler toward the vocabulary, rebind,
+then bundle and renormalise. `generate_structure` drops that projection into B10's annealed diffusion in place
+of the bare-codebook cleanup, so the random start walks onto the manifold of role-filler STRUCTURES instead of
+collapsing to an atom. (The slot-wise projection is itself an instance of 'iterate a projection' -- the same
+shape as the resonator and the PnP loop.)
+
+**Measured through the mind** (3 slots, 6 fillers, V^S = 216 possible structures, 1024-d):
+- **Diversity:** 10 distinct valid structures from 10 seeds -- the sampler explores the composition space, it
+  does not fall into one attractor.
+- **Validity by construction:** re-encoding each generated vector's decoded fillers reproduces it at cosine
+  1.0 -- the output genuinely IS a composition (bundle of role-bound fillers), and every slot unbinds to a
+  vocabulary atom.
+- **Not a stored atom:** the generated structure is nearly orthogonal to every single filler (max |cos| < 0.4)
+  -- a composition, not a verbatim atom.
+- **The kept negative confirmed for contrast:** `generate_vector` over the bare filler codebook returns a
+  single stored atom at cosine ~1.0 (degenerate) -- exactly what generating over the composed manifold avoids.
+
+So generation and denoising remain the same operation (Eno's process-not-object framing), and pointing that
+operation at the composition manifold turns a degenerate atom-recaller into a generator of novel-but-valid
+structure -- the bar B10 set, now cleared.
+
+Tests: +1 (10 seeds each produce a valid composition that re-encodes to itself and is orthogonal to every bare
+filler; at least four are distinct; and bare-codebook generation collapses to a stored atom). 727 -> 728.
+
+## A fractal scene from a single seed vector -- one kernel, repeated to depth (shipped)
+
+A12 from the revised backlog -- the Quilez seat, the demoscene aesthetic stated in the engine's terms: maximal
+richness from a tiny deterministic kernel, infinite detail by recursion. The existing `nested_scene_structure`
+does scenes-of-scenes for one level; the ask was a single seed vector driving one kernel repeated to ARBITRARY
+depth, with `fractal_dimension` reported.
+
+**The kernel lives in one vector.** `fractal_seed(offsets, scale)` encodes a fractal kernel -- N copies of the
+plane, each contracted by `scale` and translated to an offset -- as a holographic bundle: sum over copies of
+bind(pos_role, grid_atom[offset]) plus bind(scale_role, scale_atom). The whole generator is carried in the
+geometry of one hypervector. `fractal_scene(seed, depth)` decodes it with pure VSA -- unbind the position role
+and threshold the grid atoms to recover WHICH cells are offsets, unbind the scale role and clean up to recover
+the scale -- then expands that one kernel to `depth` (each level places a contracted copy of the whole scene,
+N^depth points), and reports the box-counting dimension. This is an IFS whose maps are read out of a vector.
+
+**Measured through the mind:**
+- Seed A (a Sierpinski kernel: 3 copies at scale 1/2) decodes to exactly 3 offsets and scale 0.5, and its
+  expanded scene has box-dimension 1.57 against the self-similar log3/log2 = 1.585.
+- Seed B (5 copies at scale 1/3) decodes to 5 offsets and scale 1/3, box-dimension 1.51 against log5/log3 =
+  1.465.
+- The two seeds give DISTINCT measured dimensions -- the seed genuinely drives the scene -- and expansion is
+  deterministic (same seed, identical points). The small box-counting gaps (0.01, 0.04) are the expected
+  finite-sample / finite-range bias of box counting, not error in the construction.
+
+So a single vector encodes a generator, the engine decodes it, and one kernel repeated to depth yields a
+self-similar scene of a predictable, measured fractal dimension -- the SDF/demoscene move (one kernel, domain
+repetition, infinite detail, deterministic from a seed) on the VSA substrate. An honest scope note: the offsets
+are snapped to a grid codebook so they decode by exact cleanup, and the dimension is set by N and scale (both
+recovered exactly), not by sub-grid offset precision.
+
+Tests: +1 (a Sierpinski seed decodes to 3 copies at scale 1/2 with box-dimension near log3/log2; a 5-copy
+scale-1/3 seed lands near log5/log3; the two dimensions are distinct; and expansion is deterministic). 728 -> 729.
+
+## Anisotropic splats and a 3-D extension -- the real 3DGS primitive, fit from scratch (shipped)
+
+A13 from the revised backlog -- the Drettakis seat, and a deliberately-deferred Tier-4 scope: the splat work
+(B8) used ISOTROPIC (circular) Gaussians by explicit choice; 3D Gaussian Splatting's actual primitive is an
+ANISOTROPIC, oriented Gaussian with a full covariance, fit by differentiable optimisation. A13 builds that core
+in NumPy, true to the project's minimal-framework rule (analytical gradients + a tiny hand-written Adam, no
+autodiff library).
+
+**The primitive and the fit.** Each splat is (center, amplitude, L), L the lower-triangular Cholesky factor of
+the INVERSE covariance, so the Gaussian is amp * exp(-0.5 ||L^T (x - center)||^2) and L lower-triangular keeps
+the precision positive-definite for free. `aniso_fit` warm-starts from the isotropic matching pursuit (so the
+covariances only have to specialise), then descends the reconstruction MSE with analytical gradients for the
+amplitude, center, and L. The whole thing is dimension-general: a 2-D image and a 3-D volume share one fit.
+Wired in as `splat_aniso` (the anisotropic, n-D twin of `splat_field`).
+
+**Measured through the mind** -- anisotropy is decisive exactly where structure is oriented:
+- 2-D, two elongated oriented ridges, K=4: isotropic ~18 dB -> anisotropic ~64 dB. A circular Gaussian cannot
+  match an elongated ridge; one aligned anisotropic splat does, and four nearly reconstruct two ridges.
+- 3-D, an elongated ellipsoid, K=3: isotropic ~24 dB -> anisotropic ~61 dB. An ellipsoid IS one anisotropic
+  Gaussian.
+- The learned splats are genuinely anisotropic (inverse-covariance eigenvalue ratio > 3 on the ridges), and
+  re-rendering the returned (center, amp, L) code reproduces the fit.
+
+**KEPT NEGATIVE / honest scope.** The loss is non-convex, so the fit finds a LOCAL optimum: more splats do NOT
+help monotonically -- a clean K=4 fit (66 dB) beat a messier K=8 one (52 dB) in testing -- and the result
+depends on the isotropic warm start. And this is the from-scratch CORE of 3DGS only: no tile rasteriser, no
+spherical-harmonic view-dependent colour, no GPU speed; it runs on small fields where the optimisation is the
+point, not a real-time renderer. That boundary is the honest Tier-4 label -- the primitive and its
+differentiable fit, not the production system.
+
+Tests: +1 (anisotropic beats the isotropic warm start by >15 dB in both 2-D and 3-D on oriented structure, the
+splats are measurably anisotropic, and the splat code re-renders to the fit). 729 -> 730.
+
+## Tensor-product / tensor-train (MPS) bind vs HRR -- the capacity comparison (shipped)
+
+A14 from the revised backlog -- the Stoudenmire seat, the heaviest and most speculative item, and the LAST of
+the program (A1-A14 all delivered). HRR's bind(a,b) = circular convolution is a compressed projection of
+Smolensky's tensor-product binding a (X) b; tensor networks (MPS / matrix-product states) interpolate by
+truncating the tensor product to a low bond rank. `tensor_bind` builds the uncompressed outer-product bind and
+its rank-r 2-site MPS truncation so all three points on the rank spectrum can be measured against the engine's
+circular convolution. The result is bucketed honestly -- a real but storage-bought capability, not a free win.
+
+**The mechanism.** The outer-product bundle M = sum_i outer(k_i, v_i) recalls value_i as M^T k_i =
+sum_j (k_j . k_i) v_j. The crosstalk coefficient is the key inner product (~1/sqrt(D) for random keys), so the
+crosstalk is suppressed by 1/sqrt(D) -- whereas HRR's unbind produces full-magnitude pseudo-random crosstalk
+vectors. That single difference is why the tensor product recalls so much better at a fixed load.
+
+**Measured (D=128) against HRR:**
+- At a fixed LOAD M=16, recall cosine is 0.25 (HRR) vs 0.95 (tensor product) -- the tensor product is far more
+  faithful, because it spends D^2 = 16384 numbers against HRR's D = 128.
+- With ORTHOGONAL keys at M = D, the tensor product is EXACT (recall 1.000) -- the key inner products are
+  Kronecker deltas, zero crosstalk -- where circular convolution cannot be (0.10). A genuine qualitative
+  advantage for structured keys.
+- A rank-8 binding matrix (values in a rank-8 subspace) MPS-truncates LOSSLESSLY: recall 0.862 preserved while
+  storage drops from 16384 to 2048 numbers (8x). Truncating below the true rank (rank 4) is lossy (0.66). This
+  is the tensor-network's real capability -- exploit low rank / low entanglement.
+
+**KEPT NEGATIVE (the honest bucket).** At a fixed RECALL THRESHOLD the capacity-per-stored-number of HRR and
+the tensor product is the SAME (both ~ (1-t^2)/(t^2 D) per number) -- HRR's compression gives up nothing on
+that frontier; it simply chooses the compact, low-absolute-capacity end while the tensor product chooses the
+high-fidelity, high-storage end. And a generic (full-rank) binding cannot be MPS-compressed without losing
+recall, and even the lossless low-rank form (>= 2D numbers) still costs more than HRR's D. So the tensor /
+tensor-train bind is a DIFFERENT point on the storage-vs-fidelity tradeoff -- worth it when you need exact
+high-capacity structured recall and can afford the storage, or when an existing bound tensor is genuinely
+low-rank -- not a way to beat HRR's efficiency on generic bindings. That is the correct, measured place for it.
+
+Tests: +1 (the tensor product beats HRR at fixed load and is exact for orthogonal keys; the MPS truncation is
+lossless at the true rank and lossy below it, at a fraction of the full storage but still above HRR's). 730 -> 731.
+
+## Integrating Path D -- federation and width, the "as above, so below" arc (shipped)
+
+A parallel investigation ("Path D": computing and storing INSIDE the holographic space) was merged in from a
+separate session. It arrived as a self-contained bundle -- two new modules, plus experiments, figures, and the
+frontier-program / dataset-benchmark / distribution-candidate docs -- and it touched none of the existing
+engine code, so the integration was additive: the bundle lives under `path_d/`, the two reusable modules were
+hoisted to the top level and (the real work) WIRED INTO `UnifiedMind` as faculties, the same discipline every
+other module shipped under. They imported cleanly against the frozen kernel with zero API drift, and both their
+selftests and the headline experiments reproduced on this tree before anything was written down.
+
+**The through-line Path D found.** One D-dimensional vector holds only ~0.1 x D items faithfully (~0.02 x D for
+*continuous* compute with no cleanup to absorb crosstalk), and that budget is CONSERVED -- you do not beat it by
+encoding harder, you FEDERATE: more vectors = more total dimensions = more capacity, coordinated by a thin layer.
+The same move recurs at every scale (storage, lookup, resilience, the neural-network forward pass), which is the
+engine's recurring lesson seen one rung up: the within-vector property becomes the across-shard property by the
+same linearity.
+
+**Two faculties wired and measured through the mind:**
+- `storage_array` (holographic_array.HoloArray) -- a federated, RAID-style symbol store. A shard is a running
+  sum, so a PARITY shard is the real-valued sibling of a fountain XOR droplet and reconstructs a lost shard
+  EXACTLY by subtraction. Measured: 150 symbols at D=1024 auto-grow to 3 shards at ~0.89 recall (one shard would
+  have cliffed); lose a shard and parity restores recall exactly (0.89), where a zeroed shard drops it to ~0.55.
+  KEPT NEGATIVE / information floor: `n_parity` parity survives at most `n_parity` losses -- it cannot recover
+  more than it has parity, mirroring the fountain's "too few droplets -> nothing."
+- `superpose_compute` (holographic_superposed) -- the WIDTH faculty: evaluate K computations at once inside one
+  vector (Kanerva/Kleyko computing-in-superposition), the parallel-readout complement to the mind's DEPTH side
+  (recursion, `peel` traversal, the inception depth law). Measured: a single keyed item recovers EXACTLY with a
+  unitary key (cosine 1.0); six candidates packed into one vector are scored in parallel and the winner is
+  resolved cleanup-gated against a codebook. KEPT NEGATIVE / the conservation law: recovery fidelity decays with
+  width (mean cosine ~0.50 at K=4 -> ~0.12 at K=64) -- width is bounded, and you buy more by spending DEPTH, not
+  by widening one flat bundle.
+
+The bundle's own headline (reproduced here) is the distributed forward pass: a single weight-vector is faithful
+to 16 classes (~0.02 x D), and federating to 8 shards holds 96 (~6x) -- the same federation move that fixes
+storage, applied to the matmul. The bundle also carries the frontier-program and dataset-benchmark docs (now
+under `path_d/docs/`) and a second lever, RNS-phasor arithmetic, that lives in the Path D experiments but is not
+yet an engine module -- a clear, honestly-labelled next step rather than a claim.
+
+Tests: +3 (one mind-level integration test wiring both faculties -- federation grows shards and parity restores
+a lost one exactly; superpose is exact at K=1, resolves the right winner, and decays with width -- plus a CI
+selftest wrapper for each new module). 731 -> 734.
+
+## Exact RNS-phasor arithmetic -- the matmul wall was the encoding, not the substrate (shipped)
+
+P1 of the Path D integration -- the second lever, and the one that had no engine module (it lived only in the
+Path D experiments). General matmul read out of a lossy SUPERPOSITION (bundle the matrix rows, unbind, dot the
+input, no cleanup) is capped by crosstalk: the bundled rows interfere on readout, so fidelity collapses as the
+matrix grows. But matmul is multiply-accumulate of NUMBERS, and the FHRR side of the engine already carries a
+number exactly as a phase -- a unit phasor exp(2*pi*i*r/m) IS the residue r mod m, and binding phasors adds
+their phases. So a product of phasors is exp(2*pi*i*(sum r)/m): the exact sum of residues mod m, for ANY number
+of terms, with no crosstalk. That is the single thing the bundle got wrong.
+
+`holographic_rns.py` carries each number as residues over coprime moduli (a Residue Number System), does every
+multiply-accumulate as that exact phasor-binding modular arithmetic (one channel per modulus), and recomposes
+the integer with the Chinese Remainder Theorem. Wired into the mind as `exact_matmul`.
+
+**Measured through the mind:**
+- Modular accumulation via phasor binding is EXACT for thousands of terms (0 errors at N=5000) -- the
+  crosstalk-free MAC the bundle could not do.
+- Integer matmul at M=256, N=64 is EXACT (max|error| = 0), exactly where the lossy superposed readout of the
+  same matmul manages only ~0.11 fidelity.
+- A float matmul (fixed-point, scale given) is exact for the QUANTIZED operands.
+- The exact dynamic range FEDERATES over moduli channels (~1e8 with a few -> ~1e62 with more) -- the arithmetic
+  sibling of the storage array's federation: more channels = more range, coordinated by the thin CRT recompose.
+
+**KEPT NEGATIVE / scope:** exact for INTEGER / fixed-point operands within range. A float is quantized first and
+the only error is that fixed-point rounding (set by `scale`) -- a bit-depth question, separable from and unlike
+the crosstalk wall (it does not grow with matrix size). And the FLOPs are real: the parallelism is per-modulus /
+per-output, native on phasor or RNS hardware, not free on a CPU. The faculty delegates the phase composition to
+the same primitive holographic_fhrr binding uses, one phase channel at a time.
+
+Tests: +2 (a mind-level test -- exact integer matmul where the lossy bundle gets ~0.11, the FHRR-binding
+accumulation identity, fixed-point exactness, and range federation -- plus a CI selftest wrapper for the module).
+734 -> 736.
+
+## Recursive pivot-tree index -- sublinear recall as cleanup applied recursively (shipped)
+
+P2 of the Path D integration -- the forest / data-structure seat (Pharr), and the cleanest realisation yet of
+the engine's long-standing sublinear-retrieval wish. The crash that preceded it is the kept lesson: a content
+index that summarizes items UPWARD into a bundle hits the capacity wall, and recall collapses to ~0.23 -- the
+bundle blurs as it grows. A B-tree never does that. Its internal nodes hold PIVOTS (separators), stored
+explicitly, so the wall never bites; in VSA a node is then a small cleanup memory of (pivot -> child), and
+routing a query is a nearest-pivot decision applied RECURSIVELY -- the same `cleanup` primitive the mind already
+uses, one level per hop, inception as the addressing fabric. `holographic_pivot.py` builds the tree by recursive
+k-means (NumPy only, no sklearn -- the minimal-frameworks rule) and routes with a beam; wired in as `pivot_index`.
+
+**Measured through the mind** (216 well-separated leaves, so the exhaustive ceiling is high and any drop is the
+routing, not the data):
+- Greedy top-1 routing matches the exhaustive scan -- ~0.88 vs ~0.90 -- while touching only ~18 pivots instead
+  of all 216, an order of magnitude fewer comparisons (~O(log N), the tree's whole point).
+- A beam-5 search lands the true leaf in the candidate set 100% of the time, after which an exact key-unbind (or
+  a final scan of the few candidates) finishes -- against the naive summary index's 0.23.
+
+**KEPT NEGATIVE:** each hop is an approximate nearest-pivot decision, so a wrong turn at beam=1 can lose a query
+on overlapping (not well-separated) data -- the beam is the honest knob that buys recall back, trading a few
+more comparisons for it. The build cost is the recursive k-means. The routing delegates to the same nearest-
+codebook cleanup the mind's recall uses; the tree is just that cleanup stacked, depth-many.
+
+Tests: +2 (a mind-level test -- greedy top-1 matches exhaustive at a fraction of the comparisons, with beam
+recall of the true leaf -- plus a CI selftest wrapper for the module). 736 -> 738.
+
+## Sketch-routed array recall -- breaking the broadcast wall, content-addressably (shipped)
+
+P3 of the Path D integration. The storage array already recalls in O(1) when you have the directory (item ->
+shard), and routerlessly by BROADCAST when you don't -- but broadcast asks every shard, so it costs O(shards)
+and soft-erodes as the array grows (the false-alarm tax of many value-cleanup votes). The fix is the same
+content-addressable trick one rung up: summarize each shard by a SKETCH = bundle of its keys (the holographic
+'and' of what it holds, one extra vector per shard), match a query's key against the sketches in one matmul to
+pick the top-c candidate shards, and unbind+cleanup ONLY those. Routing by key-sketch is a CLEAN decision -- a
+key sits ~1/sqrt(load) inside its own shard's sketch, far above the 1/sqrt(D) noise from the others -- so it
+stays accurate exactly where the broadcast value-vote drowns. Added to HoloArray as `routed_recall(g, c)` and
+advertised on the `storage_array` faculty (which now exposes directory / broadcast / sketch-routed recall).
+
+**Measured through the mind (64 shards, ~1920 items):**
+- directory recall 1.00, sketch-routed(c=8) 0.99, broadcast 0.95 -- routed tracks the directory while broadcast
+  erodes with shard count (0.97 at 32 shards -> 0.95 at 64), and the gap widens as the array grows.
+- routed touches only c=8 of the shards, not all 64 -- O(c) unbinds instead of O(shards), the sublinear win,
+  while matching the exhaustive directory.
+
+The sketch is built lazily and rebuilt whenever the shard count changes; it reuses the engine's own
+bundle/unbind/derived_atom, adding an index, not a new algebra. (Path D also asked whether a 2-level
+sketch-of-sketches buys fully sublinear ROUTING; that runs into the per-vector capacity wall on the upper
+sketches and is kept in the experiments as a measured open question, not wired as a claim.)
+
+Tests: +1 (a mind-level test: sketch routing stays above 0.95 and tracks the directory at 64 shards while
+unbinding only c=8 of them, at least as accurate as full broadcast; the module's own selftest gains a 48-shard
+routed-recall check). 738 -> 739.
+
+## Distributed forward pass -- federation applied to compute, with depth cured two ways (shipped)
+
+P4 of the Path D integration, and the headline the whole "as above, so below" arc was driving at: federation,
+which fixed storage, fixes COMPUTE too. A linear layer's weight rows stored in ONE bundled vector cap out at
+C ~ 0.02 x D classes -- recovering a row carries crosstalk from the other C-1 rows, and the continuous logit
+<w_hat_c, x> has no cleanup to absorb it, so fidelity dies as the matrix grows. FEDERATE the rows across K
+weight-memory shards (row c in shard c mod K) and recovering a row only carries crosstalk from its ~C/K
+shard-mates, so the wall moves to C ~ K x 0.02 x D. `holographic_compute.py` implements the federated readout
+and the depth cures; wired in as `distributed_forward`.
+
+**Measured through the mind:**
+- A 64-class forward pass: exact classifier 1.00, single-vector readout (K=1) 0.73, federated (K=8) 0.999 --
+  federation moves the class wall, and at K=8 the federated pass tracks the exact classifier. In the Path D
+  sweep this is 16 classes faithful on one vector -> 96 on eight shards (~6x), the same federation that fixed
+  storage applied to the matmul.
+
+**Depth, the second question** (a deep net feeds each layer's noisy output into the next, so crosstalk can
+COMPOUND), cured two ways, both wired:
+- EXACT arithmetic per layer (`exact_matmul` / P1): no crosstalk to compound at all, so a deep integer forward
+  pass is exact at any depth (verified: a 2-layer integer net reproduces the float result exactly). The depth
+  decay was arithmetic crosstalk, not a depth wall.
+- CLEANUP-GATING (`cleanup_books`): `softclean`, a soft dense-Hopfield, snaps each hidden activation back onto
+  the manifold of valid activations (keep the scale, denoise the direction), resetting crosstalk between layers.
+  The primitive is robust -- a crosstalk-corrupted activation goes from cos 0.78 to cos 1.00 with its clean
+  prototype.
+
+**KEPT NEGATIVE / honest scope:** federation buys FIDELITY / capacity, not fewer FLOPs -- total unbinds are
+still C, grouped into K vectors; the parallelism is across the K shards, native on neuromorphic hardware. And
+the end-to-end ACCURACY benefit of cleanup-gating needs a well-formed (trained) activation manifold, as in
+exp_A1's trained MLP; with untrained or class-mean weights it is seed-dependent, so it is NOT asserted as an
+always-win -- only the cleanup primitive (which robustly denoises onto the manifold) and the exact-arithmetic
+depth cure (which is exact) are. The faculty delegates to the engine's own bundle/unbind, adding federation and
+the depth cures, never a new algebra.
+
+Tests: +2 (a mind-level test -- federation moves the class wall, K=8 tracking the exact classifier; exact_matmul
+per layer exact at depth; the softclean cleanup primitive denoising onto the manifold; the cleanup_books path
+wired through the mind -- plus a CI selftest wrapper for the module). 739 -> 741.
+
+## Bucket A under federation -- selection, sequence, and the archive wired to the same lever (shipped)
+
+The last of the Path D advancements. The Bucket-A experiments re-opened three more single-vector walls under the
+distributed premise, and all three are the SAME conservation law -- a superposed readout capped by per-vector
+crosstalk, federated across K shards -- applied to different tasks. So they wire to the faculties that already
+embody the federation move, not to new redundant ones.
+
+- **A3 hypothesis selection** and **A4 sequence memory** are the width faculty, federated. `superpose_compute`
+  gained a `shards=K` parameter: it spreads the items across K vectors (item i -> shard i mod K) and recovers
+  each shard separately, moving the width wall ~K-fold, plus a `decoded` output (per-item cleanup to a codebook)
+  for the sequence case. Measured through the mind: picking the planted match out of 160 candidates goes from
+  0.38 (one vector) to 1.00 (K=8); recalling a 160-symbol sequence goes from 0.58 to 1.00. One call now serves
+  both -- pass a `query` to select, pass position-atom `keys` + a symbol `codebook` to recall a sequence.
+- **A5 federated archive** is the storage array's federation applied to the CONTENT archive. `FederatedArchive`
+  (new in holographic_archive.py, wired as `federated_archive`) routes image i to shard i mod K over K aligned
+  HolographicArchive shards. Measured: at a FIXED total dimension, a monolithic archive and a 4-shard federated
+  one recover 64 images at the SAME quality (corr 0.965 vs 0.965) -- capacity federates (total = K x per-shard)
+  while recovery is conserved, the conservation law holding for images exactly as it did for symbols.
+- **A2** (dense continuous matmul in superposition) is the FOIL, not a new capability -- it is the lossy bundle
+  `exact_matmul` (P1) replaces, and it stays on the record as the kept negative (it never gets good because it
+  has no cleanup; A3/A4 win precisely because they END in a discrete cleanup -- argmax / codebook snap). **A6**
+  (residue integer range) is `exact_matmul`'s own range federation over moduli, already shipped with P1.
+
+This closes the Path D integration: every advancement its experiments demonstrated is now a UnifiedMind faculty
+or a measured property of one -- federation for storage (`storage_array`), width (`superpose_compute`, now with
+shards), the archive (`federated_archive`), and the forward pass (`distributed_forward`); exact arithmetic
+(`exact_matmul`); and sublinear lookup (`pivot_index`, `routed_recall`). The pure conservation-law measurements
+(block federation, depth-vs-width, the factor wall on the existing resonator) remain evidence in the experiments,
+not invented methods -- a faculty has to earn its place.
+
+Tests: +2 (a mind-level test that federating `superpose_compute` moves the selection AND sequence-length walls,
+and one that the federated archive conserves recovery at fixed total dim while federating capacity). 741 -> 743.
+
+## Federation / conservation diagnostic -- the through-line as a callable readout (shipped)
+
+The honest way to wire the Path D conservation MEASUREMENTS into the mind -- rather than leave them only in the
+experiments -- is as a diagnostic, the same family as `capacity_report` and `calibration_report`. (Forcing a
+measurement into a capability faculty would be a fake faculty; a diagnostic whose job IS to measure and report
+is the right shape.) `federation_report` operationalizes the 'as above, so below' law on the mind's own
+dimension and kernel, delegating to `storage_array`:
+
+- `per_vector_budget` -- the largest single-shard load whose recall still clears the threshold (measured ~51
+  symbols at D=1024, 0.90 recall: ~0.05 x D -- the figure depends on the threshold);
+- `federated` -- a spot check that K aligned shards hold ~K x that budget at the same recall (4 shards -> 204
+  symbols at 0.94);
+- `conservation_ratio` -- partitioning the dimension in half holds total capacity (a half-D vector holds ~half
+  the budget, so two tie one full vector): measured 0.98, the block-federation finding that federation buys
+  capacity from more DIMENSIONS, not for free;
+- `recommended_shards` -- ceil(target / per-vector budget), a planning readout (500 items -> 10 shards).
+
+This is the federation-aware companion to `capacity_report` (which charts a single vector's noise-wins cliff):
+together they cover the per-vector cliff AND how federation moves it. It wraps `experiment_below_federation`
+(conservation under partitioning) and `experiment_array_scale` (the per-vector budget and its scaling). The
+other two conservation measurements are the SAME law in different costumes and are referenced here rather than
+given redundant methods: `experiment_depth_vs_width` (escape the per-vector wall by recursion/DEPTH instead of
+width -- the mind's `encode_tree`/`peel` are the depth half) and `experiment_factor_wall` (the factorization
+search cliff vs dimension, measured on the resonator the mind already exposes via `decompose_structure`).
+
+Honest scope: the budget is the DISCRETE-symbol (cleanup-gated) ~0.05-0.1 x D regime; continuous compute with no
+cleanup is the lower ~0.02 x D regime (see `distributed_forward`); and federation buys fidelity and capacity,
+not fewer FLOPs.
+
+Tests: +1 (a mind-level test: the diagnostic measures a per-vector budget in the conservation-law range, K
+shards hold ~K x it at recall, the partition-conservation ratio is ~1, and the shard recommendation matches
+ceil(target / budget)). 743 -> 744.
+
+## Gradient-free substrate-native learning -- reservoir + prototype classifier wired as faculties (shipped)
+
+Translation (the RNS lever) made the substrate RUN trained networks exactly, but not TRAIN them. That gap is
+closed with gradient-free learning methods the field already proved -- adopted rather than reinvented -- two of
+them wired as UnifiedMind faculties on machinery the engine already had.
+
+`reservoir` (holographic_reservoir.HolographicESN) -- an Echo-State Network whose recurrence IS holostuff's
+`permute` (a cyclic shift, hence norm-preserving / orthogonal = the echo-state property). The reservoir is
+FIXED; only a linear readout is trained, by one closed-form ridge solve -- truly derivative-free and
+deterministic. Diagnostic finding: the permutation recurrence EQUALS a classical random-matrix ESN on NARMA10
+(NRMSE 0.560 vs 0.562), so the engine's native operator is a real reservoir with no penalty. Tuned, NARMA10
+reaches a literature-grade NRMSE 0.367 +/- 0.001 over 5 seeds (1.59x over a linear-on-raw baseline; the
+reservoir features carry it -- state-only equals state+input). It also LEARNS autoregressive text generation
+(readout learned by ridge, the substrate generating from it). KEPT NEGATIVES: the first untuned cut was 1.18
+(worse than the mean) -- leak too low for NARMA's step-level dynamics, fixed by leak=1.0 + centered input;
+chaotic free-running prediction diverges pointwise after ~one Lyapunov time (the climate is learnable, the
+weather is not); periodic free-run tracking is loose; the readout learns a linear map of FIXED features.
+
+`prototype_classifier` (holographic_classifier.HolographicClassifier) -- the HDC/VSA learner. Encode each
+example (bind a feature-id atom with a ScalarEncoder level, bundle over features), bundle a class's examples
+into one prototype (a one-shot centroid), then perceptron retraining: on a miss, pull the correct prototype
+toward the example and push the wrong one away (add/subtract on bundled vectors, no gradients). Measured (test
+acc, 3 seeds): digits 0.902 -> 0.949, breast_cancer 0.934 -> 0.949, wine 0.981 (saturated) while raw
+nearest-centroid is only 0.667 -- the encoding lifts the centroid model dramatically. KEPT NEGATIVE (the
+field's own verdict): retraining beats the one-shot centroid, but the classifier lands just BELOW a tuned
+linear model (logistic regression, by 0.006-0.016) -- traded for a dead-simple gradient-free rule. Kept
+genuinely gradient-free (the perceptron rule), not the SGD-based methods that wear the HDC label.
+
+Both are the TRULY derivative-free corner. The local-gradient methods remain queued: Equilibrium Propagation on
+the modern-Hopfield cleanup (free + nudged phases, contrastive-Hebbian, makes attractors learned), and
+Forward-Forward / Mono-Forward (layer-local goodness, deeper nets). Standing caveat: native learning at
+small/moderate scale, not a route to frontier scale. Real basis: Jaeger / Maass (reservoir computing); Kanerva
+/ Rahimi / Imani / Kleyko / Hernandez-Cano (HDC prototypes, AdaptHD / OnlineHD); Scellier & Bengio (EP); Hinton
+(Forward-Forward).
+
+Tests: +4 (reservoir selftest: fixed reservoir + ridge readout learns one-step prediction and is deterministic;
+classifier selftest: one-shot + perceptron retraining beats chance, does not hurt, and is deterministic; plus
+two integration tests running both faculties end-to-end through UnifiedMind). 744 -> 748.
+
+## Equilibrium Propagation -- the learning rule for the energy-based Hopfield cleanup (shipped)
+
+The reservoir and prototype classifier are TRULY derivative-free, but both only learn a linear map of fixed
+features. Equilibrium Propagation (Scellier & Bengio, 2017) is the LOCAL-GRADIENT method that learns the
+HIDDEN weights of an energy-based net, so it fits a NONLINEAR task they cannot -- and it is exactly the
+learning rule for the energy-based (Hopfield) memory the engine uses as a FIXED cleanup (B1): where cleanup
+relaxes a query to a stored attractor, EP learns the weights so the energy minima ENCODE a task.
+
+`holographic_equilibrium.EquilibriumNet` -- a 1-hidden-layer continuous Hopfield net (hard-sigmoid rho =
+clip[0,1]; symmetric weights Wxh, Who by construction). No backprop. Relaxations of the same circuit: a FREE
+phase (clamp the input, relax to an energy minimum = the prediction) and NUDGED phases (add +/- beta *
+1/2||o - y||^2 to the energy, relax again). The weight update is the contrastive difference of the nudged
+equilibria, dW ~ (1/2beta)(rho(s_-) (x) rho(s_-) - rho(s_+) (x) rho(s_+)), which estimates the loss gradient.
+We use SYMMETRIC nudging (Laborieux 2021): the +beta and -beta pair cancels the leading O(beta) bias.
+
+VALIDATED honestly:
+- Gradient correctness: the symmetric EP update matches the true gradient (central finite differences over the
+  free-phase loss) to COSINE 1.000 on a tiny net -- EP's defining property, measured, not assumed.
+- Nonlinear learning: on two interleaving moons (noise 0.10) EP reaches ~0.92 test accuracy vs a linear
+  least-squares foil's ~0.85 -- the hidden layer earns its keep; a linear readout on fixed features (the
+  reservoir / classifier regime) cannot separate the moons.
+
+KEPT NEGATIVES (on the record):
+- EP LANDS BELOW exact backprop: a tanh MLP trained by real backprop reaches ~1.00 on the same moons; EP's
+  ~0.92 is the cost of a biased finite-beta gradient estimate. EP is local-gradient, not a free lunch.
+- It needs SYMMETRIC weights, and costs THREE relaxations per update (free + two nudged) -- far more compute
+  than the one-shot reservoir / classifier rules.
+- Instability if pushed: large lr / weight-init drives the relaxation to collapse (~0.5, chance); the working
+  regime needs a converged free phase (longer t_free, smaller dt) and a modest lr.
+- Two bugs found-and-fixed during the build, kept as lessons: (1) the hard-sigmoid derivative must be INCLUSIVE
+  on [0,1] -- else a state initialized at 0 has zero force and never moves; the gradient check caught it as
+  cosine 0.000. (2) The two-moons split must be SHUFFLED -- an index split left the test set single-class,
+  reading as acc 0.000; a harness bug, not an EP bug, caught only because below-chance accuracy is a red flag.
+
+Both the truly-derivative-free corner (reservoir, classifier) and now the local-gradient corner (EP) are
+shipped; Forward-Forward / Mono-Forward (layer-local goodness, deeper nets) is the one method still queued.
+Standing caveat: native learning at small / moderate scale, not frontier scale. Real basis: Scellier & Bengio
+(2017); Laborieux et al. (2021).
+
+Tests: +2 (an EP selftest -- the symmetric update matches finite differences to cosine > 0.9 AND it learns two
+moons past a linear foil, deterministically; plus an integration test running the EP faculty end-to-end
+through UnifiedMind). 748 -> 750.
+
+## Forward-Forward -- backprop-free depth from local objectives, with a loud kept negative (shipped)
+
+Forward-Forward (Hinton 2022) is the last family and the DEPTH corner: it stacks many layers, each trained by
+its OWN local objective with no gradient flowing between them -- depth without a global backward pass and
+without EP's settling. Mechanism: replace backprop's forward+backward with TWO forward passes. POSITIVE data ->
+train each layer to high "goodness" (mean squared activity); NEGATIVE data (the same input with a WRONG label
+embedded) -> train each layer to low goodness. Each layer's local loss is a logistic on (goodness - theta); its
+weights move by the gradient of THAT loss alone. Every layer L2-NORMALIZES its output before the next sees it,
+so a later layer can't read the length an earlier one already separated. Classification is label-embedded:
+prepend a one-hot label; at test try each label, forward, and pick the highest accumulated goodness.
+
+`holographic_forward.ForwardForwardNet`. Two implementation fixes were needed and are kept as lessons: (1) a
+single global theta fails because layer goodness scales differ wildly (layer 0 ~1-4, layer 1 ~0.015 after
+normalization) -- the fix is a PER-LAYER adaptive threshold (EMA of the goodness) so each logistic stays
+centered and has gradient; (2) prediction must sum goodness over ALL layers (the constant 'a label is present'
+part cancels across candidates, leaving each layer's learned label-vs-input compatibility). With those, the
+mechanism works: on separable 4-class blobs it classifies at 100% with a positive-minus-negative goodness gap
+of ~+2.4 on held-out data.
+
+KEPT NEGATIVE (MEASURED, loud -- the most humbling of the program):
+- At the small scale tested this compact FF is a WORKING but WEAK classifier. It TRAILS a plain linear /
+  logistic model on EVERY task tried: two-moons ~0.88 (a tie with linear, NO nonlinear advantage -- unlike EP);
+  overlapping 4-class blobs 0.95 vs linear 0.99; sklearn digits (its natural high-dim habitat) 0.88 vs logistic
+  0.97. It beats linear only on a radial task where linear PROVABLY fails (~0.69 vs 0.47), and even there weakly.
+- FF's published accuracy (Hinton's ~1.4% MNIST error) needs the full-scale recipe -- many layers, large width,
+  long training, carefully built negatives -- not reachable in a compact CI-fast module. What this module
+  contributes is the MECHANISM (backprop-free, settling-free depth from local objectives), a conceptual route,
+  NOT a competitive number.
+- Local-gradient, not derivative-free (like EP). Goodness-based label inference costs one forward pass per class
+  at test. Sensitive to the goodness threshold and the negative-data quality.
+- The stronger Mono-Forward (2025) refinement (per-layer LOCAL supervised projections to logits) is reported to
+  match tuned backprop; it is the natural next step for a competitive FF-family accuracy and is NOT built here.
+
+This closes the four-family learning program. Honest summary of the whole arc: the TRULY derivative-free corner
+(reservoir, prototype classifier) is competitive at small scale; the LOCAL-GRADIENT corner splits -- Equilibrium
+Propagation genuinely learns nonlinear functions and beats linear (two-moons 0.92 vs 0.85), while Forward-Forward
+demonstrates backprop-free depth but trails linear at this scale. None reaches frontier scale; the engine now
+holds a clear-eyed MAP of what substrate-native learning buys and where each method's boundary lies. Real basis:
+Hinton (2022); Mono-Forward (2025).
+
+Tests: +2 (an FF selftest -- the local-goodness mechanism classifies a separable task and separates positive
+from negative goodness, deterministically; plus an integration test running the FF faculty end-to-end through
+UnifiedMind). 750 -> 752.
+
+## NONLINEAR DYNAMICS COMPANION (shipped): learning a chaotic flow the linear propagator cannot
+
+This is the above/below examination's strongest "ABOVE" candidate, realised: the unlocked LEARNING aimed
+straight at the most embarrassing kept negative in the dynamics line. `learn_dynamics` (Propagator) fits ONE
+per-frequency complex transfer -- the linear Koopman/DMD operator. Exact for linearisable flow (it recovers
+advection-diffusion almost perfectly), but a single fixed linear map cannot follow a state-dependent
+nonlinearity: the record already carried "on a shock-forming Burgers field the linear propagator does WORSE
+than persistence (0.054 vs 0.006; 0.125 vs 0.015)". The fix the negative itself named was "a learned lift".
+
+holographic_chaos.py / `mind.learn_chaos` is that lift, and it DELEGATES to the reservoir (holographic_reservoir)
+rather than re-implementing a learner -- a fixed nonlinear echo-state expansion read out by a TRAINED linear
+map learns the one-step evolution operator a linear transfer structurally cannot. NonlinearPropagator.learn
+captures per-coordinate normalisation, fits the reservoir readout (one ridge solve) to map state(t) ->
+state(t+1); `predict_sequence` gives one-step-ahead forecasts, `free_run` closed-loop rollout. lorenz_trajectory
+(RK4) gives the selftest a known chaotic system with no external-data dependency.
+
+MEASURED (Lorenz '63, the canonical reservoir-computing test, RK4 dt=0.02):
+- ONE-STEP is a clean WIN and NOT a strawman. Reservoir one-step ~0.0014 relative error vs the BEST linear map
+  (full DMD) ~0.059 and persistence ~0.071 -- ~40x better than best-linear, ~50x better than persistence. The
+  engine's own circulant propagator only ties persistence. A linear map sits at the chaos floor because the
+  Lorenz flow is state-dependent; the nonlinear reservoir genuinely learned the local evolution operator.
+- Deterministic (same seed -> identical readout). Closed-loop free-run tracks the attractor ~10x longer than
+  persistence.
+
+KEPT NEGATIVES (loud, on the record -- the boundaries, established by sweeps, not guessed):
+- Closed-loop horizon is only ~ONE Lyapunov time -- far short of the ~5 the one-step error implies. A 0.0014
+  one-step error under clean chaotic growth would give ~5 Lyapunov times; getting ~1 means the AUTONOMOUS system
+  diverges faster than chaos alone: the well-known reservoir free-run STABILITY problem. State-noise helps only
+  marginally (noise=1e-2 is the sweet spot; 1e-1 shortens it to ~0.2), bigger reservoirs help modestly
+  (dim 500->1500 took 0.4->0.8), and -- the key finding -- the recurrence MIXING is NOT the lever: cyclic-shift,
+  random-permutation, AND an inline unitary-bind (random circulant orthogonal) recurrence all cap at ~0.4-0.9
+  Lyapunov times. The wall is closed-loop stability, not mixing. Cracking it is a research problem of its own;
+  this module does not claim to.
+- HIGH-DIMENSIONAL PDE FIELDS are out of reach for a single global reservoir. Forecasting a 48-D Burgers field
+  one-step lands ~0.27-0.35 relative error, far worse than persistence; Equilibrium Propagation as a memoryless
+  field regressor was also ~0.08 (worse than persistence). Pathak et al. (2018) forecast the chaotic
+  Kuramoto-Sivashinsky equation with LOCAL/parallel reservoirs precisely because one global readout cannot, and
+  EP's sweet spot is low-output (classification-shaped) targets, not 48-D field regression. The win above is a
+  genuine LOW-dimensional nonlinear-dynamics result, said plainly.
+- On MILD dissipative Burgers the per-step change is tiny (persistence ~0.012), a punishing baseline with almost
+  nothing to win regardless of the learner -- which is why the clean win lives on chaos (weak persistence), not
+  on a smooth dissipative flow.
+
+As-above-so-below: this is the LEARNING (a within-/across-vector trained map) wired ONE RUNG UP to fix a
+system-level dynamics negative, delegating to the reservoir faculty rather than re-building it -- the
+examination's prediction made load-bearing by a cross-faculty test. Real basis: Jaeger echo-state networks;
+Pathak et al. (2018) reservoir forecasting of spatiotemporal chaos; Lorenz (1963).
+
+Tests: +2 (a chaos selftest -- the nonlinear learner beats best-linear by >10x on the chaotic one-step map and
+beats persistence's free-run, deterministically, without overclaiming the ~1-Lyapunov-time horizon; plus an
+integration test running `learn_chaos` end-to-end through UnifiedMind). 752 -> 754.
+
+## Sparse cleanup readout + geometry-aware denoise -- match the MAP to the MANIFOLD (shipped)
+A measured negative drove this: on a CONTINUOUS manifold (recovering UN-stored in-between points along a
+photo-to-photo path in real SD latents), the softmax modern-Hopfield cleanup TIES or LOSES to plain
+nearest-neighbour -- softmax 0.983, NN 0.998 -- because the dense blend weights in far codebook atoms and
+OVER-SMOOTHS. This is the documented metastable-mixing / "fuzzy-memory" failure of the softmax update
+(Ramsauer et al. 2020), and the field's 2024-25 fix is a SPARSE readout.
+
+Two VSA-native fixes, both prototyped and measured before wiring:
+- SPARSE CLEANUP READOUT. `dense_cleanup(..., readout='sparsemax')` replaces the softmax blend with a
+  sparsemax simplex projection (Martins & Astudillo 2016) -- the Hopfield-Fenchel-Young move (Santos,
+  Niculae, McNamee, Martins 2024-25; sparse Hopfield Hu 2023 / Wu 2024) -- so the readout blends ONLY the
+  relevant patterns. Measured on the continuous SD-latent manifold: sparse 0.999 > NN 0.998 > softmax 0.983;
+  it REVERSES the softmax-loses-to-NN result. It does NOT regress discrete recall (still exact at high beta,
+  where sparsemax is also one-hot -- pinned by test). Default stays 'softmax', bit-for-bit unchanged.
+- GEOMETRY-AWARE DENOISE SELECTOR. `denoise(method='geometry', samples=/codebook=)` reads the set's
+  `effective_rank` (the consolidation/SVD spectrum knee) and routes: LOW-rank-relative-to-count (a continuous
+  manifold) -> project onto that subspace (Milanfar's denoiser-as-manifold-map, RED 2017; a tensor-network
+  truncation in Stoudenmire's reading); HIGH-rank (distinct atoms) -> codebook recall. Measured:
+  manifold-projection recovers UN-stored in-between points at 1.000 vs the softmax blend's 0.983.
+
+KEPT NEGATIVES (travel with the methods):
+- The sparse-beats-NN margin is THIN (~0.001, e.g. tour 0.996 vs 0.995); its CLEAR, robust win (every seed in
+  the variance harness) is over the softmax blend, not over NN. Reported, not oversold.
+- Manifold projection only helps where the manifold is genuinely low-rank: forced onto the HIGH-rank distinct
+  photos it COLLAPSES recall to 67% (measured, and asserted by test). That failure is exactly why the router
+  reads the rank first -- match the map to the manifold, never project high-rank data.
+- The softmax blend over-smooths continuous manifolds; use the sparse readout (or projection) there.
+
+The deepest VSA-native handle (recognised, not newly built): a continuous manifold should be HELD as a
+function -- Vector Function Architecture / fractional power encoding (Frady, Kleyko, Kymn, Olshausen, Sommer,
+Computing on Functions) -- which the RBF ScalarEncoder already is; the codebook-of-samples was the wrong
+construction for a continuous quantity. The two wired items fix the readout and the routing; the functional
+representation was in the encoder all along.
+
+As-above-so-below: the readout lives in the KERNEL (`dense_cleanup`, below) and is threaded UNCHANGED through
+the mind's `denoise` (above) -- a test pins `mind.denoise(method='codebook', readout=...)` bit-for-bit to the
+kernel call, so the mind delegates and does not re-implement. The geometry router delegates to `effective_rank`
++ `fit_manifold`/`manifold_denoise` + `codebook_denoise` (no new math), and a cross-faculty test proves it
+picks projection on a low-rank manifold and recall on a high-rank set, with the high-rank-projection failure
+kept as the guard. Real basis: Ramsauer et al. (2020); Martins & Astudillo (2016); Santos, Niculae, McNamee,
+Martins (2024-25, Hopfield-Fenchel-Young); Hu (2023), Wu (2024); Romano, Elad, Milanfar (2017, RED); Frady,
+Kleyko, Kymn, Olshausen, Sommer (Computing on Functions / VFA).
+
+Tests: +9 (sparsemax-simplex; softmax-readout-unchanged; high-beta-pins-to-hard-NN for both readouts;
+sparse-beats-softmax and not-worse-than-NN on a continuous manifold; sparse-does-not-regress discrete recall;
+effective_rank separates the geometries; the geometry router matches the right map AND projection-on-high-rank
+is worse; the kernel<->mind above/below delegation; and a variance harness bootstrapping the margins across 12
+seeds). 754 -> 763.
+
+## Sparse readout in the SBC resonator -- the same fix one rung up, a measured capacity win (shipped)
+The denoise finding generalised exactly as predicted: the SBC resonator's alternating projection
+(`sbc_resonator`) updates each factor estimate with an annealed SOFTMAX blend over its codebook -- the same
+dense blend whose metastable mixing hurt continuous-manifold cleanup. Swapping it for the sparse readout
+(`readout='sparsemax'`, delegating to the shared `_sparsemax`) blends only the relevant atoms each step.
+
+MEASURED (F=3, B=16, L=16, all-factors-correct over 40 trials), softmax -> sparse:
+- CLEAN CAPACITY rises sharply: N=25 0.47->0.62; N=50 0.00->0.12; N=80 0.00->0.25 -- sparse RECOVERS
+  factorizations where the softmax blend collapses to exactly zero. The sparse blend escapes the
+  metastable/limit-cycle traps that cap the softmax resonator at high alphabet.
+- APPROXIMATE input (corrupted product blocks): helps at low corruption (clean 0.80->0.95) and TIES under
+  heavy corruption (corrupt=4 both 0.62). KEPT NEGATIVE: the win is largest on clean high-alphabet capacity;
+  heavy corruption is a tie, and absolute capacity is still modest (N=80 0.25, but vs softmax's 0.00).
+- It NEVER regresses (sparse >= softmax in every cell). The annealed beta still drives explore->commit
+  (sparsemax keeps a sparse-but-broad set at low beta, one atom at high beta), so the search schedule holds.
+
+The CONFIDENCE null is matched to the readout. `_resonator_noise_null` / `resonator_confidence` now take the
+readout and re-fit the procedure-matched noise floor under it (the cache key includes the readout) -- the
+recurring rule: a null that does not match the actual procedure lies, and sparse manufactures a different
+noise-floor agreement than softmax. Default stays `readout='softmax'`, bit-for-bit unchanged; sparsemax is
+the measured-better opt-in (recommended, not yet the default, per the engine's backward-compatibility rule).
+
+As-above-so-below: the readout switch lives in the kernel resonator (`sbc_resonator`, below), threads
+unchanged through `resonator_confidence` / `decompose_structure` and up through the mind's
+`decompose_structure` and `factor_composite` (above) -- a test pins `mind.decompose_structure(readout=...)`
+to the SBC factorizer's picks, so the mind delegates and does not re-implement. This is the SECOND faculty to
+take the readout fix (cleanup was the first), confirming the panel's read: wherever a softmax blend appears,
+the sparse readout is a candidate -- and here it cleared a real bar (a capacity win, not a thin margin). Real
+basis: Frady et al. (2020), Kymn, Olshausen et al. (2024) resonator networks; Martins & Astudillo (2016)
+sparsemax; Santos, Niculae, McNamee, Martins (2024-25, Hopfield-Fenchel-Young); Ramsauer et al. (2020).
+
+Tests: +5 (softmax-default-unchanged picks; the capacity win sparse>softmax at N=25/50 with no regression at
+N=10; the confidence null is recomputed per readout; the mind delegates AND threads the readout through both
+`decompose_structure` and `factor_composite`). 763 -> 768.
+
+## Sparse readout in the generative attractor -- the same fix cures generative mode collapse (shipped)
+The third application of the readout finding, and the one that revealed a NEW axis. `generate` and
+`generate_structure` are annealed cleanup attractors (denoise from pure noise, beta up / noise down); both run
+through `dense_cleanup` (`generate_structure` slot-wise via `_structure_project`), so the sparse readout
+threads in directly. The bar was "cleaner valid samples"; what it actually cleared was DIVERSITY.
+
+MEASURED (dim=1024-2048, recon-validity = cosine(z, reencode(decode(z))); diversity = fraction distinct combos
+over the seeds):
+- VALIDITY is a perfect tie: BOTH readouts produce structures that reencode their decoded combination at
+  cosine 1.000 in every config -- so the decoded combos are trustworthy and the structures are genuinely valid.
+- DIVERSITY diverges sharply: softmax generation MODE-COLLAPSES (many random seeds settle into the SAME few
+  structures -- diversity as low as 0.03, i.e. one structure for 30 seeds, and typically 0.13-0.5), while
+  sparsemax stays diverse (0.6-1.0, nearly every seed a distinct valid structure). The mechanism is the SAME
+  metastable mixing: the softmax blend's wide blended basins funnel different noise starts to one attractor;
+  sparse's distinct basins let them settle into different valid structures. So the readout fix shows up here
+  as a cure for generative mode collapse, at NO validity cost.
+
+KEPT NEGATIVE: over a CONTINUOUS codebook, `generate` is UNAFFECTED by the readout -- both softmax and sparse
+snap to a stored coarse atom (validity-to-manifold 1.000, novelty ~0). The old "bare codebook -> stored atom"
+negative holds for both readouts; the sparse win is specific to `generate_structure` (the discrete composed
+manifold), not to continuous-manifold generation. Pinned by a test.
+
+The creature is the boundary the analogy does NOT cross, and that is worth recording: `decide` ends in a HARD
+argmax over scores, and the value readout it argmaxes is a clipped-cosine (ReLU-kernel) weighted average over
+the top-k prototypes -- already sparse/thresholded, and a one-shot estimate, not an iterated soft-blended
+attractor. There is no softmax blend there for sparsemax to improve, so the creature's decision path was left
+unchanged (an honest non-fit, not a forced one).
+
+As-above-so-below: the readout switch lives in the kernel attractors (`generate`, `_structure_project`,
+`generate_structure`, below) and threads up through the mind's `generate_vector` / `generate_structure`
+(above); a test pins `mind.generate_structure(readout=...)` to the kernel generator's exact output, so the
+mind delegates. This is the THIRD faculty to take the readout fix (cleanup -> resonator -> generator), and it
+adds a new line to the unifier: a softmax blend in an ITERATED attractor is a sparse candidate not only for
+accuracy/capacity but for SAMPLE DIVERSITY. Real basis: the cleanup attractor as diffusion (Ramsauer et al.
+2020 modern Hopfield; Hopfield-Fenchel-Young, Santos/Niculae/Martins 2024-25); Martins & Astudillo (2016)
+sparsemax; the VSA generate-by-denoising framing (Frady/Kymn/Olshausen/Sommer resonator + cleanup line).
+
+Tests: +5 (softmax-default-unchanged output for both generate and generate_structure; sparse structures stay
+valid at recon-cosine ~1; the mode-collapse cure sparse-diversity > softmax-diversity; the continuous-generate
+kept negative; the mind delegates AND threads the readout). 768 -> 773.
+
+## LEARNED ENERGY MEMORY (shipped): training the cleanup's attractors instead of storing them
+
+The panel's audit found the whole formal backlog (A1-A14, incl. tensor-train via tensor_bind rank) already
+shipped; the ONE genuinely-unbuilt thing the seats' real methods converged on was that
+holographic_equilibrium's docstring CLAIMED EP "is the rule that LEARNS those attractors" of the energy
+memory -- but nothing actually trained a cleanup's energy. EP ran as a standalone classifier; the cleanup
+stayed fixed (classical = snap to a stored atom; modern-Hopfield dense_cleanup = relax against a fixed
+codebook). holographic_energy.py / `mind.learn_cleanup` makes good on that claim. It DELEGATES to
+EquilibriumNet (not a new learner) to train a denoising AUTO-ASSOCIATOR -- (sample+noise -> sample) pairs,
+hidden bottleneck ~ D/2 forcing the attractor set onto the low-dim manifold -- whose `cleanup(x)` clamps x,
+relaxes, and reads the free-phase output: a noisy query PROJECTED onto a LEARNED manifold instead of snapped
+to the nearest stored sample. torus_bump_manifold gives the selftest a known continuous nonlinear manifold
+(a Gaussian bump at a continuous position on a latent_dim-torus; curved, NOT low-rank, so SVD/consolidation
+can't denoise it and a finite codebook can only QUANTIZE the continuous position) with no external data.
+
+The result is GEOMETRIC -- when learning the energy beats storing the codebook is the whole point:
+- vs the FIXED SOFT energy cleanup (dense_cleanup): unconditional win on a continuous manifold at every
+  codebook size (1-D EP ~0.33 vs soft 0.43-0.51; 2-D EP ~0.43 vs soft 0.45-0.56) -- the soft cleanup returns
+  a softmax MIXTURE that blurs on a continuum while the learned net projects. Apples-to-apples: learned energy
+  memory beats fixed energy memory.
+- vs storing DATA (hard 1-NN codebook of RANDOM manifold samples) the win is DIMENSIONAL. On a 2-D manifold at
+  MATCHED MEMORY (EP weights 2*D*hidden vs an equal-byte codebook, K~=48): EP ~0.43 vs hard-1NN ~0.49-0.50.
+  Tiling a d-manifold with samples costs ~grid^d points (curse of dimensionality); a fixed-size learned
+  projector scales with the manifold's intrinsic structure, not its volume. Deterministic (Who allclose).
+
+KEPT NEGATIVES (loud -- they ARE the boundary, measured by sweeps):
+- DISCRETE atoms are the wrong job. Queries = noisy versions of a finite stored set -> HARD 1-NN returns the
+  EXACT atom (~0.02-0.03) and is unbeatable; the learned approximate energy (~0.21) loses. This is B1's
+  "single-item identity is a tie" SHARPENED: against the hard cleanup it's a loss, not a tie. Use the existing
+  cleanup for discrete recall.
+- In 1-D the curse does NOT bite, so a matched-memory random-sample codebook BEATS the learned energy (1-D
+  K=32 ~0.27 vs EP ~0.33). The advantage over storing data REQUIRES manifold dimension >= 2. In 1-D, just
+  store the samples.
+- The win over a codebook is at MATCHED memory, not unbounded -- give the codebook 2-4x more bytes and it wins
+  even in 2-D (2-D K=100 ~0.41, K=200 ~0.35 vs EP 0.43). And EP inherits its weakness at very high output
+  dimension (this targets moderate D, low intrinsic-dim manifolds; it is NOT a high-D field denoiser -- cf.
+  the chaos module's 48-D Burgers negative).
+
+This is the LEARNING reaching the engine's most fundamental fixed object (the cleanup) -- the examination's
+"below" unlock realised, the apex of the learning arc (reservoir -> classifier -> EP -> FF -> learn_chaos ->
+learn_cleanup): the through-line was "make the fixed objects trainable", and the cleanup was the last and
+deepest one. It is also the natural LEARNED prior for the Plug-and-Play/RED loop the engine already runs
+(Milanfar: a denoiser is a map of the signal manifold -- now a LEARNED map). Real basis: Krotov-Hopfield /
+Ramsauer et al. (the energy memory); Scellier-Bengio (2017) / Laborieux (2021) Equilibrium Propagation (the
+local learning rule); Romano-Elad-Milanfar (RED) for the prior framing.
+
+Tests: +2 (an energy selftest -- the learned energy beats both the soft cleanup AND a matched-memory
+random-sample codebook on a continuous 2-D manifold, deterministically, while the hard 1-NN cleanup wins on
+discrete atoms (kept negative); plus an integration test running `learn_cleanup` end-to-end through
+UnifiedMind and beating the fixed soft cleanup). 773 -> 775.
+
+## Grounded answering -- short, accurate, constructed sentences from retrieved knowledge (shipped)
+The text-generation review's honest finding drove this: the engine's RELATIONAL layer answers questions
+correctly and traceably (is_a chains, role lookups, learned-meaning similarity, classification), while its
+GENERATIVE layer is locally fluent but globally incoherent (measured: longest verbatim run 3-8 words and
+85-100% novel 4-grams, so NOT snippet-copying -- but no sentence-level meaning; and the structure verifier
+rates a Markov walk as MORE typical than real text, so it cannot certify coherence). The right way to "answer
+a question with a sentence that makes sense" is therefore NOT to generate -- it is to RETRIEVE the facts and
+REALIZE them.
+
+`answer_text(question)` (faculty) = `realize_answer(answer(question))`. It delegates ALL retrieval to the
+existing `answer()` router (which maps a question to the brain's real operations) and adds the one missing
+piece: a surface-realization layer (`holographic_answer.realize_answer`) that builds a short sentence from the
+retrieved STRUCTURE -- the is_a chain, the role value, the learned-meaning neighbours. Template-based NLG over
+a holographic knowledge base, the standard pre-neural move, deliberately using the parts that WORK and NOT the
+free n-gram walk.
+
+The three properties, MEASURED on a known encyclopedia + dictionary battery:
+- ACCURATE: 11/11 on known questions. "Yes -- a dog is a mammal, which is an animal."; "No -- a salmon is a
+  fish, and ultimately an organism, not a bird." (correct no, and it explains what it IS); "The capital of
+  france is paris."; "A dog is a mammal -- more broadly, an organism. It's closely related to cat, wolf...".
+- NO FABRICATION: 3/3 honest abstentions on unknowns. "I don't have dragon in my knowledge, so I can't say
+  whether it's an animal." -- the calibrated-abstention discipline applied to language: unknown concept,
+  low-confidence recall/classify, or a question that falls through to the generation path -> abstain, never
+  invent. Confidence/score floors gate role/recall/classify; an is_a "no" is only emitted when the subject is
+  actually known (chain length > 1), else it abstains.
+- NOT VERBATIM: the sentence is CONSTRUCTED from the structure (a new sentence, not a copied source line);
+  verbatim only where the answer simply IS a stored value (a capital, a parent class) -- i.e. only when that
+  is what was asked for. Article (a/an) and natural-list rendering handle 1/2/3+-link chains gracefully.
+
+KEPT CAVEAT (loud): the "closely related to" neighbours come from the dictionary-meaning space, which groups
+by shared DEFINITION words -- so they can include attributes ("four", "wood", "leaves"), not only clean
+taxonomic siblings. The is_a/role parts are exact; the relatedness part is associative, consistent with the
+meaning_predict finding that the dictionary space separates related words at d'~0.76 (good, not perfect). A
+concept-only filter on the neighbours is the obvious next refinement.
+
+As-above-so-below: the realizer is a pure function over the `answer()` struct (fast deterministic unit tests
+pin every branch); `answer_text` is exactly `realize_answer(answer(q))` (a test pins the delegation). Real
+basis: template-based natural-language generation over a knowledge base (the standard grounded-QA architecture
+before neural LMs); the engine's own relational faculties (climb/is_a/read_role/define/classify/recall) supply
+the content; the calibrated-abstention thread supplies the "don't fabricate" floor.
+
+Tests: +10 (realizer form/accuracy per kind; low-confidence and unknown-subject abstention; recall/classify
+score gates; completion/unknown abstain; helpers; and end-to-end: answer_text delegates to answer(), is
+accurate, and does not fabricate on unknowns). 775 -> 785.
+
+## VSA-native question routing -- understand the question from a blend of word meanings (shipped)
+The answerer's reach was limited by `answer()`'s brittle regex templates: natural or verbose phrasing
+("could you tell me whether a dog is an animal", "do you happen to know the capital of japan") missed the
+template and abstained even though the brain knew the answer. The fix is the engine's OWN machinery, exactly
+as proposed: the text encoder already turns a string into a BUNDLE of its word meanings (the VSA blend), and
+that bundle is a good INTENT signal, so route the question by encoding it (`mind.perceive`) and matching it to
+per-intent prototypes (each the mean bundle of several example phrasings), then dispatch to the brain's real
+operations.
+
+The crux, kept honest: bundling is COMMUTATIVE, so "is a dog an animal" and "is an animal a dog" blend to
+nearly the same vector -- the blend gives the KIND of question but not WHICH concept is subject vs object. So
+intent comes from the blend, and the ARGUMENTS come from a concept-scan: find the words the mind actually
+KNOWS (its class labels + lexicon) and use their ORDER (first found = subject, last = ancestor) to assign the
+roles the commutative bundle cannot. Intent-by-blend + arguments-by-order is the whole design; each half does
+the job the other can't.
+
+MEASURED:
+- INTENT routing: on natural/verbose phrasings the regex abstained on (0/8), the blend routed 7/8 correctly
+  (the miss is "what's a salmon" leaning IS_A because "a salmon" appears in the IS_A examples).
+- END TO END through `answer_text`: 5/6 of those phrasings now answer correctly via the VSA fallback ("Yes --
+  a dog is a mammal, which is an animal." from "could you tell me whether..."), and the DIRECTION case
+  "is an animal a dog" -> "No -- an animal is an organism, not a dog." is resolved by the order-scan, which the
+  blend alone cannot do.
+- BACKWARD-COMPATIBLE: `answer()` tries the exact templates FIRST and calls the VSA router only when they miss,
+  so every templated question is byte-for-byte unchanged (tests pin that the `via` field is not 'vsa' there).
+- ABSTENTION PRESERVED / NO FABRICATION: arguments must be concepts the mind knows; an unknown concept yields
+  no usable pair and the router returns None -> the honest abstention fires. KEY FIX found by measurement: the
+  define-fallback is restricted to DEFINE/SIMILAR intents -- describing the lone KNOWN concept of an IS_A
+  question whose SUBJECT is unknown ("is a dragon an animal", animal known, dragon not) would answer the WRONG
+  thing, so those abstain instead. Better to abstain than to mislead.
+
+KEPT NEGATIVES (loud): short questions with overlapping content words can confuse adjacent intents (mitigated
+to abstention, not a wrong answer); classify/recall need an explicit text PAYLOAD not a concept, so they stay
+with the templates (this router covers the relational intents is_a/role/define/similar); and the intent
+prototypes come from a fixed example set, so a heavily padded wording can fall below the intent floor and
+abstain rather than route. The router is the broad net; the templates remain the precise one.
+
+As-above-so-below: the router returns an `answer()`-style struct, so `realize_answer` and the abstention floors
+apply unchanged -- the new path reuses the whole grounded-answer pipeline, it does not fork it. Real basis:
+the VSA blend (bundle of word-meaning atoms) as a bag-of-words intent signal; the engine's own
+perceive/encode (the one text encoder) and its relational faculties (is_a/climb/read_role/define) for content;
+binding/order, not bundling, for argument roles (the standard VSA lesson that superposition is order-free).
+
+Tests: +7 (intent classification of natural phrasings; the order-based direction fix; natural role/define
+answers; abstain-when-subject-unknown; answer_text answers natural phrasings via the fallback; templated
+questions unchanged/backward-compatible; abstention preserved on natural unknowns). 785 -> 792.
+
+## Ordered lists -- recipes, directions, instructions: how well, measured (assessment + correction)
+Asked how well the engine handles ordered lists, the honest answer is: well, and better than its own docstring
+claimed. Ordered sequences live in `SequenceMemory` via PERMUTATION-positional encoding -- each step's atom is
+rotated by its 1-based position and bundled into one vector (a scrambled order is near-orthogonal, cosine
+~0.03). The mind exposes it as `learn_plan(name, steps)`, `step_at(name, i)`, `precedes(name, a, b)`, and
+`validate_plan(name_or_steps, constraints)`.
+
+MEASURED (dim 2048):
+- REAL lists -- an 8-step pancake recipe, 7-step driving directions, 6-step chair assembly -- recall in order
+  EXACTLY (8/8, 7/7, 6/6). precedes is correct both ways; validate_plan passes correct ordering rules and, on
+  an impossible rule, returns False naming the exact offending pair.
+- CAPACITY is far past the old "~8" claim. Forced-choice step recall (which cleans up against the step list)
+  is 100% out to length 40, ~99.7% at 80, ~92.5% at 120 -- a graceful decline, not a hard cliff. Position
+  decoding (the harder token->slot direction, used by position_of/precedes) tracks it: 100% to ~40, ~99% at
+  80, ~93% at 120. The "~8" docstrings were corrected to these measured numbers.
+- ROBUST cleanup: even with 1000 competing distractor atoms in the vocabulary, step recall at length 12 stays
+  100% -- the permutation signal is clean enough that the right token wins without needing a small candidate
+  set. (So the strength is the encoding, not a forced choice.)
+
+KEPT NEGATIVES (loud, pinned in tests):
+- REPEATS are half-handled. A recurring step ("stir" at positions 1/3/5) recalls correctly at EVERY slot
+  (position -> element is position-indexed), but the INVERSE position_of (element -> position) is an argmax and
+  returns only ONE of the occurrences. An all-occurrences query would need to threshold the per-position
+  scores instead of taking the argmax.
+- Each step is a WHOLE-STRING ATOM, so this is exact, order-faithful recall of stored step labels, not
+  generation or paraphrase: a reworded query step ("beat eggs" vs the stored "beat the eggs") is a different
+  atom and will not match. There is no fuzzy step matching yet (a natural place to reuse the learned-meaning
+  space or an edit-distance fallback), and the step CONTENTS are opaque to the order machinery -- it captures
+  the meaning that lives in the ORDER, not the meaning inside each step.
+
+Net: for directions/recipes/instructions at realistic lengths (a handful to a few dozen steps) the engine
+stores them faithfully and answers position, "what is step i", precedence, and constraint-violation queries
+exactly. The two real gaps are all-occurrences-for-repeats and fuzzy step matching.
+
+Tests: +3 (exact ordered recall + precedence + validation on a realistic recipe; capacity pinned exact at 20
+and >=88% at 120; the repeat recall/position_of-limit pinned as a kept negative). 792 -> 795.
+
+## Executable procedures: HoloMachine wired INTO the mind (de-silo; milestone 1 of 4) (shipped)
+HoloMachine -- the stored-program VM whose opcodes ARE VSA operations (LOAD/BIND/BUNDLE/PERMUTE/CALL),
+where a program is one hypervector and a function library is one vector callable by name -- had been kept
+deliberately ADJACENT to UnifiedMind ("a program is just another value; leave the interpreter standalone").
+That was the silo. This milestone makes it a FACULTY: the mind owns a `_machine()` built at the mind's own
+dim and seed (the same share-the-substrate move `_seq_mem` makes), so a procedure's accumulator is a vector
+in the mind's OWN space and the format is deterministic.
+
+New faculties (all thin delegations to the machine, nothing re-implemented):
+- `learn_procedure(name, program)` -- store a named executable ACC->ACC recipe in the library; composable
+  (a procedure may CALL procedures defined earlier).
+- `run_procedure(name_or_program, init_acc=None)` -- execute and return (accumulator, trace). `init_acc`
+  seeds the accumulator with a vector from the mind's own space -- the bridge that makes a procedure an
+  operation ON the mind's data, not just on the machine's data atoms.
+- `decode_step(name_or_program, i)` -- read instruction i back as (opcode, operand): the von Neumann
+  encoding means a stored procedure is DATA you can inspect, not only run.
+- `procedure_to_recipe(program)` -- express a procedure as a typed B7 StructureRecipe, bit-exactly.
+
+Distinct from `learn_plan` on purpose: a plan stores an ordered list of opaque step LABELS ("beat the eggs");
+a PROCEDURE stores a recipe of real operations that DOES something. The two are the read/exec halves of the
+same "ordered steps" idea on one substrate.
+
+MEASURED / as-above-so-below: the de-silo is proven LOAD-BEARING, not nominal -- a procedure run through the
+mind is BIT-FOR-BIT identical to the same program through a bare HoloMachine at the same dim & seed
+(np.array_equal on the accumulator), so the faculty truly delegates. Correctness holds (LOAD a; BIND b;
+BUNDLE c == bundle(bind(a,b),c) at cosine 1.0); CALL-composition computes the right result through the mind;
+decode_step reads instructions back exactly; and `realize(procedure_to_recipe(prog))` == `assemble(prog)` at
+cosine 1.0. KEPT NEGATIVE (inherited, documented in the VM): instruction decode is a noisy cleanup whose
+capacity scales with dim (~32 instructions at dim 1024, ~128 at 4096) before bundle crosstalk wins -- the
+honest HRR capacity wall, not hidden; for realistic recipe lengths it is exact. Real basis: von Neumann
+stored-program model expressed holographically (instructions and data in one vector space); HRR
+bind/bundle/cleanup as the execution engine.
+
+This is milestone 1 of 4. Next, on this foundation: richer holostuff opcodes (CLEANUP/ENCODE/FACTOR/DENOISE
+that call the mind's faculties), a goal-addressable procedure-memory faculty (recall WHICH recipe achieves a
+goal), and recipe generation/completion (predict the next op).
+
+Tests: +7 (bit-identical delegation; real-VSA-op correctness; accumulator seeded from a mind vector;
+CALL-composition through the mind; decode_step as data; bit-exact procedure->recipe bridge; unknown-procedure
+guard). 795 -> 802.
+
+## Richer opcodes: APPLY <faculty> -- a procedure invokes the engine's faculties as steps (milestone 2/4) (shipped)
+Milestone 1 wired the VM into the mind but its opcodes were still pure kernel algebra (LOAD/BIND/BUNDLE/
+PERMUTE). This milestone lets a procedure call the engine's higher faculties as steps, via ONE general,
+extensible opcode rather than a opcode-per-faculty sprawl:
+
+  APPLY <faculty>   means   ACC := faculty(ACC)
+
+The VM gains the opcode and a faculty-name operand codebook (`fac_atoms`, alongside the data and function
+codebooks); `run(..., handlers=...)` takes a host-supplied dict {faculty_name -> unary acc->acc map}. The
+bare VM has no handlers, so APPLY is a SAFE NO-OP there -- a program with APPLY still assembles, decodes, and
+runs everywhere. The mind supplies the handlers (`_procedure_handlers`), each delegating to a real faculty:
+- `cleanup` -> the dense associative cleanup (`hopfield.dense_cleanup`) against the procedure's value-atom
+  codebook: relax the accumulator toward the nearest known value.
+- `denoise` -> the mind's general manifold denoiser.
+
+MEASURED: APPLY cleanup is a real capability a plain list of kernel ops cannot match -- a procedure
+SELF-CORRECTS a noisy accumulator. Seeding the accumulator with a heavily corrupted value atom (cosine-to-
+truth ~0.07 at sigma 0.5, dim 1024) and running `[APPLY cleanup; HALT]` recovers it to ~0.79 (and to ~1.0 at
+the tour's larger dim). Backward-compat is exact (a procedure without APPLY is byte-for-byte identical to a
+bare HoloMachine -- the run() signature change is safe), the bare VM runs APPLY programs as a no-op,
+decode_step reads APPLY back as data, and a procedure containing APPLY is still a typed B7 structure
+reproduced bit-exactly.
+
+KEPT NEGATIVES / honest scope: `denoise` helps only when the accumulator carries low-rank/self-similar
+structure; on bare random value atoms there is no manifold, so `cleanup` is the operative denoiser there.
+And APPLY is deliberately limited to UNARY acc->acc maps -- the opcodes Moose floated that do NOT fit this
+shape are out of scope: FACTOR/RESONATE produce MULTIPLE outputs (no single accumulator to write back), and
+value-ENCODE needs a value in the mind's space rather than a faculty applied to the accumulator. APPLY is the
+extension point if a unary form of any of those is later wanted (register it in `_procedure_handlers` and
+`DEFAULT_FACULTIES`).
+
+As-above-so-below: the opcode lives in the VM (so programs stay self-contained and decodable), but the
+SEMANTICS come from the mind's faculties through the handler hook -- the same delegation the whole de-silo is
+built on. Real basis: dense associative memory / modern Hopfield cleanup (Ramsauer et al. 2020) as the
+recover-toward-the-codebook step; the von Neumann stored-program model extended with a host-call instruction.
+
+Tests: +4 (APPLY cleanup recovers a noisy accumulator; backward-compat bit-identical; APPLY decodes and the
+bare VM runs it as a no-op; APPLY procedure->recipe stays bit-exact). 802 -> 806.
+
+## Procedure memory: goal-addressable recall over the library (milestone 3/4) (shipped)
+With procedures stored as data in one library vector, the question is whether you can recall the RIGHT one by
+what it ACCOMPLISHES -- something a plain list of callables cannot do without manual bookkeeping. Two faculties:
+- `recall_procedure(input_vec, output_vec)` -- given ONE (input -> output) example, return (name, score) of
+  the stored procedure whose behaviour best reproduces it.
+- `recall_and_apply(input_vec, output_vec, new_input)` -- recall that procedure, then run it on NEW input:
+  learn an operation from one example, then reuse it (analogy/transfer, VSA-native).
+
+MEASURED (dim 1024): over a MIXED library (bind-b/c/d, permute, bundle-e), behavioural recall identified the
+right procedure from a single example 100% of the time, and recall-and-apply transferred the recalled
+transform to fresh input correctly 100% of the time. The elegant special case also holds: for a single-bind
+transform the operation can be recovered ALGEBRAICALLY in O(1) -- unbind the input from the output and clean
+the result against the transforms' keys -- 100% identification with NO candidate runs.
+
+HONEST COST / boundary: the general faculty is BEHAVIOURAL -- it runs each candidate on the input and matches
+the output, so it is O(library size) in executions. That is the honest price of recalling an ARBITRARY
+procedure by goal: the VSA encoding does not magically avoid running the candidates for general programs. The
+O(1) algebraic shortcut is real but transform-specific (bind-parameterised transforms only), so it is shown in
+the tests rather than wired as the default. A precomputed behavioural FINGERPRINT (run each procedure once on a
+fixed probe, then match goals against the stored fingerprints) would make per-query recall execution-free and
+even sublinear via the HoloForest -- a natural next step, noted but not built, and exact only for transforms a
+fixed probe characterises (linear ones).
+
+As-above-so-below: recall_and_apply composes the M1 run faculty (executes through the same VM, with the M2
+APPLY handlers available), so it is the engine's content-addressable-recall competence pointed at PROCEDURES,
+reusing the procedure machinery rather than a parallel store. Real basis: matched-filter / behavioural
+identification; HRR unbind+cleanup for the algebraic special case.
+
+Tests: +3 (recall the right procedure from one example over a mixed library; recall-and-apply transfers to new
+input; empty-library recall returns None). 806 -> 809.
+
+## Recipe completion: predict the next opcode from a partial recipe (milestone 4/4) (shipped)
+The last upgrade closes the loop from running and recalling procedures to GENERATING them: given a partial
+recipe, predict the likely next opcode. Two faculties:
+- `learn_recipe_grammar(recipes, order=2)` -- learn the opcode-sequence statistics of a set of valid recipes
+  (only the opcode stream, i.e. the control SHAPE), into a dedicated token-level predictive model kept
+  separate from the mind's prose predictor.
+- `complete_procedure(partial)` -- predict (opcode, confidence) for the next step of a partial recipe; an
+  empty partial predicts the typical FIRST opcode.
+
+Delegates to the existing PredictiveMemory (token-level n-gram with error-gated writes) rather than a new
+predictor -- opcodes are just its symbols. MEASURED on a grammar (LOAD, BIND, then 0-2 of
+{BUNDLE,APPLY,PERMUTE}, then HALT): it learned the HARD constraints -- after LOAD it predicts BIND at
+confidence 1.0, and after two middle ops it predicts HALT -- and 100% of next-opcode predictions on held-out
+partial recipes were grammar-VALID continuations.
+
+KEPT NEGATIVES: it is an n-gram over opcodes, so it predicts by the frequency of transitions it has SEEN --
+a recipe shape absent from training is not anticipated well; it predicts the single most-likely next opcode
+(the model's soft mode gives a blended estimate); and it learns the opcode SHAPE, not the operands (predicting
+the right argument is a larger-vocabulary problem left for later). The degenerate empty-context prediction
+returns the right first opcode but at confidence 0 (the zero context vector), which is correct if unsmooth.
+
+As-above-so-below: the grammar is a thin token-level wrapper over PredictiveMemory, so recipe generation
+reuses the same predictive-coding machinery the mind uses for sequences -- one predictor design, pointed at
+opcodes. Real basis: n-gram / predictive-coding next-symbol modelling.
+
+This completes the 4-milestone procedure arc: M1 de-siloed the VM into the mind, M2 let procedures call the
+mind's faculties (APPLY), M3 made the library goal-addressable (recall by example), M4 makes recipes
+predictable. Tests: +2 (grammar predicts valid next opcodes incl. the hard LOAD->BIND and the HALT cap;
+no-grammar returns None). 809 -> 811.
+
+## Fingerprint fast-path for procedure recall (milestone 5/4 -- the natural follow-on) (shipped)
+M3 left an honest cost: behavioural recall runs EVERY candidate through the VM (O(library) executions per
+query). This milestone removes that cost for the case it can, measured first. Two pieces:
+- `index_procedures()` -- run each procedure ONCE on a canonical probe and cache the output (a behavioural
+  FINGERPRINT). One-time O(library) cost, amortised across all later recalls.
+- `recall_procedure(..., method=...)` -- 'fingerprint' recovers the transform's kernel from the single
+  example and matches the IMPLIED fingerprint with ZERO program runs; 'behavioral' is the M3 scan; 'auto'
+  (default) tries the shortcut, trusts it only when its match clears `fp_floor`, and otherwise falls back.
+
+MEASURED (dim 1024): the shortcut is EXACT (confidence ~1.00) for the LINEAR / convolution class, and that
+class is larger than expected -- it is bind AND permute and their compositions. The reason is a clean
+identity: permutation is convolution by a shifted delta, so it commutes with binding exactly as a key does,
+giving bind(P, unbind(permute(X), X)) == permute(P). Across a mixed library (binds, permute, additive bundle,
+and a nonlinear cleanup procedure), 'auto' identified the right procedure 100% of the time -- linear ones via
+the zero-run shortcut, the rest via the fallback -- and ran ~30x faster than the behavioural scan on a
+bind/permute workload (8 ms vs 222 ms for 80 queries). Backward-compatible: with no index, 'auto' IS the
+behavioural scan (100% unchanged).
+
+KEPT NEGATIVES / measured boundary: the fingerprint is reliable only for the convolution class. An ADDITIVE
+transform (BUNDLE, i.e. x+c) lands borderline (~0.48) because the constant part partially aligns with the
+probe, and a genuinely NONLINEAR procedure (one with an APPLY cleanup/denoise step) scores near zero (~0.01).
+Both sit below the 0.5 gate, so 'auto' correctly routes them to the behavioural fallback -- the gate is what
+makes the speed-up SAFE rather than a source of silent wrong answers. The confidence separation is wide
+(1.00 for exact matches vs <=0.48 for everything else), so the gate is robust. One more measured caveat: the
+exactness assumes the QUERY INPUT is unitary (so the unbind that recovers the kernel is clean); for a non-
+unitary input the recovered kernel is noisier (~0.67 confidence in the tour) -- still well above the gate, so
+recall still succeeds, just with less margin.
+
+As-above-so-below: index_procedures runs through the SAME run_procedure faculty (M1) with the SAME APPLY
+handlers available (M2), and the fast-path is just the engine's unbind+cleanup competence applied to a
+precomputed library -- no parallel machinery. The fingerprints could be dropped into a HoloForest to make
+recall sublinear in library size as well (noted, not built; exact only for the linear class a fixed probe
+characterises). Real basis: convolution-algebra / transfer-function identification (the kernel of a
+shift-invariant linear map is recoverable from one input-output pair); HRR unbind+cleanup.
+
+Tests: +2 (fingerprint 'auto' matches behavioural across a mixed library and is backward-compatible without an
+index; the shortcut is exact for bind AND permute and gated below 0.5 for a nonlinear procedure). 811 -> 813.
+
+## Procedure synthesis: CONSTRUCT a procedure for a goal (milestone 6) (shipped)
+recall_procedure (M3) finds a procedure already in the library; this milestone builds the missing constructive
+counterpart -- `synthesize_procedure(input_vec, output_vec, max_depth=2)` SEARCHES for a short program that maps
+input -> output, even when none is stored. It runs a bounded breadth-first search over the VM's operations
+(BIND/BUNDLE/PERMUTE x the data atoms), returns the SHORTEST program (as (opcode, operand) pairs ending in
+HALT) whose execution reaches the target, and VERIFIES it by running it before returning.
+
+MEASURED (dim 1024): it constructs correct programs for single-op and composite goals -- bind, bind-then-bind,
+and the order-SENSITIVE permute-then-bundle (it picks the right order; binding two atoms it may pick either
+order, which is fine because binding commutes) -- each verified to map X -> target. Crucially the synthesized
+program GENERALISES: run on a fresh input it performs the same operation (cosine >0.99 to the transform's
+truth on the new input), so it captures the TRANSFORM, not the example pair -- the structured moves it searches
+are what make one example enough. An unreachable target returns None honestly; a depth-3 composite is found
+when max_depth=3 is allowed.
+
+KEPT NEGATIVES: the search branches by (ops x operands) per step, so it is EXPONENTIAL in depth -- practical
+only for short programs (depth 2-3); it constructs programs only over the KNOWN operations and operands (it
+cannot invent a new atom or a nonlinear step); and it may return an EQUIVALENT program rather than a unique
+'intended' one. This is the panel's search theme (Baker's landscape search, the flow solver) on the program
+space itself: a deterministic, verified pre-screen, with the honest exponential wall stated rather than hidden.
+
+As-above-so-below: synthesis applies the SAME kernel ops the VM executes and VERIFIES through the SAME
+run_procedure faculty (M1), so a synthesized program is immediately runnable, decodable (M1), recallable (M3),
+and reducible to a typed B7 structure -- it drops straight into everything already built. Real basis: bounded
+program search / enumerative program synthesis, verified by execution.
+
+Tests: +3 (synthesize single + composite + order-sensitive programs, all verified; a synthesized program
+generalises to a new input; an unreachable target returns None). 813 -> 816.
+
+## Control flow: IFMATCH (conditional) and ITERATE (the fixed-point loop) (milestone 7) (shipped)
+Until now the VM had only straight-line execution plus CALL (subroutines) and HALT -- no conditionals, no
+loops. So the one pattern that drives most of the engine -- input -> process -> feed the result back as input
+-> repeat until the desired output -- could not be written as a PROGRAM, even though the engine runs exactly
+that loop inside cleanup, the resonator, denoise, and the diffusion sampler. This milestone adds the two
+missing primitives, both reusing the existing machinery:
+
+- `IFMATCH x` -- execute the NEXT instruction only if cosine(ACC, x) >= branch_tol, else skip it (a one-
+  instruction conditional; pair it with CALL for an if-then). Implemented by giving run() an explicit program
+  counter so a branch can skip forward.
+- `ITERATE f` -- re-apply library function f to ACC until it CONVERGES (cosine to the previous ACC >=
+  converge_tol, a fixed point), OR a host `stop(acc)` predicate marks the desired OUTPUT reached, OR max_loop
+  is hit. The loop body is a named library function, so ITERATE reuses CALL's library-pull. Its trace entry is
+  the 4-tuple (op, f, iterations, reason) where reason is 'converged' / 'goal' / 'maxloop' -- the loop tells
+  you why it stopped and after how many passes (the "benchmark the result before exiting" visibility).
+
+MEASURED (dim 1024): ITERATE of a one-step cleanup body on a noisy accumulator IS the fixed-point loop --
+at low noise (sigma 0.3) it converges to the clean atom (cosine 0.11 -> 1.00) in ~2 iterations, reason
+'converged'; the goal predicate exits the instant the output crosses the target (reason 'goal'); and a non-
+converging body (a PERMUTE that rotates forever) correctly hits the cap (reason 'maxloop'). IFMATCH branches
+both ways: the guarded CALL runs on a match (ACC -> bind(a,b)) and is skipped on a mismatch (ACC stays a),
+with the trace showing exactly which path was taken. Backward-compatible: a program with no control flow is
+byte-for-byte identical to a bare VM; IFMATCH (data operand) is a typed B7 structure bit-exactly, while
+ITERATE (runtime library lookup, like CALL) is out of scope for the recipe bridge.
+
+KEPT NEGATIVES: ITERATE converges to a FIXED POINT, which is the clean atom only when the input is inside its
+basin of attraction -- at higher noise (sigma 0.5, 0.7) the loop still converges in ~2 iterations but to a
+partial recovery (cosine 0.81, 0.68), not the exact atom (the cleanup's basin shrinks with noise; an honest
+property of attractor dynamics, not a bug). IFMATCH is a forward-only skip of ONE instruction (no backward
+jumps), so it expresses if-then, not arbitrary goto; there is no general counted FOR loop (convergence/goal/cap
+cover the AI case, and a count-as-operand would be awkward in the atom codebook) -- noted as the honest scope.
+
+As-above-so-below: the loop body and the conditional run through the SAME run()/CALL/APPLY machinery, so an
+ITERATE can drive a procedure that itself uses APPLY cleanup/denoise (M2), CALLs sub-procedures (M1), or was
+synthesized (M6) -- control flow composes with everything already built. This is the engine's own fixed-point
+nature (Hopfield/resonator/denoise all iterate to attractors) finally expressible at the program level. Real
+basis: fixed-point iteration / attractor dynamics; the von Neumann stored-program model with conditional and
+loop control.
+
+Tests: +4 (ITERATE converges to the fixed point; goal and cap exits; IFMATCH branches both ways; control flow
+is backward-compatible and the recipe bridge accepts IFMATCH but rejects ITERATE). 816 -> 820.
+
+## matmul in the loop: exact_matmul as an APPLY faculty (backlog VM-1) (shipped)
+The control-flow milestone gave the VM a fixed-point loop; this gives the loop a real LINEAR-ALGEBRA step.
+`set_matmul(W)` configures a matrix and `APPLY matmul` then does ACC := W @ ACC, carried by the engine's
+EXACT RNS matmul (residue-number-system phasor multiply-accumulate -- no crosstalk). With a dim x dim W the
+accumulator keeps its shape, so `ITERATE [APPLY matmul]` is a recurrent linear map iterated to a fixed point
+-- the literal input -> process-by-a-matrix -> feed-back pattern, the shape of so much of AI.
+
+MEASURED (the marquee demo): a column-stochastic transition matrix iterated by `ITERATE [APPLY matmul]` IS
+power iteration -- it converges to the matrix's STATIONARY DISTRIBUTION (the dominant eigenvector, lambda=1).
+On a 64-state chain it reached the stationary distribution at cosine 0.9993 in 3 iterations (reason
+'converged'), a real iterative algorithm expressed entirely as a VM program. Disabling it (`set_matmul(None)`)
+makes APPLY matmul a safe no-op, so the opcode is harmless until configured; the bare VM is unaffected.
+
+KEPT NEGATIVES / scope: the matmul is EXACT for integer / fixed-point operands within range; a float matrix
+and vector are fixed-point QUANTISED first, so the only error is that rounding (set by the scale), NOT the
+crosstalk wall -- on large-magnitude operands (standard-normal values ~+-3) the default-scale rounding is
+visible (~0.12 abs error on a raw matmul), while on well-scaled data like probability distributions it is
+negligible (hence the 0.9993 convergence). One configured matrix at a time, and this step treats ACC as a raw
+vector -- a deliberate, honest departure from the VSA algebra to do ordinary linear algebra inside the loop.
+
+As-above-so-below: the matmul handler is just another entry in the same APPLY registry as cleanup/denoise
+(M2), so it composes with everything -- a loop body can matmul then clean, a conditional can gate a matmul, a
+synthesized program could include one. The RNS matmul Moose added becomes the process step in the AI loop the
+control-flow milestone made expressible. Real basis: power iteration / Perron-Frobenius (stochastic matrix ->
+stationary distribution); Residue Number System exact integer matmul.
+
+Tests: +2 (ITERATE [APPLY matmul] converges to the stationary distribution; disabled matmul is a no-op).
+820 -> 822.
+
+## Counted loop: REPEAT n runs the next CALL n times (backlog VM-2) (shipped)
+ITERATE is a convergence/goal WHILE loop; this adds the counted FOR loop the VM was missing. `REPEAT n` runs
+the FOLLOWING instruction n times -- expected to be a CALL, so the body is a named library function (any block
+of work). The count is a small-integer operand drawn from a dedicated codebook (cnt:1 .. cnt:COUNT_MAX, default
+8), mirroring how IFMATCH gates the next instruction; REPEAT consumes the CALL that follows it.
+
+MEASURED: REPEAT n; CALL shiftone (a one-PERMUTE body) yields permute(X, n) exactly for n = 1, 3, 5 -- an
+exact, countable proof the loop ran the right number of times -- with the trace showing [REPEAT, CALL]. It
+decodes back as (REPEAT, count) data and runs on the bare VM. KEPT NEGATIVES / scope: the count is bounded to
+the count-atom set (1..8 by default, raise COUNT_MAX to extend); REPEAT repeats exactly ONE following
+instruction, which must be a CALL (wrap any multi-op body in a function) -- if the next instruction is not a
+CALL, REPEAT is a safe no-op and the next instruction runs once. Like the other control flow, REPEAT is runtime
+(it consumes a runtime CALL), so the structural recipe bridge declines it alongside CALL/ITERATE.
+
+As-above-so-below: REPEAT reuses CALL's library-pull and threads the same handlers/loop knobs through the
+recursion, so a REPEATed body can APPLY faculties, ITERATE, or CALL further -- it composes with the rest of the
+control flow. The VM now has both loop kinds: ITERATE (loop until a fixed point / goal) and REPEAT (loop a
+fixed number of times). Real basis: the counted-loop / bounded-iteration control primitive.
+
+Tests: +2 (REPEAT runs the next CALL n times, exact via permute; REPEAT decodes and runs on the bare VM).
+822 -> 824.
+
+## Control flow composes: nesting + a worked program (backlog VM-3) (shipped)
+Control flow is only real if it nests, so this validates that and ships a worked program as the proof. MEASURED
+compositions all reach the right result: a counted loop of convergence loops (REPEAT 2; CALL refine, where
+refine ITERATEs -- REPEAT>CALL>ITERATE>CALL>APPLY) denoises to the clean atom; a convergence loop whose body
+CALLs (ITERATE double_clean -- ITERATE>CALL) converges; and runs are bit-identical run-to-run (determinism
+holds through the nested control flow). The depth guard caps recursion; ITERATE's own iterations do not consume
+depth (they reuse one level), so loops nest freely within the guard.
+
+The WORKED PROGRAM is a complete little routine in one procedure: `ITERATE clean_step; IFMATCH c; CALL tag;
+HALT` -- denoise the input to a clean atom, branch on the cleaned result, and tag it only if it is 'c'. On an
+input that cleans to c it runs [ITERATE, IFMATCH, CALL] and the accumulator becomes bind(c, tag); on an input
+that cleans to d it runs [ITERATE, IFMATCH] and skips the tag. Loop + conditional + call working together on
+the one substrate -- the proof that the VM is now a real little language. (A learning from the build, kept: a
+conditional must come AFTER the denoise, not before -- raw noise at high dimension has cosine ~0.15 to the true
+atom, below the IFMATCH gate, so the natural and correct order is process-then-branch.)
+
+As-above-so-below: the worked program uses ITERATE (M7), IFMATCH (M7), CALL (M1) and APPLY cleanup (M2) in one
+assembled vector, run through the one VM -- every control and faculty primitive composing in a single program.
+Real basis: structured-program composition; the denoise-then-classify routine is the engine's own recall
+pipeline expressed at the program level.
+
+Tests: +2 (nested control flow composes and is deterministic; the worked denoise->classify->tag program runs
+both branches correctly). 824 -> 826.
+
+## Automatic data-analysis pipeline as a VSA program (PIPE-1, shipped)
+
+The reason the VM grew control flow: a real, useful program that loops a process until it converges and
+branches on the result. Handed a 1-D signal, `run_analysis_pipeline` runs ONE HoloMachine program -- not
+Python control flow --
+
+    APPLY analyze ; ITERATE _denoise_step ; APPLY decompose ; IFMATCH structured ; CALL _train_validate ; APPLY save ; HALT
+
+-- where each APPLY delegates to a real faculty and the looping/branching is the recent VM (ITERATE/IFMATCH/
+CALL). The accumulator carries the signal through the denoise loop; then decompose hands the program back a
+`structured` or `noise` FLAG atom, and the IFMATCH branches on it -- the data decides the path.
+
+Measured on a structured signal (1 + 2t + 3t^2 + noise, 256 points): analyze reports a line topology, the
+ITERATE denoise loop settles the signal, decompose finds the 2-term quadratic law at explained variance
+0.998, the IFMATCH fires, the CALL'd train+validate confirms the law extrapolates to the unseen last 20%
+(held-out error 0.10 of the signal's std), and save stores the 256-point signal as a 157-byte generative law
+(decompose's compression_ratio 6.5x). On PURE NOISE the same program denoises, decompose finds nothing
+(explained variance 0.0, zero terms), the IFMATCH SKIPS the CALL -- train and validate never run -- and save
+reports raw_only. Both branches, one program, driven only by what the data turns out to be (executed opcodes
+APPLY/ITERATE/APPLY/IFMATCH/CALL/APPLY with structure present vs APPLY/ITERATE/APPLY/IFMATCH/APPLY without).
+
+The denoise loop body needed its own fix. A denoiser is a map of a manifold and a lone signal has none --
+denoise(auto) on a bare vector correctly refuses ("no free lunch"). So the prior is built FROM the signal:
+its sliding windows form a trajectory (Hankel) matrix that is LOW-RANK for any smooth/structured signal
+(classic SSA/Cadzow), so projecting those windows onto their own dominant subspace removes the noise.
+`_denoise_signal` delegates that projection to denoise(method='adaptive') and reconstructs by anti-diagonal
+averaging; it cuts noise ~3.4x on a structured signal and is ~idempotent (cosine 0.9999 under a second pass),
+so the ITERATE settles in a couple of steps instead of spinning to max_loop.
+
+Kept negatives (inherited, surfaced not hidden): decompose_signal fits line-domain elementary laws
+(polynomial, exponential) and harmonic laws well and reports NO structure on noise -- a clean branch
+discriminator -- but it is NOT a universal fitter: a bare sine on a LINE domain is detected as "line" rather
+than "ring" and missed (zero terms), so a purely periodic signal with no trend can slip through as if
+structureless. This is the SINGLE-LEVEL pipeline: it finds the dominant law and a residual but does not yet
+recurse into the residual; peeling structure layer by layer ("every level") is the natural follow-on (the B8
+peel module is exactly that engine). The accumulator's role changes mid-program (signal -> flag atom) -- a
+deliberate state transition, not a type error, since each cosine compares same-length vectors.
+
+As above, so below: the pipeline's decompose records the same n_terms a direct decompose_signal call returns
+on the final denoised signal, and the program runs through the same run_procedure/HoloMachine path as every
+other procedure -- a custom hand-written program of (opcode, operand) tuples executes identically. The faculty
+orchestrates, it does not fork. Real basis: Milanfar's denoiser-as-manifold-map (the adaptive projection),
+Broomhead-King / Cadzow SSA (the low-rank trajectory prior), and the engine's own decompose_signal
+(topology -> matched basis -> MDL-gated law).
+
+Tests: +5 (826 -> 831), in test_procedure_faculty.py.
+
+## Recursive peel: accessing structure on every level (PIPE-1 follow-on, shipped)
+
+PIPE-1's single decompose finds the dominant law and a residual but stops -- "every level" was the part it
+left open. recursive=True turns the single `APPLY decompose` into `ITERATE _peel_step`: decompose the
+dominant law, peel its residual, decompose THAT, layer by layer, until nothing structured remains. The loop
+is the recent VM's ITERATE; it converges on the engine's OWN MDL verdict -- decompose returns n_terms==0 when
+its gate admits no term (the same gate that returns 0 on pure noise) -- so peeling stops exactly when the
+residual is noise. An `APPLY assess` then records the ladder and flags the train/save branch.
+
+The stop criterion matters and was measured. The first try gated each level on "did it explain >= 30% of the
+residual?" -- and that FAILED on the very case the peel exists for: a line trend UNDER a comparable sine. The
+trend explains only ~0.3 of the variance noiseless, and less with noise, so the floor rejected the real first
+level and peeling never started (0 levels on a noisy trend+sine). The fix is to trust decompose's MDL gate,
+not the explained fraction: a level is REAL if the gate admitted a term (n_terms >= 1), however modest its
+share. A level can be real and small.
+
+Measured: a noisy trend+sine (0.5 + 2t + sin(2*pi*5t) + 0.2 noise) peels into 3 levels -- line(trend) ->
+mobius(periodic) -> line(cleanup) -- cumulative explained 0.997, residual down to 0.04, where a SINGLE
+decompose explains only ~0.29 (it fits the trend but is thrown by the sine, or vice versa -- not both at
+once). poly+exp is captured in ONE level (its additive dictionary fits both at once) and peeling correctly
+stops at one -- it does not invent layers. Pure noise yields zero levels (raw_only, training skipped); a hard
+mix (a trend + two sines of different frequency) ALSO yields zero -- detect_topology sees "line" and the MDL
+fit admits no term against the strong oscillations, an honest inherited limit of decompose_signal's line/ring
+detection.
+
+Kept negatives: on a NOISELESS signal the peel runs to completion and can use a couple of extra "cleanup"
+levels -- the harmonic fits leave small Gibbs residue that is itself fit-able -- so 4 levels on a noiseless
+trend+sine where ~2 are conceptual; a 1%-of-input negligible-residual guard plus the MDL gate bound it, and
+on any NOISY (i.e. real) signal it halts at the noise floor (3 levels, not endless). trend+two-sines finds
+nothing because the FIRST topology detection fails on the mixed signal -- peeling can only go as deep as
+decompose_signal can see at each step.
+
+As above, so below: each peel level is a real decompose_signal call (the recorded topology and n_terms of
+level 1 match a direct decompose_signal on the denoised signal), the ladder of laws is saved through the same
+path as a single law (save was unified to handle one law or a ladder), and the whole thing is the same VSA
+program with one APPLY swapped for an ITERATE. Real basis: matching-pursuit / iterative residual
+decomposition (peel the dominant component, recurse on the residual) under the engine's MDL-gated
+decompose_signal.
+
+Tests: +4 (831 -> 835), in test_procedure_faculty.py.
+
+## Deep synthesis, meet-in-the-middle, and the bind/permute collapse (SYN-1: a measured negative + its flip)
+
+SYN-1 asked: extend program synthesis past the depth-2/3 the forward BFS reaches, via a meet-in-the-middle
+bidirectional search (forward from the input, backward from the output with inverse ops, meet in the middle --
+halving the search exponent). Before building it, the precondition was measured -- and the measurement killed
+the plan, in the engine's usual humbling way.
+
+The cleanly-invertible ops are BIND (inverse: unbind) and PERMUTE (inverse: shift back). But that algebra
+COLLAPSES. Measured at cosine 1.0000 on every case: two binds are one bind by the product, bind(bind(x,a),b)
+== bind(x, a*b); a permute slides through a bind onto x, permute(bind(x,a)) == bind(permute(x), a); so ANY
+interleaving of k binds and m permutes applied to x equals permute(x, m) bound by the product of all the
+operands -- a depth-(k+m) program is a depth-<=2 canonical one. There is nothing DEEP to find in the
+invertible algebra, so a bidirectional search through it buys nothing the M5 fingerprint (one example recovers
+the kernel for exactly this linear/convolution class) does not already give.
+
+And the ops where depth genuinely matters -- BUNDLE (its superposition normalizes, which breaks
+bind-commutativity, so bind/bundle programs do NOT collapse) and the nonlinear APPLY/ITERATE/IFMATCH/CALL --
+are precisely the ops that do not invert cleanly (bundle's inverse is "subtract and de-normalize," lossy with
+an unknown scale; APPLY/cleanup are many-to-one). So the meet-in-the-middle backward search has no clean
+target on the only programs whose depth is real. The forward-only BFS (M6) at depth 2-3 is the right tool;
+its limit is the branching factor, not an algorithm a bidirectional trick could fix. Meet-in-the-middle is
+NOT built -- it would be dead complexity. That is the negative, kept.
+
+The flip side is constructive. The collapse is exactly a program OPTIMIZER: `canonicalize_procedure` reduces
+any bind/permute program to its minimal form -- the k binds become one bind by the product, the m permutes
+stay m unit shifts (this VM's PERMUTE is a fixed shift of 1) -- and verifies the reduction by execution
+(cosine 1.0). Measured: a 5-op program (bind;permute;bind;permute;bind) reduces to 3 ops (2 permutes + 1
+product bind); five binds reduce to one. It is also an EQUIVALENCE oracle for the invertible algebra: two
+differently-written programs that compute the same function reduce to the SAME canonical form (bind a;
+permute; bind b and permute; bind b; bind a both canonicalize to permute; bind(a*b)). BUNDLE and the
+nonlinear ops are honest BARRIERS -- a program containing one is refused (fully_collapsible=False), not given
+a wrong partial answer.
+
+As above, so below: canonicalize verifies through the same run_procedure path as everything else (it executes
+the original and the canonical program and compares), and stores the product operand as a real codebook atom
+so the canonical program is runnable. Real basis: the convolution algebra (binding is circular convolution --
+commutative and associative; a cyclic shift is convolution with a shifted unit impulse) -- the same
+FFT-on-a-torus operator the whole engine rests on, here used to prove its own programs flatten.
+
+Tests: +4 (835 -> 839), in test_procedure_faculty.py.
+
+## Sublinear procedure recall: the forest index is premature; vectorize the scan instead (REC-1)
+
+REC-1 asked: index the procedure fingerprints in a HoloForest so recall is sub-linear instead of an O(N)
+scan. Measured first, in the engine's usual way -- and the measurement said no, then said what to do instead.
+
+A HoloForest over N fingerprints was built and timed against the linear scan, with realistic queries (the M5
+implied kernel matches its fingerprint at cosine ~0.95-1.0, so the nearest neighbour is well-separated). Two
+findings: (1) the forest is SLOWER than a linear scan for every realistic library size -- 3-8x slower at
+N=50-1000, crossing over only around N~4000 procedures -- and that regime is UNREACHABLE, since the single
+`define` library vector holds at most a few hundred functions before bundle crosstalk corrupts decode, so a
+4000-procedure library cannot exist in this architecture; the sub-linear index is premature twice over. (2)
+Accuracy is fine at realistic noise (forest top-1 == linear top-1 == 1.0 when the query is close to its
+target), so the rejection is about speed, not correctness.
+
+The measurement pointed at the real fix. The existing fingerprint recall was an O(N) scan implemented as a
+PYTHON LOOP -- one cosine call per candidate. The bottleneck was the loop, not the algorithm. Replacing it
+with a VECTORIZED scan -- cache the fingerprints as one unit-normalized matrix at index time, then compute
+every cosine in a single matrix-vector product (mat @ qhat) and argmax -- is 6-26x faster than the loop AND
+3-7x faster than the forest, at every realistic N. Recall stays O(N) but runs at BLAS speed; the named-subset
+path keeps the dict loop (rare). The right answer to "an O(N) scan is slow" was to vectorize it, not to reach
+for a sub-linear index that does not pay until a scale the system cannot reach.
+
+As above, so below: the vectorized path returns the SAME identity and the SAME cosine the per-candidate loop
+would (rows are unit-normalized so mat @ qhat is exactly cosine), verified against the loop on a real library.
+Real basis: a linear nearest-neighbour scan as a single GEMV -- the standard "the constant factor, not the
+big-O, was the problem" lesson, measured rather than assumed.
+
+Tests: +1 (839 -> 840), in test_procedure_faculty.py.
+
+## Operand prediction in recipe completion (GEN-1, shipped)
+
+complete_procedure predicts the next OPCODE of a partial recipe from a learned grammar (M4); GEN-1 adds the
+OPERAND -- the full next instruction. learn_recipe_grammar now trains a second PredictiveMemory over the
+JOINT (opcode, operand) token stream ("OPCODE|operand"), and complete_instruction predicts the next joint
+token and splits it back into (opcode, operand, confidence). The opcode grammar is untouched, so
+complete_procedure is unchanged.
+
+Measured, with the honest boundary front and centre. When operand USAGE is PATTERNED -- two templates,
+a->b->c and d->e->f, the operand determined by context -- operand prediction generalizes to held-out recipes
+at accuracy 1.00 (it learns the context->operand map, returning ("BIND","b") after "BIND a" and ("BIND","e")
+after "BIND d"). When operands are ARBITRARY per recipe, the operand is unknowable: held-out operand-
+prediction accuracy falls to chance (0.23, vs 1/6 = 0.17 for six operands) -- correctly, a random operand
+cannot be anticipated. The opcode SHAPE, meanwhile, is predicted operand-independently in BOTH cases (the
+opcode grammar ignores operands), so complete_procedure stays the robust call and the operand is a bonus only
+where it is patterned.
+
+Kept negative (and a sharp one): the CONFIDENCE is not a reliable abstention signal for operands. An n-gram
+context seen only ONCE returns confidence 1.00 -- a single random observation looks as certain as a
+thousand-fold pattern -- so a high score does not mean the operand is really predictable. The honest
+discriminator is held-out GENERALIZATION, not the confidence the model reports; that is why GEN-1 is
+documented by an accuracy measurement, not a confidence threshold.
+
+As above, so below: complete_instruction delegates to the same PredictiveMemory class the opcode grammar uses
+(a parallel model over joint tokens, seeded distinctly so the two never mix), and with no grammar it returns
+(None, None, 0.0) -- backward-safe. Real basis: an n-gram / Markov sequence model over instruction tokens
+(the recipe grammar), here over the joint opcode-operand alphabet rather than opcodes alone.
+
+Tests: +3 (840 -> 843), in test_procedure_faculty.py.
+
+## Above/below sweep: the cleanup-matvec pattern, and a denoiser promoted out of the pipeline (shipped)
+
+An "as above, so below" sweep -- looking for a technique or primitive that is load-bearing in one place and
+applies elsewhere. Two findings, both acted on.
+
+(1) The VECTORIZED-RECALL pattern. The core Vocabulary.cleanup already snaps a query to the nearest atom with
+ONE matrix-vector product against a cached stack of the stored vectors, not a Python loop of per-name cosines
+("a constant-factor win, not a big-O one" -- the argmax is identical because stored atoms are unit length, so
+the dot IS the cosine up to the query's norm). The sweep found four more recall paths still written as the
+loop, and gave each the same cached-matrix treatment, every one bit-for-bit identical to the loop it replaced:
+
+  * ScalarEncoder.decode -- was re-encoding a 200-point grid AND cosine-scanning it on EVERY call; now the grid
+    encodings are built once and cached as a unit-normalized matrix, decode is one matvec. Measured ~224x.
+  * archive recall + recall_by_tags -- were looping over stored fingerprints / tag-addresses; now cached
+    matrices (invalidated on add()), one matvec each, untagged images masked to score -1 as before. ~4-16x.
+  * Lexicon.nearest -- was a per-word cosine over the whole vocabulary; now a matvec against a cached
+    (row-normalized) meaning matrix + a top-k, same ranking. Measured ~20-40x on a 500-10000-word vocabulary.
+    The cache remembers which meaning dict it was built from, so a re-bootstrap rebuilds it automatically.
+  * market nearest_motif -- the per-window cosine loop became one matvec (no cache: past windows are passed in).
+
+  Deliberately LEFT (the principle is "earn it by measurement," not vectorize everything): the region-router's
+  scan is over num_partitions (small N, no win); a benchmark accuracy helper is not a faculty path; the
+  resonator and reasoning factor-recall already use per-factor matrices. Recorded so the non-action is a choice.
+
+(2) A PRIMITIVE PROMOTED below. The data-analysis pipeline owned a private _denoise_signal: the only way to
+clean a LONE 1-D signal (which the denoise faculty otherwise can't do -- a single vector has no manifold, and
+nlm needs a patch SET, not a raw signal). It builds the prior from the signal ITSELF -- a smooth signal's
+sliding-window Hankel matrix is low-rank (Broomhead-King / Cadzow SSA), so the windows project onto their own
+subspace and the signal rebuilds by anti-diagonal averaging. That is a general capability, not a pipeline
+detail, so it moved DOWN into holographic_denoise as trajectory_denoise and is exposed as
+denoise(method='trajectory') -- the second prior-free denoiser beside nlm. The pipeline's _denoise_signal is
+now a one-line delegate to it (bit-for-bit identical, max abs diff 0.0), so the pipeline and any other caller
+share one implementation. As above, so below: the faculty method delegates to the module function, and the
+pipeline (above) delegates to the faculty method.
+
+Real basis: matrix-vector recall is just the inner-product nearest-neighbour every cleanup already is; SSA /
+Cadzow trajectory denoising is the lone-signal classic. Honest negative carried in the new method's docstring:
+trajectory denoise has nothing to recover from a STRUCTURELESS signal (its trajectory is full-rank) -- the
+prior is the signal's own structure, so a signal without structure can only be shrunk, not restored.
+
+Tests: +5 (843 -> 848): vectorized-recall == loop pinned for scalar decode, archive recall, and lexicon
+nearest; the trajectory method shown to clean a lone signal and to be the exact denoiser the pipeline delegates
+to. The four faculties' own existing suites still pass unchanged (the behavior is identical, only faster).
+
+### Above/below sweep, second pass (the honest non-finding)
+
+A follow-up pass looked for MORE of the same -- duplicated primitives, faculties re-implementing kernel
+machinery, hand-set thresholds that should be data-derived. The honest result is mostly a CONFIRMATION that
+the engine is already well-factored, which is worth recording so the absence of changes is a measured choice,
+not a missed opportunity:
+
+  * `bind` is centralized -- zero faculties re-implement the FFT circular-convolution by hand; everyone
+    delegates to the one kernel operator (the discipline the trajectory-denoise promotion just reinforced,
+    already holding for the core algebra).
+  * The procedure-matched nulls (`_recognition_null`, `_scan_cue_null`, `_brain_null`) are DELIBERATELY
+    separate -- each must match its own recall procedure, so a shared generic null would be anti-conservative.
+    Consolidating them would VIOLATE the project's own "procedure-matched nulls" rule; leaving them apart is
+    correct.
+  * `box_resize` is defined once and shared by the archive and the splat-archive; `learn_dynamics` works on a
+    given state SEQUENCE, not a delay-embedded 1-D signal, so it shares no Hankel construction with the new
+    trajectory denoiser -- no duplication to fold.
+  * The handful of inline cosines that aren't the shared helper are mostly DIFFERENT operations -- a COMPLEX
+    inner product (mobius) and a mean-centred correlation (a couple of measurement spots) -- which the plain
+    real `cosine` helper would silently get wrong, so they correctly stay bespoke.
+
+The one genuine residue: the Flask app (`app.py`) carried a private `box(img, n)` that duplicated the colour
+branch of the shared `box_resize` (and even hard-coded 3 channels, so it would crash on a grayscale image the
+shared function handles). It now imports and calls `box_resize` -- one duplicate removed, bit-identical on the
+3-channel images it is used on. Cosmetic and app-layer (no test-count change), but a real DRY fix.
+
+Net: the high-value above/below seam was the vectorized-recall pattern and the lone-signal denoiser (first
+pass); the second pass confirms the rest of the codebase already honours the discipline, with one app-layer
+duplicate folded away. Writing the non-finding down is the same honesty the rest of the project runs on.

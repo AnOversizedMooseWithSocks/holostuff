@@ -81,3 +81,41 @@ def test_verify_confirms_exact_recall_on_the_hardest_images():
     a.quantize(4)
     c2, e2 = a.verify()
     assert e2 == c2
+
+
+# ---- vectorized recall (the above/below sweep: the cleanup matvec pattern applied here) --------------
+
+def test_archive_recall_is_vectorized_and_matches_loop():
+    """recall and recall_by_tags scan stored images with ONE matrix-vector product (cached fingerprint /
+    address matrices) instead of a per-image Python loop -- the same move the core Vocabulary.cleanup uses.
+    The result is the SAME index the loop returned, and the matrices rebuild after a new image is added."""
+    from holographic_machine import cosine
+    imgs, arc = build()
+    for k, im in enumerate(imgs):                       # image recall == the old fingerprint loop
+        i_vec, _ = arc.recall(im)
+        fq = arc._fingerprint(np.asarray(im, float))
+        assert i_vec == int(np.argmax([fq @ fp for fp in arc.fingerprints])) == k
+    q = arc._address(["red"], None)                     # tag recall == the old cosine loop
+    i_vec, _, _ = arc.recall_by_tags(["red"])
+    assert i_vec == int(np.argmax([cosine(q, a) if a is not None else -1.0 for a in arc.addresses]))
+    n0 = arc.n                                          # cache invalidation: a newly added image is recallable
+    new = np.random.default_rng(7).random(imgs[0].shape)
+    arc.add(new, tags=["fresh"])
+    assert arc.recall(new)[0] == n0
+
+
+def test_scalar_decode_cached_matrix_matches_loop():
+    """ScalarEncoder.decode caches the grid encodings as a unit-normalized matrix and reads back a number
+    with one matvec (~200x faster than re-encoding the grid each call), giving the SAME value a per-grid
+    cosine scan would. Repeated decodes reuse the cache; a different `steps` builds its own."""
+    from holographic_encoders import ScalarEncoder
+    from holographic_machine import cosine
+    e = ScalarEncoder(dim=1024, lo=0.0, hi=1.0, seed=0)
+    for x in (0.0, 0.23, 0.5, 0.91, 1.0):
+        v = e.encode(x)
+        grid = np.linspace(e.lo, e.hi, 200)
+        loop = float(grid[int(np.argmax([cosine(v, e.encode(g)) for g in grid]))])
+        assert e.decode(v, steps=200) == loop           # bit-identical argmax
+    assert 200 in e._grid_cache                          # cached
+    e.decode(v, steps=64)
+    assert 64 in e._grid_cache and 200 in e._grid_cache  # per-steps caches coexist

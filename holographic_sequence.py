@@ -79,10 +79,10 @@ class SequenceMemory:
         return int(np.argmax(scores))
 
     def precedes(self, seq_or_name, a, b, length=None):
-        """Does a come before b? Compare their decoded positions -- measured
-        100% on random sequences up to length 8. This is the order relation the
-        bag stores cannot answer: it is the difference between a recipe and a
-        pile of steps."""
+        """Does a come before b? Compare their decoded positions. Measured at dim 2048: exact to
+        ~40 steps, ~99-100% to ~80, ~93% at 120 -- a graceful decline, not a hard cliff (the old
+        '~8' note was far too conservative). This is the order relation the bag stores cannot
+        answer: it is the difference between a recipe and a pile of steps."""
         v, elems = self._vec(seq_or_name)
         L = length or len(elems)
         # decode both positions from the same vector and compare

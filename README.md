@@ -224,6 +224,292 @@ peak — a relative retention that transfers across data scales (trading an abso
 that needs no per-dataset retuning), measured to match the hand-set floor's accuracy-vs-cost (82% at 6.7 passes
 vs the schedule's 81% at 11).
 
+**Then the honesty arc closed with `scan`.** Siemion's seat had asked for the move a real search lives by:
+scan an astronomical channel count, decide each channel as fast as its own evidence allows, and still control
+the trials factor across all of them. `scan(channels)` is that, and it is pure assembly of parts already
+shipped — Wald's SPRT decides each channel's stream (B3), then Benjamini-Hochberg/Yekutieli FDR runs across
+the channels' p-values; a channel is a confirmed detection only when the SPRT says MATCH *and* its p-value
+survives FDR. The load-bearing detail was a calibration bug caught before shipping: the channel p-value needs a
+noise floor, and the obvious one (the recognition null) is wrong twice over — it scores prototype rows, not the
+max label score `recognize` returns, and `recognize` first runs `perceive`, which is not the identity even for a
+raw vector (it lifts noise's max label score from ~0.086 to ~0.117). Either wrong floor made ~70 of 80
+pure-noise channels look significant; a procedure-matched floor (random vectors through `recognize` itself, the
+exact channel path) makes them uniform again. Measured on a weak target among eighty noise channels: all twelve
+signal channels found, zero noise channels detected; naive per-channel thresholding would false-alarm on ~11 of
+the eighty, FDR holds it to 0; and the SPRT spends 1.0 samples on a clear channel but ~1.8 on a faint one —
+deciding, per channel, as fast as the evidence allows.
+
+**Then the resonator got a calibrated voice.** The SBC resonator could already say `verified` — True when the
+recovered factors rebuild the product exactly — but that certificate is uselessly brittle on an approximate
+input: corrupt one block of a noisy bind and `verified` goes False even though the resonator found exactly the
+right factors. `resonator_confidence` (via `factor_composite(..., confidence=True)`) adds the graded answer, a
+p-value on how much better the factors rebuild the input than the resonator manages on pure noise. The honest
+part is the null: the resonator optimises reconstruction, so on structureless input it still manufactures ~0.27
+block agreement, far above the ~1/L a random-picks null assumes — calibrate to random picks and pure noise reads
+as a near-certain detection (p~0.02). The procedure-matched null (the agreement the same resonator reaches on
+random SBCs) fixes it, exactly as it fixed scan's floor. Measured: corrupting up to five of sixteen blocks, the
+resonator still recovers the true factors and the calibrated p holds at 0.010 (trust) the whole way, while
+`verified` is True only at zero corruption; on eighty pure-noise products the median p is 0.84 (it abstains),
+with a conservative false-alarm rate because block agreement is discrete.
+
+**Then `assemble` got a real energy and a comparator.** The fragment assembler already found the global-optimal
+arrangement by the same min-cost flow the maze solver runs, but on one hardcoded energy — Hamming mismatch, a
+stand-in. `assemble(..., energy=callable)` makes that pluggable (defaulting to the stand-in, so nothing existing
+changes), and the point is the Rosetta move: not every substitution costs the same. With a toy substitution
+matrix where cross-group swaps are dear, the target "EAAE" assembles to "BABE" under Hamming but to "EEEE" under
+substitution — and each is the unique global optimum under its own energy, both matching the Viterbi DP. Alongside
+it, `compare_structures` superposes two assembled structures and reads their overlap both exactly (the shared
+(position, fragment) motifs) and holographically (the consolidation SVD of the superposed role-bound vectors,
+where shared placements collapse the rank); on clean structures the two reads agree — the holographic one
+validated against the exact count, and the form you use when a fold is only available as a hypervector. A tie in
+the first test instance (two assemblies at equal Hamming cost) passed alone but failed under suite ordering — a
+preview of the determinism work — and the fix was to choose an instance with unique optima rather than depend on
+how a tie breaks.
+
+**Then three faculties turned out to be one engine.** Macklin's observation: the resonator's alternating
+cleanup, the PnP denoise loop, and a position-based-dynamics constraint sweep are all "project onto each
+constraint in turn until they jointly hold." `project_onto_constraints` is that engine, and the unification is
+made real rather than nominal — `pnp_restore` now literally calls it, bit-for-bit unchanged. It shows up as
+three instances: POCS (alternating projection onto two subspaces converges to their intersection in 29 sweeps),
+a resonator (factor-cleanup projections plus restarts recover a bound product — a single restart falls into a
+spurious fixed point, an honest reminder that the restarts are load-bearing), and PnP. Shipped alongside it is
+the determinism audit the whole Macklin thread points at: every calibrated and null path added across this
+program — recall_calibrated, decide_confidence, the auto coherence floor, scan, resonator confidence,
+compare_structures — is run twice on a freshly rebuilt setup (null recomputed, not cached) with numpy's global
+RNG scrambled in between, and all return bit-identical. The paths draw only from their own seeded RNG; the
+determinism is audited, not assumed.
+
+**Then the inverse problem became a mind operation.** The PnP/RED loop and the noise-adaptive denoiser were
+already callable, but restoring a degraded measurement meant hand-building the forward and adjoint operators
+every time. `restore(y, mask=..., samples=...)` closes that: pass a 0/1 mask and the operators are filled in
+(a diagonal mask is its own transpose), the prior is the mind's own adaptive denoiser — and it delegates to
+`denoise(method='pnp')`, so it is one mind call on the existing loop, not a reimplementation. Measured end to
+end on an erased archive plate: the mind's splat archive holds a low-rank gallery, one plate has a 25-pixel
+block erased plus noise, and a single denoise reaches 19.3 dB while `restore` (the loop) reaches 38.5 dB — a
+19 dB win, because the one-shot projection is dragged toward zero by the erased pixels while the loop holds the
+observed ones to the measurement and fills only the rest. The noise estimate it relies on is accurate at
+moderate-to-high noise (and `sigma=None` matches supplying the true sigma) but over-estimates at low noise,
+where a textured signal's own detail inflates the estimate — kept on the record, honest where it holds and
+where it does not.
+
+**Then the capacity cliff became a live readout.** `capacity_report` answers two questions about the same store
+geometry at once. Where does the store sit relative to the noise-wins cliff (Plate's HRR capacity)? A random
+query's best cosine to N stored rows — the noise floor — is the max of N cosines, ~sqrt(2 ln N / D); a genuine
+match sits far above it, and the report gives the gap as a d' in noise-sigmas (a roomy D=512 store at d'=23, a
+loaded D=64 store at d'=6.6 — the diagnostic sees the load), the measured floor against the theoretical bound,
+and the headroom before the rising floor reaches the match (10^50x for the roomy store, 10^5x for the loaded
+one — the enormous high-D capacity made concrete). And does calibrated coverage hold as the store grows
+(Cranmer's open question, which Tier 0 left because it only checked a fixed store)? Building random codebooks
+of increasing size and measuring the false-alarm rate, it stays at α — the procedure-matched null re-fits to
+the rising floor, so the look-elsewhere discipline is load-robust, not just fixed-store-robust.
+
+**Then a sound found the structure a market never had.** The dynamics operator (`learn_dynamics`) only tied a
+trivial mean predictor on real market returns — near-efficient-market returns carry almost no linear structure
+for a fixed operator to exploit, the correct result kept on the record. Audio is the honest counter-test.
+`spectral_encode` is a phase vocoder in the complex domain: a frame's DFT splits into a unit-magnitude phasor
+per bin (the phase — an FHRR vector that binds and recalls in the high-capacity memory like any atom) and a
+magnitude per bin (the timbre), and `spectral_decode` puts them back exactly. A sustained tone framed with a
+hop evolves by precisely the per-bin phase advance the propagator learns — the same advance those phasors
+carry, the operator and the encoding two faces of one structure — and through the mind the propagator predicts
+the next frame at error 0.001 against persistence's 1.64 and mean's 1.00, three orders of magnitude, the linear
+structure the market lacked. Two negatives stay on record: a pure tone is too sparse for phase alone to
+separate (its silent bins dominate, so magnitude carries identity there), and on non-integer frequencies with
+noise the fixed operator is approximate (error 0.169, still ~6–10× better than either baseline).
+
+**Then the same operator learned a fluid.** Stam's FFT fluid solver works on a periodic torus, doing the hard
+step in Fourier space — the same FFT-on-a-torus the engine's bind already is. A passive scalar's linear
+advection-diffusion step is exact there: each Fourier mode rotates (advection) and decays (diffusion), a
+per-bin transfer the propagator fits. Through the mind, one-step prediction error on an advected field is 0.011
+against persistence 0.34 and mean 1.15, the learned operator rolls out eight steps as a surrogate solver
+tracking the true simulation to ~3.5%, and the operator's own forward-then-back round-trip returns the start at
+cosine 1.0. The honest limit is on the record too: a nonlinear Burgers field forms shocks no fixed linear
+operator can capture, and there the propagator does worse than persistence (0.054 vs 0.006). Audio and a linear
+fluid are the two positives; the market and the Burgers shock are the two negatives; the faculty's docstring
+carries all four so the boundary travels with the code.
+
+**Then slime mould designed a network.** The single-source maze solver became multi-terminal: `design_network`
+drives the Tero/Physarum flow between every pair of terminals at once (one multi-right-hand-side solve per
+step), and the surviving tubes form the connecting network — Tero's Tokyo-rail experiment on a graph. The
+feedback parameter tunes the trade-off Physarum is famous for: high μ grows a near-minimal Steiner tree (21
+edges on a test grid, shorter than the 24-hop terminal-MST because the flow shares trunk segments), low μ keeps
+a fault-tolerant mesh with redundant loops that survive an edge cut. And the network comes back not as a list
+but as a B7 typed structure — a graph-memory M = superpose of bound node pairs — that the engine's own
+unbind+cleanup queries: ask it for a node's neighbours and they come back above every non-neighbour. The
+honest scope note is that the dense Laplacian solve is cubic per step, so this is for graphs of tens of nodes,
+where the model's interpretability is the whole point.
+
+**Then the image archive learned to answer a description.** The re-audit found the cross-modal machinery was
+already in the DCT-plate archive — store an image with tags and it keeps a hypervector address; ask
+`recall_by_tags` for a description and it returns the best match — but only the lossy splat archive had been
+wired into the mind. `image_archive` wires in the exact one: recover any stored image bit-exactly (6e-15 error
+at full keep), describe-then-retrieve with soft-AND over the query tags (`round`+`large` returns the ring,
+`round`+`small` the circle), and — the improvement, the reverse direction `tags_of` — ask what tags an image
+would get and they come back ranked. All of it survives 40% plate erasure: a text query still reconstructs the
+right image at 0.002 error. The mind now has both archives and picks the right one — splats for a compact
+bundle, plates for exact, addressable, damage-tolerant recall.
+
+**Then the generator stopped repeating itself.** B10 showed that running the denoiser backwards from noise
+generates a sample, but over a bare codebook it only ever returns a stored atom — a degenerate sampler.
+`generate_structure` points the same annealed diffusion at a composed manifold: a valid structure is a bundle
+of role-bound fillers, far too many to enumerate, so the denoiser is slot-wise — unbind each role, snap its
+filler toward the vocabulary, rebind, bundle. The random start now walks onto the manifold of role-filler
+structures. Ten seeds give ten distinct structures, each re-encoding to itself at cosine 1.0 (a genuine
+composition, every slot decodable) and nearly orthogonal to any single atom — novel but valid — while the bare
+codebook still collapses to one stored atom. Generation and denoising stay the same operation; aimed at the
+composition manifold, it becomes a generator of new structure rather than a recaller of old.
+
+**Then a single vector grew a fractal.** The demoscene move — maximal richness from a tiny deterministic kernel,
+infinite detail by recursion — stated in the engine's terms. `fractal_seed` packs a fractal kernel (N copies of
+the plane, each contracted and offset) into one hypervector as a bundle of role-bound grid atoms; `fractal_scene`
+decodes it with pure unbind-and-cleanup, then repeats that one kernel to depth — each level a contracted copy of
+the whole — and measures the box-counting dimension. A Sierpinski seed decodes to 3 copies at scale ½ and
+expands to dimension 1.57 against the theoretical log3/log2 = 1.585; a five-copy scale-⅓ seed lands at 1.51
+against log5/log3 = 1.465; the two seeds give distinct dimensions and expand identically every time. One vector
+holds a generator, the engine reads it out, and recursion turns it into a self-similar scene of a predictable
+fractal dimension.
+
+**Then the splats learned to stretch.** The splat archive used circular Gaussians by choice; the real
+3D-Gaussian-Splatting primitive is an oriented, full-covariance Gaussian fit by differentiable optimisation.
+`splat_aniso` builds that core from scratch — each splat carries a Cholesky factor of its inverse covariance,
+and an analytical-gradient NumPy Adam descends the reconstruction loss, warm-started from the isotropic fit, in
+2-D or 3-D alike. On two elongated ridges a circular fit reaches ~18 dB and the anisotropic one ~64; on a 3-D
+ellipsoid, ~24 dB against ~61 — one aligned splat where many circular ones failed. The honest Tier-4 label
+stays attached: the loss is non-convex (a local optimum, more splats not monotonically better), and this is the
+primitive and its fit, not the production renderer — no tile rasteriser, no view-dependent colour, no GPU.
+
+**Then the bind itself was put on a scale.** HRR's circular convolution is a compressed projection of the
+tensor product; `tensor_bind` keeps the uncompressed outer product and its low-rank tensor-train (MPS)
+truncation, so all three points on the rank spectrum can be measured against the engine's bind. The tensor
+product recalls far better at a fixed load — 0.95 against HRR's 0.25 at sixteen pairs — because its crosstalk is
+suppressed by the key inner products, and with orthogonal keys it is exact up to M = D where circular
+convolution cannot be; an MPS truncation losslessly compresses a low-rank binding matrix eightfold. But the
+honest bucket is clear and stays attached: per stored number the two sit on the same capacity frontier — HRR's
+compression gives up nothing there — and a generic full-rank binding cannot be MPS-compressed without losing
+recall. The tensor route buys fidelity and exact structured-key capacity with storage; it is a different point
+on the tradeoff, not a free improvement over the engine's bind.
+
+**Then a parallel line came home.** A separate investigation — Path D, *computing and storing inside the
+holographic space* — merged in as its own bundle (under `path_d/`, with the frontier-program and
+dataset-benchmark docs), and its two reusable modules were wired into the mind as faculties. The arc is the
+engine's own lesson one rung up: a single vector holds only ~0.1×D items faithfully, that budget is conserved,
+and you scale not by encoding harder but by *federating* — more vectors, coordinated by a thin layer.
+`storage_array` is that as a RAID-style store: a shard is a running sum, so a parity shard is the real-valued
+sibling of a fountain droplet and reconstructs a lost shard exactly by subtraction (150 symbols grow to three
+shards at 0.89 recall; lose one and parity restores it exactly). `superpose_compute` is the width half —
+evaluate many computations inside one vector, exact at K=1 and decaying along the predicted wall — the
+parallel-readout complement to the recursion that is the depth half. The headline the bundle proved, reproduced
+here, is the same move applied to a neural forward pass: one weight-vector faithful to sixteen classes,
+federated to eight shards holding ninety-six. The capacity walls travel with the faculties as kept negatives,
+and the second lever it surfaced — RNS-phasor arithmetic — is flagged as a next step, not yet a claim.
+
+**That next step is now built.** `exact_matmul` is the arithmetic lever wired in: a matmul read out of a lossy
+superposition dies as the matrix grows (the bundled rows interfere), but a number is carried exactly as a phase
+— a unit phasor is a residue, and binding phasors adds their phases — so carrying each number as residues over
+coprime moduli and accumulating by phasor binding gives an *exact* modular multiply-accumulate for any number of
+terms, recomposed by CRT. Integer matmul at 256×64 comes back with zero error where the lossy bundle holds 0.11
+fidelity; a float matmul is exact for its quantized operands; and the exact range federates over moduli channels
+(1e8 → 1e62), the arithmetic sibling of the storage array. The scope stays attached: exact for integer or
+fixed-point within range, the only error a quantization rounding (not a crosstalk wall), and the FLOPs are real
+— per-modulus parallelism, native on phasor hardware.
+
+**And the index learned to skip the scan.** The long-wanted sublinear recall arrives as `pivot_index`: a tree
+whose internal nodes hold explicit pivots, so routing a query is a nearest-pivot decision — cleanup against a
+small codebook — applied recursively, one level per hop. Greedy top-1 routing matches an exhaustive scan (≈0.88
+vs ≈0.90 on a well-separated set) while touching ~18 pivots instead of all 216, and a beam lands the true leaf
+in the candidate set every time. The kept negative is the wrong-turn risk on overlapping data, with the beam as
+the honest knob; the build is a NumPy k-means, no sklearn. The earlier crash — a content index that summarized
+upward into a bundle and collapsed to 0.23 — is why the pivots are stored explicitly: a B-tree never bundles.
+
+**The array got the same routing trick.** When you don't hold the directory, the array used to fall back on
+broadcasting a query to every shard — O(shards), and it erodes as the array grows. `routed_recall` summarizes
+each shard by a key-sketch (a bundle of its keys), matches a query against the sketches in one matmul, and
+unbinds only the top-c candidate shards. At 64 shards it holds directory-level recall (0.99) where broadcast has
+slipped to 0.95, while touching just eight shards instead of all sixty-four — the content-addressable, sublinear
+version of the lookup, the same "summarize, route, then resolve a few" move the pivot tree makes inside its
+nodes.
+
+**And the federation move reached all the way into compute.** `distributed_forward` is the arc's headline: a
+classifier's weight rows packed into one vector cap out around 0.02×D classes, but federating them across K
+shards moves the wall to ~K×0.02×D — a 64-class forward pass that a single vector reads at 0.79 comes back at
+1.00 across eight shards, the same federation that fixed storage now applied to the matmul (16→96 classes
+faithful in the sweep). Depth — where a deep net compounds each layer's crosstalk — is cured two ways, both
+wired: compute each layer exactly with the RNS arithmetic (no crosstalk to compound, exact at any depth), or
+cleanup-gate between layers with a soft dense-Hopfield that snaps activations back onto the valid manifold. The
+honest scope rides along: federation buys fidelity, not fewer FLOPs, and cleanup-gating's end-to-end accuracy
+gain needs a trained manifold — so only the robust pieces (the exact-arithmetic depth cure, and the cleanup
+primitive that demonstrably denoises onto the manifold) are claimed, not an always-win.
+
+**The same lever turned out to fit three more locks.** The Bucket-A experiments re-opened a handful of other
+single-vector walls, and each was the identical conservation law wearing a different hat — so they wired to the
+faculties that already hold the move, not to new ones. `superpose_compute` gained a `shards` knob: federating
+the candidates lets it pick the planted match out of 160 hypotheses (0.38 → 1.00 at K=8), and federating the
+positions lets it recall a 160-symbol sequence (0.58 → 1.00), one call serving both via a `query` or a
+`codebook`. `federated_archive` does it for images — K `HolographicArchive` shards behind a directory, holding
+64 images at the same recovery quality a single archive gives at matched total dimension (0.965 vs 0.965):
+capacity federates, fidelity is conserved. With that, every advancement Path D's experiments demonstrated is a
+faculty or a measured property of one — federation across storage, width, the archive, and the forward pass;
+exact arithmetic; and sublinear lookup — and the lone foil (lossy continuous matmul) and the pure conservation
+measurements stay on the record as evidence, not dressed up as methods they were never meant to be.
+
+**Translation answered inference; the learning question got its own answer.** Path D's RNS lever made the
+substrate *run* trained networks exactly — matmul, deep forward pass, attention, even autoregressive
+generation — but it never claimed to *train* them; that gap is closed here by gradient-free, substrate-native
+learning methods the field already proved, two of which wired in as faculties on machinery the engine already
+had. `reservoir` is an Echo-State Network on the engine's own recurrence: `permute` (a cyclic shift) is
+norm-preserving, exactly the echo-state property, so the substrate's sequence operator *is* a near-optimal
+reservoir — fixed, with only a linear readout trained by one closed-form ridge solve (no gradients,
+deterministic). It reaches a literature-grade NARMA10 (NRMSE ~0.37, the reservoir features carrying it past a
+linear baseline) and *learns* autoregressive text generation; the honest negative rides along — a chaotic
+free-run must diverge pointwise after ~one Lyapunov time (the climate is learnable, the weather is not).
+`prototype_classifier` is the HDC learner: bundle a class's encoded examples into one prototype, then a
+perceptron retraining pass — pull the correct prototype toward a misclassified example, push the wrong one
+away, pure add/subtract, no gradients. The encoding lifts a centroid model sharply (wine 0.67 → 0.98) and
+retraining improves it (digits 0.90 → 0.95), landing — honestly, as the field reports — just below a tuned
+linear model. Both are the *truly* derivative-free corner. `equilibrium_net` adds the LOCAL-GRADIENT corner:
+Equilibrium Propagation trains the energy-based Hopfield cleanup itself — a free relaxation gives the
+prediction, and symmetric nudged relaxations (±β·loss on the output) give a contrastive Hebbian update that
+*estimates the loss gradient* (matched to finite differences at cosine ~1.0), with no backpropagation. Because
+it learns the *hidden* weights, it fits a nonlinear task the linear-readout methods cannot — two interleaving
+moons at ~0.92 against a linear model's ~0.85, landing honestly below exact backprop (~1.0) since the finite-β
+estimate is biased. `forward_forward` completes the program with the DEPTH corner: Forward-Forward stacks
+layers each trained by a local goodness objective — two forward passes (positive data; data with a *wrong*
+label) instead of a backward pass, L2-normalized between layers, no backprop and no settling. Its mechanism
+works (positive goodness provably separates from negative; a separable multi-class task is classified
+perfectly), but the honest negative is loud: at this compact scale FF *trails* a plain linear model on every
+task tried (two-moons ~0.88 tie, overlapping blobs 0.95 vs 0.99, sklearn digits 0.88 vs logistic 0.97) — its
+published MNIST-scale accuracy needs the full recipe, so what ships here is the backprop-free-*depth* mechanism,
+not a competitive number (Mono-Forward is the stronger refinement, not built). The standing caveat covers all
+four families: this is native learning at small/moderate scale, not a route to frontier scale.
+
+**And the learning earns back a dynamics negative.** `learn_dynamics` fits one per-frequency transfer — the
+linear Koopman/DMD operator — which is exact for linearisable flow but, on a state-dependent nonlinearity,
+sits at the persistence floor (the kept Burgers-shock negative). `learn_chaos` is its nonlinear companion: it
+points the reservoir at the *one-step evolution map*, a fixed nonlinear expansion read out by a trained linear
+map, and it learns the chaotic flow a linear transfer structurally cannot. On the canonical Lorenz '63 test
+its one-step prediction is ~40x better than the *best* linear map (full DMD) and ~50x better than persistence
+— a clean win, since chaos pins any linear operator at the floor. The negatives stay loud and travel with it:
+closed-loop free-run holds only ~one Lyapunov time (the well-known reservoir stability wall — and the
+recurrence mixing, shift vs permutation vs unitary-bind, is *not* the lever), and a high-dimensional PDE field
+(a 48-D Burgers field at ~0.27, worse than persistence) is out of reach for a single global reservoir, where
+the literature needs local/parallel ones and EP is weak at field regression. The win is a genuine
+low-dimensional nonlinear-dynamics result, honestly bounded.
+
+**And the learning reaches the deepest fixed object: the cleanup itself.** Every cleanup in the engine
+stores its attractors — the classical one snaps to a stored atom, the modern-Hopfield energy cleanup
+relaxes against a fixed codebook. `learn_cleanup` makes good on a claim that had only ever been a
+docstring (that EP *is* the learning rule for the energy memory): it trains an energy whose attractors
+form a *learned* manifold, so a noisy query is projected onto the manifold rather than snapped to the
+nearest stored sample. The result is geometric, and that's the point. On a continuous manifold the
+learned energy beats the fixed *soft* energy cleanup at every codebook size; and on a manifold of
+dimension ≥ 2 it beats a matched-memory codebook of random samples (~0.43 vs ~0.49 in 2-D) — because
+tiling a d-dimensional manifold with samples costs ~grid^d points, while a fixed-size learned projector
+scales with the manifold's intrinsic structure, not its volume. The negatives are loud and define the
+edge: for *discrete* atoms the hard 1-NN cleanup returns the exact atom (~0.02) and is unbeatable — a
+learned approximate energy can't beat exact recovery, so that's the existing cleanup's job; and in 1-D
+the curse of dimensionality doesn't bite, so a matched-memory codebook wins (~0.27 vs ~0.33). The
+advantage over storing data is real precisely where storing data is expensive: manifolds of dimension
+≥ 2. It is also the natural learned prior for the Plug-and-Play / RED denoiser the engine already runs.
+
 **Try it.** `python unified_app.py` opens a console (http://127.0.0.1:5001) that PULLS a
 real corpus on request -- Reuters categories, Brown genres, Gutenberg authors, or Europarl
 languages, downloaded via NLTK from GitHub, the same place the test data came from --
@@ -368,13 +654,13 @@ in, and a Labyrinth mode has it learn the way out of a maze -- all on a prototyp
 **Test suite** (runs the full pytest suite), **Query & recall** (the interactive image demo - degrade an
 image, optionally destroy part of the plate, watch it get recalled), **Recall by description**
 (cross-modal recall - describe an image in words and get the matching one back from the tag address space),
-**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (716 at last count; up to six skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
+**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (848 at last count; up to six skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out. Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
 
 ### From the command line
     python tour.py                    # guided tour of all subsystems (~20s)
     python holographic_creature.py    # any module runs its own demo
     python holographic_encoders.py    # numbers / text / records demos
-    pytest -q                         # the whole test suite (716 tests)
+    pytest -q                         # the whole test suite (848 tests)
 
 ---
 
@@ -1115,7 +1401,7 @@ The app and tour:
     tour.py       command-line tour of every subsystem
     run.bat       Windows launcher
 
-Tests (716 total):
+Tests (848 total):
 
     test_holographic.py           core engine (bind/bundle/memory/reflex/drift)
     test_holographic_image.py     image store / WHT / quantisation
@@ -1137,6 +1423,13 @@ Tests (716 total):
     test_holographic_orchestrator.py  typed tool chains, circuit-breakers
     test_holographic_graph_memory.py  routed descent -- pins the recorded negative
     test_holographic_brain.py     self-maintaining, autonomous, hard-shift recovery
+    test_holographic_reservoir.py gradient-free reservoir: fixed permute recurrence + ridge readout
+    test_holographic_classifier.py gradient-free HDC prototypes + perceptron retraining
+    test_learning_faculties.py    reservoir + classifier + EP + FF + chaos + learned-energy through UnifiedMind
+    test_holographic_equilibrium.py  Equilibrium Propagation: gradient matches finite-diff, learns two moons
+    test_holographic_forward.py   Forward-Forward: local goodness objectives separate pos/neg, classify blobs
+    test_holographic_chaos.py     nonlinear dynamics: reservoir beats best-linear >10x on chaotic one-step
+    test_holographic_energy.py    learned energy memory: EP-trained cleanup beats fixed cleanup on a 2-D manifold
     test_holographic_unified.py   top level: one memory across modalities, self-discovery,
                                   absorb, named schemas routed by the compression gate
     test_integration.py           the recent modules wired into UnifiedMind as faculties, proven end to
@@ -1154,8 +1447,73 @@ Tests (716 total):
                                   honesty layer reaching ACTION (calibrated decide_confidence + the
                                   explore-when-unrecognized policy, over a procedure-matched brain null); the
                                   SPRT's sample-savings shown on OVERLAPPING densities (decisive on separated
-                                  ones); and the auto coherence floor (reorganize on a relative drop below the
-                                  recent peak -- no absolute threshold)
+                                  ones); the auto coherence floor (reorganize on a relative drop below the
+                                  recent peak -- no absolute threshold); and the `scan` faculty (SPRT per
+                                  channel + FDR across channels -- streaming detection and look-elsewhere
+                                  control in one pass, the noise floor procedure-matched through perceive); and a calibrated soft
+                                  confidence for the SBC resonator on approximate inputs (a p-value vs the
+                                  agreement the resonator manufactures on noise -- it rescues confidence when
+                                  the exact-reconstruction certificate is uselessly False, and abstains on real
+                                  noise); and a pluggable placement energy for `assemble` (the Rosetta move -- a
+                                  supplied substitution energy changes the global-optimal assembly, the flow
+                                  search still matching the Viterbi DP) with a structure-compare that reads the
+                                  overlap of two assembled folds, the consolidation SVD read matching the exact
+                                  placement count; one iterate-a-projection faculty (`project_onto_constraints`)
+                                  under which the resonator, the PnP denoise loop, and a PBD constraint sweep are
+                                  the same engine -- shown as POCS / resonator / PnP, with `pnp_restore` now
+                                  literally calling it; and a determinism audit proving the new calibrated/null
+                                  paths are bit-identical across a rebuild with the global RNG scrambled; and a `restore` faculty (Plug-and-Play/RED inverse
+                                  problem -- pass a mask and it inpaints an erased measurement using the mind's
+                                  adaptive denoiser as the prior, the loop beating a single denoise by ~19 dB on
+                                  an erased archive plate); and a capacity/SNR diagnostic (`capacity_report`) reporting where a
+                                  store sits versus the HRR noise-wins cliff (d' above the floor, the measured
+                                  floor tracking sqrt(2 ln N / D), the headroom before noise wins) and that the
+                                  calibrated false-alarm rate holds at alpha as the store grows; and a spectral/audio FHRR modality (`spectral_encode` / `spectral_decode`,
+                                  Puckette's phase vocoder -- an exactly-invertible split into a unit-phasor
+                                  FHRR vector and a magnitude) plus a validation that `learn_dynamics` predicts
+                                  audio frames three orders of magnitude better than persistence or mean, the
+                                  linear structure market returns lacked; and the same `learn_dynamics` validated on a fluid
+                                  field (Stam's FFT-on-a-torus advection-diffusion -- prediction error 0.011
+                                  vs persistence/mean, a surrogate rollout tracking the true sim to ~3.5%, and
+                                  the honest limit where shock-forming nonlinear Burgers flow beats it); and multi-terminal network design (`design_network`,
+                                  the Tero/Physarum Tokyo-rail flow model -- mu tunes a near-minimal Steiner
+                                  tree against a fault-tolerant mesh, returned as a queryable B7 typed
+                                  graph-memory whose unbind+cleanup recalls a node's neighbours); and cross-modal recall (`image_archive`, the
+                                  exact DCT-plate store now reachable from the mind -- describe an image with
+                                  tags and `recall_by_tags` retrieves it, `tags_of` runs the reverse, robust
+                                  to 40% plate erasure); and generation over a COMPOSED subspace (`generate_structure`,
+                                  the B10 denoise-from-noise sampler run over the manifold of role-filler
+                                  structures via a slot-wise projection -- novel-but-valid compositions where
+                                  the bare codebook only returns a stored atom); and a fractal scene from a seed vector (`fractal_seed` /
+                                  `fractal_scene`, one kernel encoded holographically in a single vector,
+                                  decoded and repeated to depth into a self-similar scene whose box-dimension
+                                  matches log(N)/log(1/scale)); and anisotropic splats with a 3-D extension
+                                  (`splat_aniso`, the real 3DGS primitive -- oriented full-covariance
+                                  Gaussians fit by an analytical-gradient NumPy Adam, beating isotropic by
+                                  ~45 dB on oriented 2-D and 3-D structure, a local optimum honestly labelled); and a tensor-product / tensor-train (MPS) bind mode
+                                  (`tensor_bind`, the uncompressed cousin of HRR's circular convolution --
+                                  far higher fidelity at fixed load and exact recall for orthogonal keys, with
+                                  a lossless MPS compression of low-rank bindings, all bought with storage, not
+                                  free over HRR); and the Path D federation + width faculties
+                                  (`storage_array`, a RAID-style federated store whose parity
+                                  reconstructs a lost shard exactly, and `superpose_compute`, the
+                                  WIDTH faculty that evaluates K computations in one vector -- the
+                                  conservation-law arc, with the capacity walls kept as negatives); plus exact RNS-phasor arithmetic
+                                  (`exact_matmul`, integer / fixed-point matmul carried as residues
+                                  over coprime moduli with phasor-binding modular accumulation --
+                                  exact where a lossy bundle degrades, range federating over moduli); and a recursive pivot-tree index
+                                  (`pivot_index`, sublinear nearest-item recall as nearest-pivot
+                                  cleanup applied recursively -- greedy top-1 matching an exhaustive
+                                  scan at ~O(log N) comparisons, a beam recovering recall); and sketch-routed array recall
+                                  (`storage_array(...).routed_recall`, content-addressable shard
+                                  routing by per-shard key-sketches -- as accurate as the directory
+                                  while unbinding only the top-c shards, where broadcast erodes O(K)); and a distributed forward pass
+                                  (`distributed_forward`, the storage federation applied to the
+                                  matmul -- weight rows across K shards move the class wall ~Kx,
+                                  with depth cured by exact per-layer arithmetic or cleanup-gating); the same federation extended to candidate
+                                  SELECTION and SEQUENCE recall (`superpose_compute(..., shards=K)`)
+                                  and to the image archive (`federated_archive`, K HolographicArchive
+                                  shards with a directory -- capacity federates, recovery conserved)
     test_holographic_relations.py meaning as the recovered relationship: explain/name/map/chain
     test_creature_gauntlet.py     the maze gauntlet: gamified debugging, system lessons in mazes
     test_app_creature.py          the app's creature endpoint round-trip

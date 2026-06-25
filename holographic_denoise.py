@@ -64,6 +64,25 @@ def fit_manifold_full(samples, rank=None):
     return Vt, S, mean
 
 
+def effective_rank(samples, energy=0.95):
+    """Effective rank of a row set: how many SVD directions hold `energy` of the centred variance.
+
+    LOW relative to the row count => the rows lie near a low-dimensional CONTINUOUS manifold, where a
+    projection denoiser is right (projecting removes the off-manifold noise; measured cosine ~1.0 on a
+    rank-2 SD-latent path). HIGH (~= the row count) => the rows are distinct, high-rank atoms, where
+    projection DESTROYS signal -- measured: projecting the high-rank mountain-photo latents collapsed
+    recall to 67% -- and codebook recall is right instead. This is the knee the geometry-aware denoiser
+    routes on. Returns an int in [0, n_rows]; pure NumPy, deterministic."""
+    X = np.asarray(samples, float)
+    if X.ndim == 1 or len(X) < 2:
+        return min(1, len(X))
+    s = np.linalg.svd(X - X.mean(0), compute_uv=False)
+    if s.size == 0 or s[0] == 0:
+        return 0
+    cum = np.cumsum(s ** 2) / float(np.sum(s ** 2))
+    return int(np.searchsorted(cum, energy) + 1)
+
+
 def estimate_sigma(x):
     """Donoho's robust noise estimate: the MAD of the finest detail (successive differences),
     rescaled. Parameter-free; good when the clean signal is smoother than the noise."""
@@ -93,12 +112,41 @@ def adaptive_manifold_denoise(x, basis, mean, sigma=None, kappa=1.0):
     return mean + c @ basis
 
 
-def codebook_denoise(x, codebook, beta=25.0, steps=3):
+def codebook_denoise(x, codebook, beta=25.0, steps=3, readout="softmax"):
     """Denoise `x` by snapping toward the codebook manifold via the modern-Hopfield update.
     Thin re-export of holographic_hopfield.dense_cleanup so callers can pick a manifold (subspace)
-    or a codebook denoiser without importing two modules."""
+    or a codebook denoiser without importing two modules. `readout='sparsemax'` selects the sparse
+    (Hopfield-Fenchel-Young) readout that does not over-smooth a continuous codebook manifold."""
     from holographic_hopfield import dense_cleanup
-    return dense_cleanup(x, codebook, beta=beta, steps=steps)
+    return dense_cleanup(x, codebook, beta=beta, steps=steps, readout=readout)
+
+
+def project_onto_constraints(x, projections, iters=30, tol=None, omega=1.0):
+    """Iterated projection -- satisfy a set of constraints by repeatedly projecting onto each in turn. This
+    is the structure three things the engine grew separately all share (Macklin's observation -- the same
+    object he builds in position-based dynamics):
+
+      * the SBC resonator's alternating cleanup -- project each factor onto its codebook holding the others;
+      * the PnP/RED denoise loop -- a data-fidelity projection then a manifold/codebook denoise (below);
+      * a position-based-dynamics constraint sweep -- project each particle onto each constraint in turn.
+
+    `projections` is a list of callables x->x', each snapping x onto one constraint set / manifold; they are
+    swept in order. With `omega` < 1 the update is UNDER-RELAXED (x <- x + omega*(proj(x)-x)), PBD's trick for
+    stability when many constraints fight. When the projections are onto convex sets this IS von Neumann /
+    POCS alternating projection and converges to a point in their intersection.
+
+    `iters` sweeps; `tol` (if set) stops early once a full sweep moves x by less than tol (relative); `tol=None`
+    runs all `iters` -- what the PnP loop wants. Returns (x, n_sweeps, converged) where `converged` is True only
+    when `tol` triggered an early stop. Deterministic given deterministic projections (no RNG of its own)."""
+    x = np.asarray(x, float).copy()
+    for it in range(iters):
+        prev = x.copy()
+        for proj in projections:
+            px = np.asarray(proj(x), float)
+            x = px if omega == 1.0 else x + omega * (px - x)
+        if tol is not None and np.linalg.norm(x - prev) <= tol * (np.linalg.norm(prev) + 1e-12):
+            return x, it + 1, True
+    return x, iters, False
 
 
 def pnp_restore(y, forward, adjoint, denoiser, mu=0.5, steps=30, x0=None):
@@ -111,12 +159,13 @@ def pnp_restore(y, forward, adjoint, denoiser, mu=0.5, steps=30, x0=None):
     `forward`/`adjoint` are callables for the degradation operator A and its transpose A^T (for
     inpainting, A is a binary mask and A^T == A; for plain denoising, both are identity). Any
     denoiser callable works. Returns the restored vector. Deterministic given a deterministic
-    denoiser and x0."""
+    denoiser and x0. This IS `project_onto_constraints` with two projections -- data-fidelity, then the
+    denoiser -- so the PnP loop and the resonator are literally the same iterated-projection engine."""
     y = np.asarray(y, float)
-    x = np.asarray(x0, float).copy() if x0 is not None else adjoint(y).astype(float)
-    for _ in range(steps):
-        x = x - mu * adjoint(forward(x) - y)       # data-fidelity descent
-        x = np.asarray(denoiser(x), float)         # the prior, applied as a denoiser
+    x0v = np.asarray(x0, float).copy() if x0 is not None else adjoint(y).astype(float)
+    data_fidelity = lambda x: x - mu * adjoint(forward(x) - y)   # the projection toward the measurement
+    x, _, _ = project_onto_constraints(
+        x0v, [data_fidelity, lambda x: np.asarray(denoiser(x), float)], iters=steps, tol=None)
     return x
 
 
@@ -161,3 +210,32 @@ def nlm_denoise(patches, k=12, h=0.5, use_forest=True):
         w = np.exp(S[i, idx] / h); w /= w.sum()
         out[i] = w @ X[idx]
     return out
+
+
+def trajectory_denoise(x, window=None, rank=8):
+    """Denoise a lone 1-D SIGNAL against its OWN low-rank trajectory -- the prior a single vector lacks,
+    built from the signal itself (so this is the second prior-free denoiser beside nlm, which needs a patch
+    SET; this takes a raw 1-D signal). A smooth/structured signal's sliding-window Hankel matrix is LOW-RANK
+    (Broomhead-King / Cadzow SSA), so projecting those windows onto their dominant subspace (the adaptive,
+    noise-thresholded manifold map) removes noise; reconstruct the signal by averaging anti-diagonals. Roughly
+    idempotent on a clean low-rank signal, so iterating it CONVERGES. Returns the denoised 1-D signal.
+
+    SCOPE/NEGATIVE: helps where the signal really is locally low-rank (smooth, periodic, polynomial); on a
+    structureless signal the trajectory matrix is full-rank and nothing is removed (no free lunch -- the
+    prior is the signal's own structure, and a structureless signal has none)."""
+    x = np.asarray(x, float).ravel()
+    n = x.size
+    if n < 8:                                           # too short to form a trajectory matrix -- pass through
+        return x
+    L = window or max(4, n // 4)                        # window length; K = n-L+1 windows (the signal's own)
+    L = min(L, n - 1)
+    K = n - L + 1
+    H = np.stack([x[i:i + L] for i in range(K)])        # (K, L) trajectory (Hankel) matrix
+    # the GENEROUS-basis + noise-threshold map (exactly what denoise(method='adaptive') uses): a wide
+    # subspace whose coefficients are Donoho-Johnstone thresholded, so the rank adapts to the noise.
+    basis, _, mean = fit_manifold_full(H, rank=min(4 * rank, H.shape[1]))
+    Hd = adaptive_manifold_denoise(H, basis, mean)      # project + threshold the windows
+    out = np.zeros(n); cnt = np.zeros(n)                # anti-diagonal averaging -> back to a 1-D signal
+    for i in range(K):
+        out[i:i + L] += Hd[i]; cnt[i:i + L] += 1.0
+    return out / np.maximum(cnt, 1.0)

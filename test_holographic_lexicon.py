@@ -109,3 +109,20 @@ def test_wordnet_scale_if_available():
     rnd = [(random.choice(words), random.choice(words)) for _ in range(1500)]
     lex = Lexicon(defs, dim=1024, seed=0).bootstrap(iters=3)
     assert lex.separation(syn, rnd) > 1.0
+
+
+def test_nearest_is_vectorized_and_matches_loop():
+    """nearest() ranks neighbours with one matrix-vector product against a cached (row-normalized) meaning
+    matrix plus a top-k, instead of a per-word cosine loop -- measured ~20-40x on a real vocabulary and the
+    SAME ranking. The cache rebuilds automatically when self.meaning is reassigned (a re-bootstrap)."""
+    from holographic_machine import cosine
+    d = {f"w{i}": [f"w{(i + 1) % 24}", f"w{(i + 5) % 24}"] for i in range(24)}
+    lex = Lexicon(d, dim=512, seed=0).bootstrap(iters=3)
+    for word in ("w0", "w7", "w15"):                    # vectorized ranking == the old loop ranking
+        new = [w for w, _ in lex.nearest(word, k=5)]
+        q = lex.meaning[word]
+        old = [w for w, _ in sorted(((w, float(cosine(q, lex.meaning[w]))) for w in lex.words if w != word),
+                                    key=lambda t: -t[1])[:5]]
+        assert new == old
+    lex.bootstrap(iters=1)                              # reassigns meanings -> cache must rebuild, not stale
+    assert len(lex.nearest("w0", k=3)) == 3

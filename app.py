@@ -32,7 +32,7 @@ from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 from flask import Flask, request, jsonify, render_template_string
 
-from holographic_archive import HolographicArchive, _gallery
+from holographic_archive import HolographicArchive, _gallery, box_resize
 from holographic_image import HolographicImage, _demo_image, _psnr, _lloyd_max
 from holographic_creature import GridWorld, CreatureEncoder, HolographicMind, _train
 from holographic_slime import solve_maze
@@ -92,13 +92,6 @@ def read_upload(file_storage):
     return np.asarray(im, dtype=float) / 255.0
 
 
-def box(img, n):
-    h, w = img.shape[:2]
-    ys = np.linspace(0, h, n + 1).astype(int); xs = np.linspace(0, w, n + 1).astype(int)
-    return np.stack([np.array([[img[ys[i]:ys[i+1], xs[j]:xs[j+1], c].mean()
-            for j in range(n)] for i in range(n)]) for c in range(3)], -1)
-
-
 def degrade(img, kind, amount):
     """amount in 0..1."""
     if kind == "noise":
@@ -106,7 +99,7 @@ def degrade(img, kind, amount):
         return np.clip(img + (0.7 * amount) * rng.standard_normal(img.shape), 0, 1)
     if kind == "blur":
         t = max(4, int(round(S * (1 - 0.88 * amount))))
-        return np.repeat(np.repeat(box(img, t), -(-S // t), 0), -(-S // t), 1)[:S, :S]
+        return np.repeat(np.repeat(box_resize(img, t), -(-S // t), 0), -(-S // t), 1)[:S, :S]
     if kind == "occlude":
         g = img.copy(); side = int(20 + 90 * amount)
         a = (S - side) // 2; g[a:a+side, a:a+side] = 0; return g

@@ -111,6 +111,8 @@ class HolographicArchive:
         self.fingerprints.append(self._fingerprint(image))
         self.addresses.append(self._address(tags, nums))
         self.n += 1
+        self._fp_mat = None                             # invalidate cached recall matrices (rebuilt lazily)
+        self._addr_mat = None
         return self
 
     def quantize(self, bits):
@@ -155,11 +157,30 @@ class HolographicArchive:
         img = np.stack(out, -1) if self.nchan > 1 else out[0]
         return np.clip(img, 0, 1)
 
+    def _recall_matrices(self):
+        """Build (and cache) the stacked fingerprint and tag-address matrices recall scans, so a recall is
+        ONE matrix-vector product instead of a Python loop of per-image cosines -- the same move
+        Vocabulary.cleanup and the procedure recall use. Rebuilt lazily after a store() invalidates them.
+        Address rows are unit-normalized (so the matvec is cosine); images stored WITHOUT tags become a zero
+        row flagged in _addr_none so they score -1 like the loop did."""
+        if getattr(self, "_fp_mat", None) is None:
+            self._fp_mat = (np.stack(self.fingerprints) if self.fingerprints
+                            else np.zeros((0, self.thumb ** 2 * self.nchan)))
+        if getattr(self, "_addr_mat", None) is None:
+            rows, none = [], []
+            for a in self.addresses:
+                none.append(a is None)
+                rows.append(np.zeros(self.addr_dim) if a is None else a / (np.linalg.norm(a) + 1e-12))
+            self._addr_mat = np.stack(rows) if rows else np.zeros((0, self.addr_dim))
+            self._addr_none = np.array(none, dtype=bool)
+        return self._fp_mat, self._addr_mat
+
     def recall(self, query, mask=None):
         """Identify which stored image the (possibly degraded) query is, and
         return (index, clean reconstruction)."""
         fq = self._fingerprint(np.asarray(query, dtype=float))
-        i = int(np.argmax([fq @ fp for fp in self.fingerprints]))
+        FP, _ = self._recall_matrices()
+        i = int((FP @ fq).argmax())                     # one matvec over all fingerprints (was a Python loop)
         return i, self.recover(i, mask)
 
     def recall_by_tags(self, words=None, nums=None, mask=None):
@@ -169,9 +190,20 @@ class HolographicArchive:
         q = self._address(words, nums)
         if q is None:
             raise ValueError("give some words or numeric attributes to match")
-        sims = [cosine(q, a) if a is not None else -1.0 for a in self.addresses]
-        i = int(np.argmax(sims))
+        _, A = self._recall_matrices()
+        sims = A @ (q / (np.linalg.norm(q) + 1e-12))    # cosine vs every address in one matvec
+        sims = np.where(self._addr_none, -1.0, sims)    # untagged images score -1, as the loop did
+        i = int(sims.argmax())
         return i, self.recover(i, mask), float(sims[i])
+
+    def tags_of(self, i, candidates):
+        """Reverse cross-modal recall: rank candidate tag words by how strongly each matches stored image i's
+        address -- the description the archive would give the image, the inverse of recall_by_tags. Returns
+        [(word, score)] sorted high to low; an image stored without tags returns []."""
+        a = self.addresses[i]
+        if a is None:
+            return []
+        return sorted(((w, float(cosine(a, self.vocab.get(w)))) for w in candidates), key=lambda t: -t[1])
 
     def damage_mask(self, destroy_fraction, seed=0):
         rng = np.random.default_rng(seed)
@@ -260,6 +292,37 @@ def demo():
     dmg_psnr = np.mean([_psnr(imgs[i], arc.recall(noisy(imgs[i]), mask=mask)[1]) for i in range(arc.n)])
     print(f"recall w/ 40% plate destroyed: {dmg_hits}/{arc.n}, recon {dmg_psnr:.1f} dB")
     print("wrote archive.png")
+
+
+class FederatedArchive:
+    """K aligned HolographicArchive shards with a directory (image i -> shard i mod K) -- the storage array's
+    federation applied to the CONTENT archive. Total capacity is K x per-shard; recovery quality is conserved at
+    a fixed per-image budget (more images = more shards, not one archive degrading); and, like the array, it
+    extends one shard at a time. Same per-shard DCT / Walsh-Hadamard plate algebra, with only a routing layer
+    added -- the 'as above, so below' move on the image memory."""
+
+    def __init__(self, shape, capacity, K=4, keep=2000, dim=32768, seed=0, thumb=12):
+        self.K = K
+        self.shape = shape
+        per = (capacity + K - 1) // K
+        self.shards = [HolographicArchive(shape, capacity=per, keep=keep, dim=dim,
+                                          seed=seed * 100 + k, thumb=thumb) for k in range(K)]
+        self._n = 0
+
+    def add(self, image, tags=None, nums=None):
+        """Store one image, routed to shard (count mod K). Returns its global index."""
+        g = self._n
+        self.shards[g % self.K].add(image, tags=tags, nums=nums)
+        self._n += 1
+        return g
+
+    def recover(self, i, mask=None):
+        """Recover image i (its global index) from the shard that holds it."""
+        return self.shards[i % self.K].recover(i // self.K, mask=mask)
+
+    @property
+    def n(self):
+        return self._n
 
 
 if __name__ == "__main__":

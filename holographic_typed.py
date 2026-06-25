@@ -56,9 +56,14 @@ def program_to_recipe(machine, program):
 
     instrs = []
     for i, (op, arg) in enumerate(program):
-        if op == "CALL":
-            raise ValueError("CALL is runtime (library lookup), not program structure -- out of scope")
-        arg_name = ("dat:" + arg) if arg in machine.data_names else "op:HALT"   # HALT's operand is don't-care
+        if op in ("CALL", "ITERATE", "REPEAT"):
+            raise ValueError(f"{op} is runtime control flow, not plain program structure -- out of scope")
+        if op == "APPLY":
+            arg_name = "fac:" + arg                                          # APPLY's operand is a faculty name
+        elif arg in machine.data_names:
+            arg_name = "dat:" + arg                                          # value / IFMATCH operand is a data atom
+        else:
+            arg_name = "op:HALT"                                             # HALT's operand is don't-care
         # build the instruction exactly as HoloMachine._instr does: bundle[bind(OP, op), bind(ARG, arg)]
         op_term = r.bind(atom("role:OP", True), atom("op:" + op))
         arg_term = r.bind(atom("role:ARG", True), atom(arg_name))

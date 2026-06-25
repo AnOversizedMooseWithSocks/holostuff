@@ -1110,6 +1110,24 @@ try:
 except Exception as _eAD:
     print(f"  adaptive-denoise: (skipped: {_eAD})")
 
+# TRAJECTORY DENOISE (above/below sweep): the pipeline's lone-1-D-signal denoiser PROMOTED to a first-class
+# denoise method. A smooth signal's own sliding-window (Hankel) matrix is low-rank, so it can be cleaned
+# with NO external prior -- the second prior-free method beside nlm (nlm needs a patch SET; this a raw 1-D
+# signal). One shared implementation now serves the pipeline and any caller: um.denoise(sig, method='trajectory').
+try:
+    import numpy as _npTR
+    from holographic_unified import UnifiedMind as _UMTR
+    _mTR = _UMTR(dim=256, seed=0)
+    _tt = _npTR.linspace(0, 1, 256)
+    _clean = _npTR.sin(2 * _npTR.pi * 3 * _tt) + 0.5 * _tt
+    _noisy = _clean + 0.4 * _npTR.random.default_rng(0).standard_normal(256)
+    _den = _npTR.asarray(_mTR.denoise(_noisy, method="trajectory"))
+    _e0 = float(_npTR.linalg.norm(_noisy - _clean)); _e1 = float(_npTR.linalg.norm(_den - _clean))
+    print(f"  TRAJECTORY DENOISE (lone 1-D signal, no external prior): error {_e0:.2f} -> {_e1:.2f} "
+          f"({100 * (1 - _e1 / _e0):.0f}% of the noise removed from the signal's OWN low-rank trajectory)")
+except Exception as _eTR:
+    print(f"  trajectory-denoise: (skipped: {_eTR})")
+
 # UPSTREAM FROM A SIBLING PROJECT (TuneFM): improvements that help every application,
 # each verified on this substrate before adoption.
 try:
@@ -1426,6 +1444,128 @@ print(f"  step 2 of the recipe is            : '{um.step_at('pbj', 2)}'")
 print(f"  correct recipe satisfies its order : {ok_good}")
 print(f"  recipe that cuts too early is valid: {ok_bad}  (violated: {viol})")
 
+# A plan stores opaque step LABELS; a PROCEDURE stores an executable recipe whose steps are actual VSA
+# operations, run THROUGH the mind (HoloMachine is now a faculty, not a siloed VM). Sub-recipes live in
+# one library vector and compose by CALL -- a recipe of recipes that really computes.
+um.learn_procedure("wrap_b", [("BIND", "b"), ("HALT", "b")])
+um.learn_procedure("add_c", [("BUNDLE", "c"), ("HALT", "c")])
+_acc, _tr = um.run_procedure([("LOAD", "a"), ("CALL", "wrap_b"), ("CALL", "add_c"), ("HALT", "a")])
+print(f"  executable procedure (VSA ops)     : ran {[t[0] for t in _tr]} -> accumulator built from clean atoms")
+print(f"  read instruction 1 back as data    : {um.decode_step([('LOAD','a'),('BIND','b'),('HALT','a')], 1)}  (program is also data)")
+
+# A procedure can invoke the mind's faculties as steps via APPLY: here it self-corrects a noisy
+# accumulator back toward a clean value atom using the dense associative cleanup.
+import numpy as _np
+from holographic_machine import cosine as _cos
+_true = um._machine().data_atoms["c"]
+_noisy = _true + 0.5 * _np.random.default_rng(0).standard_normal(um.dim)
+_clean, _ = um.run_procedure([("APPLY", "cleanup"), ("HALT", "c")], init_acc=_noisy)
+print(f"  APPLY cleanup denoises accumulator  : cosine-to-truth {_cos(_noisy,_true):.2f} -> {_cos(_clean,_true):.2f}  (a step a kernel-op list can't take)")
+
+# Procedure MEMORY: from one (input -> output) example, recall WHICH stored procedure did it, then
+# apply it to NEW input -- learn an operation by example, then reuse it (analogy/transfer).
+_in = _np.random.default_rng(1).standard_normal(um.dim)
+_out, _ = um.run_procedure("wrap_b", init_acc=_in)
+_new = _np.random.default_rng(2).standard_normal(um.dim)
+_res, _used, _sc = um.recall_and_apply(_in, _out, _new)
+print(f"  procedure recall by example         : recognized '{_used}' from one example, re-applied to new input")
+
+# Recipe GENERATION: learn the opcode-grammar of valid recipes, then predict the next opcode for a
+# partial one -- the engine can suggest the next step.
+um.learn_recipe_grammar([[("LOAD", "a"), ("BIND", "b"), ("HALT", "a")]] * 4
+                        + [[("LOAD", "a"), ("BIND", "b"), ("APPLY", "cleanup"), ("HALT", "a")]] * 4)
+_nxt, _conf = um.complete_procedure([("LOAD", "a")])
+print(f"  recipe completion (predict next op) : after LOAD -> '{_nxt}'  (learned the grammar)")
+_iop, _iarg, _ic = um.complete_instruction([("LOAD", "a")])
+print(f"  recipe completion (op AND operand)  : after LOAD -> ({_iop}, {_iarg})  -- the operand too, since it"
+      f" is patterned here (random operands stay unknowable: held-out accuracy falls to chance)")
+
+# A fingerprint index makes recall execution-free for the linear (bind/permute) class: identify the
+# procedure from one example with ZERO candidate runs (auto falls back to the behavioral scan for the rest).
+# The scan is ONE matrix-vector product against the cached fingerprint matrix (6-26x faster than a Python
+# loop; a HoloForest index was measured 3-7x SLOWER for realistic libraries, so it was rejected).
+um.index_procedures()
+from holographic_machine import derived_atom as _datom
+_xi = _datom(1, "tour_recall_probe", um.dim, unitary=True)
+_yi, _ = um.run_procedure("wrap_b", init_acc=_xi)
+_nm, _s = um.recall_procedure(_xi, _yi, method="fingerprint")
+print(f"  fingerprint recall (0 program runs) : identified '{_nm}' from one example (conf {_s:.2f})")
+
+# SYNTHESIS: CONSTRUCT a new procedure that achieves a goal (the constructive counterpart to recall),
+# by bounded search over the VM's ops -- verified by execution.
+from holographic_machine import bind as _bind
+_A = um._machine().data_atoms
+_gx = _datom(2, "synth_x", um.dim, unitary=True)
+_gy = _bind(_bind(_gx, _A["b"]), _A["c"])
+_prog = um.synthesize_procedure(_gx, _gy, max_depth=2)
+_opstr = [o if o == "PERMUTE" else f"{o} {a}" for o, a in _prog if o != "HALT"]
+print(f"  procedure synthesis (search a recipe): goal solved by {_opstr}  (constructed and verified)")
+
+# CONTROL FLOW: the AI loop, as a program. ITERATE re-applies a body to the accumulator until it
+# converges (a fixed point) -- here a cleanup step pulls a noisy vector onto a clean atom (input ->
+# process -> feed back -> repeat). IFMATCH (a conditional) gates an instruction on a predicate over ACC.
+um.learn_procedure("clean_step", [("APPLY", "cleanup"), ("HALT", "c")])
+_tc = um._machine().data_atoms["c"]
+_noisyc = _tc + 0.3 * _np.random.default_rng(5).standard_normal(um.dim)
+_conv, _trc = um.run_procedure([("ITERATE", "clean_step"), ("HALT", "c")], init_acc=_noisyc)
+_loop = [t for t in _trc if t[0] == "ITERATE"][0]
+print(f"  ITERATE until converged (the AI loop): cosine {_cos(_noisyc,_tc):.2f} -> {_cos(_conv,_tc):.2f} in {_loop[2]} iters ({_loop[3]})")
+
+# matmul in the loop: a small recurrent linear map. ITERATE [APPLY matmul] with a column-stochastic
+# matrix is power iteration -- it converges to the stationary distribution, exact matmul as the step.
+_mm = UnifiedMind(dim=48, seed=0)
+_P = _np.abs(_np.random.default_rng(0).standard_normal((48, 48))) + 0.05
+_P /= _P.sum(axis=0, keepdims=True)
+_mm.set_matmul(_P)
+_mm.learn_procedure("mm_step", [("APPLY", "matmul"), ("HALT", "a")])
+_s0 = _np.abs(_np.random.default_rng(1).standard_normal(48)); _s0 /= _s0.sum()
+_sN, _trm = _mm.run_procedure([("ITERATE", "mm_step"), ("HALT", "a")], init_acc=_s0, converge_tol=0.99999, max_loop=100)
+_itm = [t for t in _trm if t[0] == "ITERATE"][0]
+print(f"  matmul in a loop (-> stationary dist): converged in {_itm[2]} iters ({_itm[3]}) -- exact matmul as the loop body")
+
+# Counted loop: REPEAT n runs the next CALL n times -- a FOR loop alongside ITERATE's convergence WHILE.
+from holographic_machine import permute as _perm
+um.learn_procedure("shiftone", [("PERMUTE", "a"), ("HALT", "a")])
+_xr = _datom(3, "rep_x", um.dim, unitary=True)
+_r3, _ = um.run_procedure([("REPEAT", 3), ("CALL", "shiftone"), ("HALT", "a")], init_acc=_xr)
+print(f"  REPEAT 3; CALL shiftone (FOR loop)  : result equals permute(x,3)? {_cos(_r3, _perm(_xr,3))>0.99}")
+
+# A complete little routine in ONE procedure: denoise the input (ITERATE a cleanup), then branch on the
+# cleaned result (IFMATCH) and tag it (CALL) only if it matches -- loop + conditional + call together.
+um.learn_procedure("tag", [("BIND", "b"), ("HALT", "b")])
+_wc = um._machine().data_atoms["c"] + 0.3 * _np.random.default_rng(7).standard_normal(um.dim)
+_wacc, _wtr = um.run_procedure([("ITERATE", "clean_step"), ("IFMATCH", "c"), ("CALL", "tag"), ("HALT", "c")], init_acc=_wc)
+print(f"  worked program denoise->classify->tag: ran {[t[0] for t in _wtr]}  (cleaned to c, then tagged)")
+
+# PIPE-1: a whole data-analysis pipeline as ONE VSA program -- APPLY analyze, ITERATE-denoise until the
+# signal settles, APPLY decompose to a generative law, IFMATCH-branch on whether structure was found, CALL
+# train+validate, APPLY save. The program is the orchestrator; each step delegates to a real faculty.
+import numpy as _np
+_pt = _np.linspace(0, 1, 256)
+_prep = um.run_analysis_pipeline(1 + 2 * _pt + 3 * _pt ** 2 + 0.3 * _np.random.default_rng(0).standard_normal(256))
+print(f"  analysis pipeline (structured signal): found a {_prep['n_terms']}-term law (explained {_prep['explained_var']}),"
+      f" held-out err {_prep['heldout_rel']}, 256 pts -> {_prep['law_bytes']}B law -- ran {_prep['_ops']}")
+_nrep = um.run_analysis_pipeline(_np.random.default_rng(1).standard_normal(256))
+print(f"  analysis pipeline (pure noise)       : no structure (explained {_nrep['explained_var']}); the IFMATCH"
+      f" SKIPPED training -- ran {_nrep['_ops']}, saved as {_nrep['saved_as']}")
+# ...and the recursive "every level" mode: peel a cross-basis signal (a line trend UNDER a periodic part)
+# layer by layer -- structure ONE decompose cannot fit together, recovered by an ITERATEd peel that stops
+# when the engine's own MDL gate admits no more terms (the residual is noise).
+_dprep = um.run_analysis_pipeline(
+    0.5 + 2 * _pt + _np.sin(2 * _np.pi * 5 * _pt) + 0.2 * _np.random.default_rng(2).standard_normal(256),
+    recursive=True)
+print(f"  analysis pipeline (recursive peel)   : {_dprep['n_levels']} levels "
+      f"({' -> '.join(L['topology'] for L in _dprep['levels'])}), cumulative explained "
+      f"{_dprep['cumulative_explained']} -- a trend+periodic one pass gets ~0.3 on, peeled apart")
+# The bind/permute algebra COLLAPSES (any interleaving == permute(x, net) bound by the operand product), so a
+# deep program reduces to its minimal form -- which is also WHY deeper synthesis over the invertible ops buys
+# nothing (there is nothing deep to find); BUNDLE/nonlinear ops are honest barriers.
+_deep = [("BIND", "a"), ("PERMUTE", "a"), ("BIND", "b"), ("PERMUTE", "a"), ("BIND", "c"), ("HALT", "a")]
+_canon, _cinfo = um.canonicalize_procedure(_deep)
+print(f"  canonicalize a bind/permute program  : {_cinfo['original_len']} ops -> {_cinfo['canonical_len']} "
+      f"({_cinfo['n_bind']} binds -> 1 product, {_cinfo['net_shift']} permutes), verified equivalent "
+      f"(cosine {_cinfo['equivalence_cosine']})")
+
 # recursive discovery: the SAME order-test applied fractally, unfolding a nested
 # plan the mind was never given the shape of -- and stopping honestly at leaves.
 import numpy as _np
@@ -1690,6 +1830,448 @@ _af, _pf = _dm.decide_confidence(_fam); _an, _pn = _dm.decide_confidence(random_
 print(f"  calibrated decide (honesty->action) : familiar state -> {_af!r} at p={_pf:.3f} (trusted); a novel "
       f"state -> p={_pn:.3f} (guessing) -- explore_if_unrecognized turns that into a safe random move")
 
+# the scan faculty: SPRT per channel (decide each as fast as its evidence allows) + FDR across channels
+# (control the look-elsewhere -- scan enough noise and some clear the per-channel bar by luck).
+_sm = UnifiedMind(dim=256, seed=0); _sr = np.random.default_rng(0); _sbase = random_vector(256, _sr)
+for _ in range(50):
+    _v = _sbase + _sr.uniform(1.0, 4.0) * random_vector(256, _sr); _v /= np.linalg.norm(_v)
+    _sm.learn(_v, "signal", modality="vector")
+for _j in range(6):
+    _ob = random_vector(256, _sr)
+    for _ in range(8):
+        _v = _ob + 1.5 * random_vector(256, _sr); _v /= np.linalg.norm(_v); _sm.learn(_v, f"o{_j}", modality="vector")
+_chs, _kd = [], []
+for _k in range(8):
+    _r = np.random.default_rng(200 + _k)
+    _chs.append([(lambda v: v / np.linalg.norm(v))(_sbase + 1.5 * random_vector(256, _r)) for _ in range(14)]); _kd.append(1)
+for _k in range(80):
+    _r = np.random.default_rng(300 + _k); _chs.append([random_vector(256, _r) for _ in range(14)]); _kd.append(0)
+_rows = _sm.scan(_chs, modality="vector", alpha=0.05, beta=0.05, fdr=0.1); _kd = np.array(_kd)
+_det = np.array([r["detected"] for r in _rows]); _pv = np.array([r["pvalue"] for r in _rows])
+_naive = int((_pv[_kd == 0] <= 0.1).sum())
+print(f"  scan: SPRT-per-channel + FDR        : found {int(_det[_kd==1].sum())}/8 signal channels among 80 noise; "
+      f"naive p<=0.10 would false-alarm on {_naive} noise channels, FDR holds detections to "
+      f"{int(_det[_kd==0].sum())} false")
+
+# calibrated SOFT confidence for the resonator on APPROXIMATE inputs: the exact-reconstruction certificate is
+# uselessly False the moment the input is noisy, even when the factors are right; a p-value vs a procedure-
+# matched noise null gives the graded answer (and abstains on real noise, where a random-picks null would not).
+import holographic_sbc as _S
+_B, _L, _F, _n = 16, 16, 3, 8
+_cbs = [[_S.sbc_random(_B, _L, seed=100 * _f + _i) for _i in range(_n)] for _f in range(_F)]
+_pr = np.asarray(_cbs[0][2]).copy()
+for _f in (1, 2):
+    _pr = _S.sbc_bind(_pr, _cbs[_f][(5, 1)[_f - 1]], _L)
+_cm = UnifiedMind(dim=256, seed=0)
+_clean = _cm.factor_composite(_pr, _cbs, L=_L, restarts=6, seed=0, confidence=True)
+_cor = _pr.copy(); _rr = np.random.default_rng(52)
+for _b in _rr.choice(_B, 2, replace=False):
+    _cor[_b] = (_cor[_b] + 1) % _L
+_corr = _cm.factor_composite(_cor, _cbs, L=_L, restarts=6, seed=0, confidence=True)
+print(f"  resonator soft confidence           : exact input verified={_clean['verified']} p={_clean['pvalue']:.3f}; "
+      f"2 blocks corrupted -> true factors still found, verified={_corr['verified']} but calibrated p={_corr['pvalue']:.3f} "
+      f"(the boolean's blind spot, rescued)")
+
+# pluggable assembly energy: not every mismatch costs the same (the Rosetta move). The SAME target assembles
+# differently under a substitution energy that makes cross-group swaps dear -- and each is the global optimum
+# under its OWN energy. Plus structure-compare: superpose two structures, read overlap via consolidation.
+_GROUP = {_c: ('V' if _c in 'AE' else 'C') for _c in 'ABDE'}
+def _subst(_frag, _pos, _t):
+    return sum((1 if _GROUP[_frag[_j]] == _GROUP[_t[_pos + _j]] else 4)
+               for _j in range(len(_frag)) if _frag[_j] != _t[_pos + _j])
+_T, _lib = "EAAE", ("AB", "BA", "BD", "BE", "EE")
+_am = UnifiedMind(dim=512, seed=0)
+_rH = _am.assemble(_T, _lib); _rS = _am.assemble(_T, _lib, energy=_subst)
+_cmpP = _am.compare_structures({"fragments": [(0, 'AB'), (1, 'BC'), (2, 'CD')]},
+                               {"fragments": [(0, 'AB'), (1, 'BX'), (2, 'XD')]})
+print(f"  assembly: pluggable energy          : target {_T!r} -> Hamming picks {_rH['assembled']!r} (energy {_rH['energy']}), "
+      f"substitution picks {_rS['assembled']!r} (energy {_rS['energy']}) -- each the global optimum under its own energy")
+print(f"  structure-compare (consolidation)   : two structures sharing 1 of 3 placements -> "
+      f"placement overlap {_cmpP['placement_overlap']:.2f}, holographic overlap {_cmpP['holographic_overlap']:.2f} (the SVD read matches the exact count)")
+
+# one iterate-a-projection engine under three faculties (Macklin): POCS, the resonator, and the PnP loop are
+# all "project onto each constraint in turn until they jointly hold". Shown here as POCS converging to a
+# subspace intersection -- the same project_onto_constraints the resonator (with restarts) and denoise(pnp) use.
+_pn = 20; _pr2 = np.random.default_rng(0)
+_pu = _pr2.standard_normal(_pn); _pu /= np.linalg.norm(_pu)
+_QA, _ = np.linalg.qr(np.stack([_pu, _pr2.standard_normal(_pn), _pr2.standard_normal(_pn)], axis=1))
+_QB, _ = np.linalg.qr(np.stack([_pu, _pr2.standard_normal(_pn), _pr2.standard_normal(_pn)], axis=1))
+_x0 = _pr2.standard_normal(_pn)
+_xf, _sw, _cv = _am.project_onto_constraints(_x0, [lambda x: _QA @ (_QA.T @ x), lambda x: _QB @ (_QB.T @ x)],
+                                             iters=500, tol=1e-12)
+_off = np.linalg.norm(_xf - (_xf @ _pu) * _pu) / np.linalg.norm(_xf)
+print(f"  iterate-a-projection (POCS)         : alternating projection onto two subspaces converged in {_sw} sweeps "
+      f"to their intersection (off-axis residual {_off:.1e}) -- the same engine the resonator and denoise(pnp) run on")
+
+# inverse problem through the mind (Milanfar/Ozcan): inpaint an ERASED plate by Plug-and-Play/RED -- the
+# denoiser as the manifold prior in a LOOP, which beats a single denoise because the loop holds the observed
+# pixels to the measurement while filling the erased ones from the manifold.
+_Si = 16; _Ki = 6
+_ig = np.random.default_rng(0); _yy, _xx = np.mgrid[0:_Si, 0:_Si] / _Si
+_pats = np.stack([(lambda p: p / np.linalg.norm(p))(np.sin(np.pi * _ig.integers(1, 4) * _yy + 0.7 * _f) *
+                  np.cos(np.pi * _ig.integers(1, 4) * _xx + 0.3 * _f)) for _f in range(_Ki)])
+def _mkimg(s):
+    _c = np.random.default_rng(s).standard_normal(_Ki); _im = (_c[:, None, None] * _pats).sum(0)
+    _im -= _im.min(); return _im / (_im.max() + 1e-9)
+_gal = np.stack([_mkimg(100 + i) for i in range(40)]); _Gm = _gal.reshape(40, _Si * _Si)
+_clean = _gal[3].copy(); _mask = np.ones((_Si, _Si)); _mask[5:10, 6:11] = 0.0
+_yobs = _mask * _clean + 0.05 * np.random.default_rng(7).standard_normal((_Si, _Si))
+_psnr = lambda a, b: -10 * np.log10(((a - b) ** 2).mean())
+_one = _am.denoise(_yobs.flatten(), method="adaptive", samples=_Gm).reshape(_Si, _Si)
+_res = _am.restore(_yobs.flatten(), mask=_mask.flatten(), samples=_Gm).reshape(_Si, _Si)
+print(f"  inverse problem: inpaint a plate    : 25/256 px erased -> single denoise {_psnr(_one,_clean):.1f} dB, "
+      f"PnP/RED restore {_psnr(_res,_clean):.1f} dB (the loop beats one-shot by {_psnr(_res,_clean)-_psnr(_one,_clean):.0f} dB)")
+
+# capacity / SNR diagnostic (Plate + Cranmer): where the store sits vs the noise-wins cliff, and whether the
+# calibrated false-alarm rate holds as the store GROWS. The measured noise floor tracks the HRR bound.
+_capm = UnifiedMind(dim=256, seed=0); _cr = np.random.default_rng(0)
+for _c in range(8):
+    _bb = random_vector(256, _cr)
+    for _ in range(12):
+        _vv = _bb + 1.2 * random_vector(256, _cr); _vv /= np.linalg.norm(_vv); _capm.learn(_vv, f"c{_c}", modality="vector")
+_cap = _capm.capacity_report(alpha=0.05, loads=(64, 512), n_floor=400, n_fa=400)
+print(f"  capacity / SNR vs the cliff         : match {_cap['match']:.2f} vs noise floor {_cap['floor_mean']:.2f} "
+      f"(HRR bound {_cap['hrr_floor_bound']:.2f}) -> d'={_cap['dprime']:.0f} sigmas clear, ~10^{_cap['headroom_log10']:.0f}x headroom; "
+      f"coverage stays ~a as N grows {dict((k, round(v,2)) for k,v in _cap['coverage_vs_load'].items())}")
+
+# spectral/audio FHRR modality (Puckette) + dynamics on audio frames (Stam, the B4 proving ground): the
+# phase-vocoder split is exact, and the propagator NAILS the per-bin phase advance where market returns had no
+# structure -- beating both persistence (ignores the advance) and mean (averages the oscillation away).
+_audm = UnifiedMind(dim=256, seed=0); _L = 256; _tt = np.arange(2000)
+_ph, _mg = _audm.spectral_encode(sum(np.sin(2*np.pi*c*_tt[:_L]/_L + p) for c, p in [(5,0.3),(11,1.1),(19,2.0)]))
+_rt = float(np.max(np.abs(_audm.spectral_decode(_ph, _mg) - sum(np.sin(2*np.pi*c*_tt[:_L]/_L + p) for c, p in [(5,0.3),(11,1.1),(19,2.0)]))))
+_sig = sum(np.sin(2*np.pi*c*_tt/_L + p) for c, p in [(5,0.3),(11,1.1),(19,2.0)])
+_fr = np.stack([_sig[i*37:i*37+_L] for i in range(1 + (len(_sig)-_L)//37)]); _k = int(len(_fr)*0.7)
+_prop = _audm.learn_dynamics(_fr[:_k]); _te = _fr[_k:]; _mf = _fr[:_k].mean(0)
+_rel = lambda a, b: np.linalg.norm(a-b)/(np.linalg.norm(b)+1e-12)
+_ep = np.mean([_rel(_prop.step(_te[i]), _te[i+1]) for i in range(len(_te)-1)])
+_epe = np.mean([_rel(_te[i], _te[i+1]) for i in range(len(_te)-1)])
+_epm = np.mean([_rel(_mf, _te[i+1]) for i in range(len(_te)-1)])
+print(f"  spectral/audio: phase vocoder + dynamics: encode/decode round-trip err {_rt:.0e}; next-frame prediction "
+      f"error {_ep:.3f} vs persistence {_epe:.2f}, mean {_epm:.2f} -- audio HAS the linear structure markets lacked")
+
+# fluid field on a torus (Stam): linear advection-diffusion is a per-mode rotation+decay -- exactly the operator
+# learn_dynamics learns; it beats both baselines AND rolls out as a surrogate solver, but shock-forming
+# nonlinear (Burgers) flow is the honest limit where a fixed linear operator does worse than persistence.
+_N = 256; _xx = np.arange(_N)
+def _fstep(u, sh=3.7, nu=3e-4):
+    _U = np.fft.rfft(u); _k = np.arange(_U.size); _U *= np.exp(-1j*2*np.pi*_k*sh/_N)*np.exp(-nu*_k**2); return np.fft.irfft(_U, n=_N)
+_uu = np.exp(-0.5*((_xx-64)/8.0)**2) + 0.4*np.sin(2*np.pi*3*_xx/_N); _uu -= _uu.mean(); _fs = [_uu.copy()]
+for _ in range(40): _uu = _fstep(_uu); _fs.append(_uu.copy())
+_fs = np.stack(_fs); _fk = int(len(_fs)*0.6); _fp = _audm.learn_dynamics(_fs[:_fk]); _ft = _fs[_fk:]; _fmf = _fs[:_fk].mean(0)
+_fe = np.mean([_rel(_fp.step(_ft[i]), _ft[i+1]) for i in range(len(_ft)-1)])
+_fpe = np.mean([_rel(_ft[i], _ft[i+1]) for i in range(len(_ft)-1)])
+_fpm = np.mean([_rel(_fmf, _ft[i+1]) for i in range(len(_ft)-1)])
+_rollerr = np.mean([_rel(_fp.rollout(_fs[_fk], 8)[i], _fs[_fk+1+i]) for i in range(8)])
+print(f"  fluid field (advection-diffusion)   : next-field error {_fe:.3f} vs persistence {_fpe:.2f}, mean {_fpm:.2f}; "
+      f"learned operator rolls out 8 steps as a surrogate solver at {_rollerr:.1%} error")
+
+# multi-terminal network design (Adamatzky): the Tero/Physarum flow model connecting 5 terminals on a grid.
+# mu tunes the cost/fault-tolerance trade-off, and the network comes back as a queryable B7 typed graph-memory.
+from holographic_ai import unbind as _unbind, cosine as _cos
+_gnbr = {}
+for _r in range(7):
+    for _c in range(7):
+        _gnbr[(_r,_c)] = [(_r+_dr,_c+_dc) for _dr,_dc in ((1,0),(-1,0),(0,1),(0,-1)) if 0<=_r+_dr<7 and 0<=_c+_dc<7]
+_gterms = [(0,0),(0,6),(6,0),(6,6),(3,3)]
+def _cyc(_e): return len(_e) - len({_x for _ed in _e for _x in _ed}) + 1
+_tree = _audm.design_network(_gnbr, _gterms, mu=4.0); _mesh = _audm.design_network(_gnbr, _gterms, mu=0.8)
+_net = _audm.design_network(_gnbr, _gterms, mu=2.0); _adj = {}
+for _u,_v in _net["edges"]: _adj.setdefault(_u,[]).append(_v); _adj.setdefault(_v,[]).append(_u)
+_pr = _unbind(_net["memory"], _net["nodes"][(0,0)])
+_rn = sorted(((_cos(_pr,_net["nodes"][_w]),_w) for _w in _net["nodes"] if _w!=(0,0)), reverse=True)[:len(_adj[(0,0)])]
+print(f"  network design (Tero/Physarum)      : 5 terminals -> high-mu tree {len(_tree['edges'])} edges ({_cyc(_tree['edges'])} loops) "
+      f"vs low-mu mesh {len(_mesh['edges'])} edges ({_cyc(_mesh['edges'])} loops); graph-memory recalls node (0,0)'s "
+      f"neighbours {sorted(_w for _,_w in _rn)} == {sorted(_adj[(0,0)])}")
+
+# cross-modal recall (Ozcan): the exact DCT-plate image archive, now reachable from the mind, recalled by a
+# DESCRIPTION instead of a picture -- and the reverse (image -> tags), robust even under heavy plate erasure.
+_S = 24
+def _disc(cx, cy, r): _y, _x = np.ogrid[:_S, :_S]; return ((_x-cx)**2 + (_y-cy)**2 <= r*r).astype(float)
+_ims = {"circle": _disc(8,8,5), "gradient": np.tile(np.linspace(0,1,_S), (_S,1)), "ring": _disc(12,12,9)-_disc(12,12,5)}
+_tgs = {"circle": ["round","small"], "gradient": ["smooth","horizontal"], "ring": ["round","large"]}
+_names = list(_ims); _arch = _audm.image_archive((_S,_S), capacity=len(_ims))
+for _nm in _names: _arch.add(_ims[_nm], tags=_tgs[_nm])
+_exact = max(float(np.max(np.abs(_arch.recover(_i)-_ims[_names[_i]]))) for _i in range(len(_names)))
+_qi, _, _qc = _arch.recall_by_tags(words=["round","large"])
+_mask = _arch.damage_mask(0.4, seed=1); _di, _dr, _ = _arch.recall_by_tags(words=["smooth"], mask=_mask)
+_rt = [_w for _w,_ in _arch.tags_of(_names.index("ring"), sorted({_t for _ts in _tgs.values() for _t in _ts}))[:2]]
+print(f"  cross-modal recall (tag <-> image)  : exact recover err {_exact:.0e}; describe ['round','large'] -> '{_names[_qi]}'; "
+      f"reverse 'ring' -> {sorted(_rt)}; under 40% erasure ['smooth'] -> '{_names[_di]}' at err {float(np.max(np.abs(_dr-_ims['gradient']))):.0e}")
+
+# generation over a COMPOSED subspace (Eno): run the B10 denoise-from-noise sampler over the manifold of
+# role-filler structures (slot-wise projection) -> novel-but-VALID compositions, where the bare codebook only
+# ever returns a stored atom (the kept negative).
+from holographic_ai import bind as _bnd, unbind as _unb, derived_atom as _da, cosine as _csn
+_rls = np.stack([_da(0, f"slot:{_i}", 1024, unitary=True) for _i in range(3)])
+_fls = np.stack([_da(0, f"fill:{_w}", 1024, unitary=True) for _w in "ABCDEF"])
+_gm = UnifiedMind(dim=1024, seed=0); _seen = set()
+for _s in range(10):
+    _z = _gm.generate_structure(_rls, _fls, seed=_s)
+    _dec = tuple("ABCDEF"[int((_fls @ (_unb(_z,_r)/(np.linalg.norm(_unb(_z,_r))+1e-12))).argmax())] for _r in _rls)
+    _seen.add("".join(_dec))
+_bare = _gm.generate_vector(_fls, seed=3); _batom = "ABCDEF"[int((_fls @ (_bare/np.linalg.norm(_bare))).argmax())]
+print(f"  generation over a composed subspace : {len(_seen)} distinct valid structures from 10 seeds "
+      f"(e.g. {sorted(_seen)[:4]}) -- bare codebook only ever returns a stored atom ('{_batom}')")
+
+# recursive/fractal scene from a SEED VECTOR (Quilez): one kernel encoded holographically in a single vector,
+# decoded and repeated to depth -> a self-similar scene whose measured box-dimension matches log(N)/log(1/s).
+_fm = UnifiedMind(dim=1024, seed=0)
+_fsA = _fm.fractal_scene(_fm.fractal_seed([(0,0),(1,0),(0.5,0.857)], 0.5), depth=8)        # Sierpinski
+_fsB = _fm.fractal_scene(_fm.fractal_seed([(0,0),(1,0),(0,1),(1,1),(0.5,0.5)], 1/3), depth=6)
+print(f"  fractal scene from a seed vector    : seed A -> {_fsA['n_maps']} copies @ {_fsA['scale']:.2f} = box-dim {_fsA['dimension']:.2f} "
+      f"(expected {_fsA['expected']:.2f}); seed B -> {_fsB['n_maps']} copies @ {_fsB['scale']:.2f} = box-dim {_fsB['dimension']:.2f} "
+      f"(expected {_fsB['expected']:.2f}) -- one kernel, repeated to depth")
+
+# anisotropic splats + 3-D (Drettakis): the real 3DGS primitive (oriented, full-covariance Gaussians) fit by
+# gradient descent -- one aligned splat replaces many circular ones wherever structure is elongated.
+from holographic_splat import psnr as _psp
+_Ha = 44; _Yr, _Xr = np.mgrid[0:_Ha, 0:_Ha]
+def _rg(cy, cx, an, L, th):
+    _c, _s = np.cos(an), np.sin(an); _u = (_Xr-cx)*_c + (_Yr-cy)*_s; _v = -(_Xr-cx)*_s + (_Yr-cy)*_c
+    return np.exp(-0.5*((_u/L)**2 + (_v/th)**2))
+_Tr = _rg(15,15,0.6,9,2.0) + 0.8*_rg(29,27,-0.5,11,2.5)
+_iso2 = _fm.splat_aniso(_Tr, k=4, steps=0, denoise=True); _, _ani2 = _fm.splat_aniso(_Tr, k=4, steps=200)
+_Dv = 18; _Zv, _Yv, _Xv = np.mgrid[0:_Dv, 0:_Dv, 0:_Dv]
+_vol = np.exp(-0.5*(((_Xv-9)/6.0)**2 + ((_Yv-9)/2.0)**2 + ((_Zv-9)/2.5)**2))
+_iso3 = _fm.splat_aniso(_vol, k=3, steps=0, denoise=True); _, _ani3 = _fm.splat_aniso(_vol, k=3, steps=150)
+print(f"  anisotropic splats + 3-D (3DGS)     : 2-D oriented ridges, K=4: isotropic {_psp(_Tr,_iso2):.0f} dB -> anisotropic {_psp(_Tr,_ani2):.0f} dB; "
+      f"3-D ellipsoid, K=3: isotropic {_psp(_vol,_iso3):.0f} dB -> anisotropic {_psp(_vol,_ani3):.0f} dB (local optimum; warm-started)")
+
+# tensor-train (MPS) bind vs HRR (Stoudenmire): the uncompressed tensor-product bind and its low-rank
+# truncation, measured against the engine's circular convolution -- higher fidelity at higher storage.
+from holographic_ai import bind as _tbnd, unbind as _tunb, random_vector as _trv, cosine as _tcos
+_Dt = 128; _tr = np.random.default_rng(0); _un = lambda v: v/(np.linalg.norm(v)+1e-12)
+_tks = [_un(_trv(_Dt,_tr)) for _ in range(16)]; _tvs = [_un(_trv(_Dt,_tr)) for _ in range(16)]
+_hM = np.zeros(_Dt)
+for _k,_v in zip(_tks,_tvs): _hM = _hM + _tbnd(_k,_v)
+_hrr = float(np.mean([_tcos(_tunb(_hM,_k),_v) for _k,_v in zip(_tks,_tvs)]))
+_tbm = _fm.tensor_bind(_tks,_tvs); _ten = float(np.mean([_tcos(_tbm.recall(_k),_v) for _k,_v in zip(_tks,_tvs)]))
+_Qk = np.linalg.qr(_tr.standard_normal((_Dt,_Dt)))[0]; _oks=[_Qk[i] for i in range(_Dt)]; _ovs=[_un(_trv(_Dt,_tr)) for _ in range(_Dt)]
+_oten = float(np.mean([_tcos(_fm.tensor_bind(_oks,_ovs).recall(_k),_v) for _k,_v in zip(_oks,_ovs)]))
+print(f"  tensor-product / MPS bind vs HRR    : M=16 recall HRR(D) {_hrr:.2f} vs tensor-product(D^2) {_ten:.2f}; orthogonal keys M=D -> tensor "
+      f"{_oten:.2f} (exact, HRR cannot); MPS losslessly compresses a low-rank bind -- higher fidelity, more storage")
+
+# Path D (federation + width): the "as above, so below" arc -- one D-vector's ~0.1xD budget is CONSERVED, so
+# federate across shards for capacity/resilience (RAID), and evaluate many computations in ONE vector for width.
+_arrD = _fm.storage_array(n_parity=1, add_threshold=0.90); _rdD = np.random.default_rng(3)
+for _ in range(150):
+    _arrD.add(int(_rdD.integers(0, 256)))
+_baseD = _arrD.accuracy(); _recD = _arrD.accuracy(down=(1,))
+_itemsD = np.stack([_trv(_fm.dim, _rdD) for _ in range(6)])
+_resD = _fm.superpose_compute(_itemsD, query=_itemsD[4], codebook=_itemsD)
+print(f"  Path D federation + width           : RAID store grew to {len(_arrD.data)} shards @ {_baseD:.2f} recall, lose 1 -> parity restores {_recD:.2f}; "
+      f"6 computations in ONE vector, winner={_resD['winner']} (want 4) by cleanup-gated parallel readout")
+
+# Path D arithmetic lever (exact RNS-phasor matmul): general matmul in a lossy bundle dies as the matrix grows;
+# carry numbers as residues and accumulate by phasor binding (exact phase sum) -> exact at ANY size.
+import holographic_rns as _rns
+_Wd = _rdD.integers(-50, 51, size=(256, 64)); _xd = _rdD.integers(-50, 51, size=64)
+_exact_err = int(np.abs(_fm.exact_matmul(_Wd, _xd) - _Wd @ _xd).max())
+_, _Pfew = _rns.choose_moduli(10 ** 8); _, _Pmany = _rns.choose_moduli(10 ** 60)
+print(f"  Path D exact arithmetic (RNS)       : integer matmul 256x64 max|error|={_exact_err} (EXACT, where a lossy bundle gets ~0.11 fidelity); "
+      f"range federates over moduli ~1e{len(str(_Pfew)) - 1} -> ~1e{len(str(_Pmany)) - 1}")
+
+# Path D sublinear index (recursive pivot tree): nearest-item recall without scanning all of them -- routing is
+# nearest-pivot cleanup applied recursively (inception as addressing); greedy top-1 ~ exhaustive at ~O(log N).
+_pu = lambda v: v / (np.linalg.norm(v) or 1.0)
+def _pgen(d, F, c, sc, dec, out):
+    if d == 0:
+        out.append(c); return
+    for _ in range(F):
+        _pgen(d - 1, F, c + _pu(_rdD.standard_normal(_fm.dim)) * sc, sc * dec, dec, out)
+_pl = []; _pgen(3, 6, np.zeros(_fm.dim), 0.6 * 9.0, 1 / 3.0, _pl); _pl = np.stack(_pl); _pK = len(_pl)
+_pq = np.random.default_rng(77); _pt = _pq.integers(0, _pK, size=200); _pQ = _pl[_pt] + 0.22 * _pq.standard_normal((200, _fm.dim))
+_pex = float(np.mean([int(((_pl - _pQ[i]) ** 2).sum(1).argmin()) == _pt[i] for i in range(200)]))
+_pidx = _fm.pivot_index(_pl, fanout=6)
+_pt1 = float(np.mean([_pidx.query(_pQ[i], beam=1)[0] == _pt[i] for i in range(200)]))
+_pc = float(np.mean([_pidx.query(_pQ[i], beam=1)[1] for i in range(200)]))
+print(f"  Path D sublinear index (pivot tree) : {_pK} leaves, greedy top-1 {_pt1:.2f} vs exhaustive {_pex:.2f} at {_pc:.0f} comparisons "
+      f"({_pK / _pc:.0f}x fewer) -- recursive cleanup routing")
+
+# Path D sketch routing (the broadcast-wall fix): route a query to its shard by matching a per-shard key-sketch,
+# then unbind only the top-c candidates -- accurate as the directory, far fewer unbinds than broadcasting to all.
+_ar = _fm.storage_array(n_parity=0, add_threshold=0.0); _rr = np.random.default_rng(2)
+for _s in range(32):
+    if _s > 0:
+        _ar._spin_up()
+    for _ in range(30):
+        _ar.add(int(_rr.integers(0, 256)))
+_sp = list(_ar.truth); _ss = [_sp[i] for i in np.random.default_rng(5).choice(len(_sp), 150, replace=False)]
+_dir = float(np.mean([_ar.recall(g) == _ar.truth[g][1] for g in _ss]))
+_rt = float(np.mean([_ar.routed_recall(g, c=8) == _ar.truth[g][1] for g in _ss]))
+_bc = float(np.mean([_ar.broadcast_recall(g) == _ar.truth[g][1] for g in _ss]))
+print(f"  Path D sketch routing (array)       : 32 shards -- directory {_dir:.2f}, sketch-routed(c=8) {_rt:.2f}, broadcast {_bc:.2f}; "
+      f"routing touches 8 shards, not all 32")
+
+# Path D distributed forward pass (THE WIN): a classifier's weight rows in ONE vector cap at ~0.02xD classes;
+# federate them across K shards and the wall moves to ~K x 0.02xD -- the same federation move that fixed storage.
+import holographic_compute as _hc
+_Hte, _yte, _Wc, _Lex = _hc._classifier(64, 20, _fm.dim, np.random.default_rng(11))
+_exA = float(np.mean(_Lex.argmax(1) == _yte))
+_a1 = float(np.mean(_fm.distributed_forward(_Wc, _Hte, K=1).argmax(1) == _yte))
+_a8 = float(np.mean(_fm.distributed_forward(_Wc, _Hte, K=8).argmax(1) == _yte))
+print(f"  Path D distributed forward pass     : 64-class forward pass -- exact {_exA:.2f}, single-vector(K=1) {_a1:.2f}, "
+      f"federated(K=8) {_a8:.2f}; federation moves the class wall (16 -> 96 classes faithful at K=8 in the sweep)")
+
+# Path D Bucket-A under federation: the federate-the-shards move applied to SEQUENCE recall (superpose_compute
+# shards=K) and to the image ARCHIVE (federated_archive) -- the same lever that fixed storage and the matmul.
+import holographic_ai as _hai
+_Vcb = np.stack([_trv(_fm.dim, _rdD) for _ in range(64)]); _seqT = _rdD.integers(0, 64, size=160)
+_spos = np.stack([_hai.unitary_vector(_fm.dim, _rdD) for _ in range(160)])
+_s1 = float(np.mean(_fm.superpose_compute(_Vcb[_seqT], keys=_spos, codebook=_Vcb, shards=1)["decoded"] == _seqT))
+_s8 = float(np.mean(_fm.superpose_compute(_Vcb[_seqT], keys=_spos, codebook=_Vcb, shards=8)["decoded"] == _seqT))
+print(f"  Path D federated sequence (width)   : recall a 160-symbol sequence -- single vector {_s1:.2f}, federated(K=8) {_s8:.2f}; "
+      f"federation moves the length wall (same for hypothesis selection)")
+from holographic_archive import HolographicArchive as _HA
+_imD = [_rdD.random((16, 16)) for _ in range(64)]; _keepD = 8192 // 64
+_moD = _HA((16, 16, 1), capacity=64, keep=_keepD, dim=8192, seed=0); [_moD.add(_im) for _im in _imD]
+_cf = lambda a, b: float((lambda x, y: x @ y / (np.linalg.norm(x) * np.linalg.norm(y) + 1e-12))(a - a.mean(), b - b.mean()))
+_mcD = float(np.mean([_cf(_moD.recover(i).ravel(), _imD[i].ravel()) for i in range(64)]))
+_fdD = _fm.federated_archive((16, 16, 1), capacity=64, K=4, keep=_keepD, dim=8192 // 4); _giD = [_fdD.add(_im) for _im in _imD]
+_fcD = float(np.mean([_cf(_fdD.recover(_giD[i]).ravel(), _imD[i].ravel()) for i in range(64)]))
+print(f"  Path D federated archive            : 64 images at fixed total dim -- monolithic corr {_mcD:.2f}, federated(K=4) corr {_fcD:.2f}; "
+      f"capacity federates, recovery quality conserved")
+
+# Path D conservation diagnostic: the "as above, so below" law as a callable readout -- the per-vector budget,
+# how federation scales it, the partition-conservation check, and a shard recommendation for a target count.
+_rep = _fm.federation_report(target_items=500)
+print(f"  Path D conservation diagnostic      : per-vector budget {_rep['per_vector_budget']} symbols (~{_rep['per_vector_fraction'] * 100:.0f}% of D), "
+      f"4 shards hold {_rep['federated']['stored']} @ {_rep['federated']['recall']:.2f}, conservation ratio {_rep['conservation_ratio']:.2f}; "
+      f"500 items -> {_rep['recommended_shards']} shards")
+
+# Path D learning program: gradient-free, substrate-native learning, wired as faculties.
+# reservoir = fixed permute-recurrence Echo-State Net + one ridge readout (no gradients); it learns a signal.
+import numpy as _np
+_t = _np.arange(1300); _s = _np.sin(_t / 4.0) + 0.3 * _np.sin(_t / 9.0)
+_esn = _fm.reservoir(n_in=1, rho=0.95, leak=0.5)
+_esn.fit(_s[:900, None], _s[1:901], ridge=1e-6, washout=100)
+_pr = _esn.predict(_s[900:1150, None]).ravel(); _tg = _s[901:1151]
+_nr = float(_np.sqrt(_np.mean((_tg[60:] - _pr[60:]) ** 2) / (_np.var(_tg[60:]) + 1e-12)))
+print(f"  Gradient-free reservoir (ESN)       : one-step NRMSE {_nr:.3f} -- fixed reservoir, only the ridge readout learned")
+# prototype_classifier = bundle prototypes + perceptron retraining (add/subtract on a miss, no gradients).
+_rng = _np.random.default_rng(0); _C, _d, _per = 3, 8, 80
+_ct = _rng.standard_normal((_C, _d)) * 2.0
+_Xtr = _np.vstack([_ct[c] + _rng.standard_normal((_per, _d)) for c in range(_C)]); _ytr = _np.repeat(_np.arange(_C), _per)
+_Xte = _np.vstack([_ct[c] + _rng.standard_normal((40, _d)) for c in range(_C)]); _yte = _np.repeat(_np.arange(_C), 40)
+_clf = _fm.prototype_classifier(levels=16)
+_clf.fit(_Xtr, _ytr, epochs=0); _one = float(_np.mean(_clf.predict(_Xte) == _yte))
+_clf.fit(_Xtr, _ytr, epochs=15); _ret = float(_np.mean(_clf.predict(_Xte) == _yte))
+print(f"  Gradient-free HDC classifier        : one-shot {_one:.2f} -> retrained {_ret:.2f} (perceptron add/subtract, no gradients)")
+# Equilibrium Propagation: the LOCAL-gradient corner -- learns the energy-based Hopfield's hidden weights.
+from holographic_equilibrium import _moons as _mk
+_rngm = _np.random.default_rng(0); _Xm, _ym = _mk(360, 0.10, _rngm)
+_pm = _rngm.permutation(len(_Xm)); _Xm, _ym = _Xm[_pm], _ym[_pm]; _Ym = _np.eye(2)[_ym]; _ntr = 260
+_ep = _fm.equilibrium_net(n_in=2, n_hidden=48, n_out=2, beta=0.35, dt=0.35, t_free=45, t_nudge=12)
+_ep.fit(_Xm[:_ntr], _Ym[:_ntr], epochs=100, lr=0.3, batch=90, seed=0)
+_ea = float(_np.mean(_ep.predict(_Xm[_ntr:]) == _ym[_ntr:]))
+_Aa = _np.c_[_Xm[:_ntr], _np.ones(_ntr)]; _wl = _np.linalg.lstsq(_Aa, _Ym[:_ntr], rcond=None)[0]
+_la = float(_np.mean(_np.argmax(_np.c_[_Xm[_ntr:], _np.ones(len(_Xm) - _ntr)] @ _wl, 1) == _ym[_ntr:]))
+print(f"  Equilibrium Propagation (local-grad): two-moons {_ea:.2f} vs linear {_la:.2f} -- learns hidden weights, no backprop")
+# Forward-Forward: backprop-free DEPTH from local goodness objectives (the mechanism; honest negative: trails linear at this scale).
+from holographic_forward import _blobs as _bl
+_rngf = _np.random.default_rng(0); _Xf, _yf = _bl(560, 16, 4, 2.2, _rngf)
+_pf = _rngf.permutation(len(_Xf)); _Xf, _yf = _Xf[_pf], _yf[_pf]; _nf = 420
+_ff = _fm.forward_forward(n_in=16, layer_sizes=(100, 100), n_classes=4, theta=0.05, label_scale=4.0)
+_ff.fit(_Xf[:_nf], _yf[:_nf], epochs=60, lr=0.1, batch=100, seed=0)
+_fa = float(_np.mean(_ff.predict(_Xf[_nf:]) == _yf[_nf:]))
+print(f"  Forward-Forward (local goodness)    : separable 4-class blobs {_fa:.2f} -- backprop-free depth, no settling")
+
+# Nonlinear-dynamics companion: the reservoir learns a chaotic one-step map the linear propagator cannot.
+from holographic_chaos import lorenz_trajectory as _lz
+_tr = _lz(3000, seed=0); _ntr = 2000; _te = _tr[_ntr:]
+_cp = _fm.learn_chaos(_tr[:_ntr], dim=400, noise=1e-2); _pp = _cp.predict_sequence(_te)
+_rl = lambda p, t: float(_np.linalg.norm(p - t) / (_np.linalg.norm(t) + 1e-12))
+_cres = _np.mean([_rl(_pp[i], _te[i + 1]) for i in range(200, len(_te) - 1)])
+_cper = _np.mean([_rl(_te[i], _te[i + 1]) for i in range(len(_te) - 1)])
+_Ad, _, _, _ = _np.linalg.lstsq(_tr[:_ntr - 1], _tr[1:_ntr], rcond=None)
+_cdmd = _np.mean([_rl(_te[i] @ _Ad, _te[i + 1]) for i in range(len(_te) - 1)])
+print(f"  Nonlinear dynamics (learn_chaos)    : chaotic Lorenz one-step {_cres:.4f} vs best-linear DMD {_cdmd:.3f}, "
+      f"persistence {_cper:.3f} -- {_cdmd / _cres:.0f}x best-linear (closed-loop caps ~1 Lyapunov time, kept)")
+
+# Learned energy memory: EP trains the cleanup's ATTRACTORS -- a learned projector beats the fixed cleanup on
+# a continuous manifold (the engine's deepest fixed object, the cleanup, finally made trainable).
+from holographic_energy import torus_bump_manifold as _tbm
+from holographic_hopfield import dense_cleanup as _dc
+_ecl, _, _eD = _tbm(n_grid=6, latent_dim=2, sigma=0.13, n_samples=1500, noise=0.30, seed=0)
+_em = _fm.learn_cleanup(_ecl, noise=0.30, n_hidden=24, epochs=70)
+_ect, _ent, _ = _tbm(n_grid=6, latent_dim=2, sigma=0.13, n_samples=200, noise=0.30, seed=5)
+_eep = _np.mean([_rl(_em.cleanup(_ent[i]), _ect[i]) for i in range(len(_ent))])
+_esoft = _np.mean([_rl(_dc(_ent[i], _ecl[:64], beta=25.0, steps=3), _ect[i]) for i in range(len(_ent))])
+print(f"  Learned energy memory (learn_cleanup): 2-D manifold learned {_eep:.3f} vs fixed soft cleanup {_esoft:.3f} "
+      f"-- EP trains the cleanup's attractors (discrete atoms still want the hard cleanup, kept)")
+
+# Sparse cleanup readout + geometry-aware denoise: match the MAP to the MANIFOLD (panel review, 2026).
+# The softmax cleanup blend over-smooths a continuous manifold and loses to nearest-neighbour; the sparse
+# (Hopfield-Fenchel-Young) readout blends only the relevant patterns and edges past NN, and the geometry
+# router reads the set's effective rank and projects a low-rank manifold instead -- recovering UN-stored points.
+from holographic_hopfield import dense_cleanup as _dc
+from holographic_ai import cosine as _csg
+_rgg = _np.random.default_rng(0); _Ag = _rgg.standard_normal(1024); _Bg = _rgg.standard_normal(1024)
+def _slp(a, b, t):
+    a1, b1 = a / _np.linalg.norm(a), b / _np.linalg.norm(b); om = _np.arccos(_np.clip(a1 @ b1, -1, 1)); so = _np.sin(om)
+    return (_np.sin((1 - t) * om) / so) * a + (_np.sin(t * om) / so) * b
+_crs = _np.stack([_slp(_Ag, _Bg, t) for t in _np.linspace(0, 1, 6)])         # a continuous low-rank manifold
+_Cug = _crs / _np.linalg.norm(_crs, axis=1, keepdims=True); _nmg = _np.linalg.norm(_crs, axis=1).mean()
+_so = []; _sp = []; _nn = []; _gm = []
+for _ in range(200):
+    _tg = _rgg.uniform(0, 1); _clg = _slp(_Ag, _Bg, _tg)
+    _nyg = _clg + 1.0 * _nmg / _np.sqrt(1024) * _rgg.standard_normal(1024)
+    _so.append(_csg(_dc(_nyg, _crs, beta=8, steps=3, readout="softmax"), _clg))
+    _sp.append(_csg(_dc(_nyg, _crs, beta=8, steps=3, readout="sparsemax"), _clg))
+    _nn.append(_csg(_crs[int((_Cug @ (_nyg / _np.linalg.norm(_nyg))).argmax())], _clg))
+    _gm.append(_csg(_fm.denoise(_nyg, method="geometry", samples=_crs), _clg))
+print(f"  Sparse cleanup + geometry denoise   : in-between recovery softmax {_np.mean(_so):.3f} < NN {_np.mean(_nn):.3f} "
+      f"< sparse {_np.mean(_sp):.3f}; geometry auto-routes to projection {_np.mean(_gm):.3f} -- match the map to the manifold")
+
+# Same fix, one rung up: the resonator's alternating projection is a softmax blend too, so the sparse readout
+# cures ITS metastable mixing -- recovering factorizations at high alphabet where the softmax blend collapses to 0.
+from holographic_sbc import sbc_codebook as _scb, sbc_reconstruct as _srec, sbc_resonator as _sres
+def _capr(_N, _ro, _tr=20):
+    _ok = 0
+    for _s in range(_tr):
+        _rg = _np.random.default_rng(_s); _cb = [_scb(16, 16, _N, seed=900 + _f + _s * 7) for _f in range(3)]
+        _tu = tuple(int(_rg.integers(_N)) for _ in range(3)); _pr = _srec(_tu, _cb, 16)
+        _pk, _ = _sres(_pr, _cb, 16, restarts=6, iters=50, seed=_s, readout=_ro)
+        _ok += int(tuple(_pk) == _tu)
+    return _ok / _tr
+_r25s, _r25p = _capr(25, "softmax"), _capr(25, "sparsemax"); _r50s, _r50p = _capr(50, "softmax"), _capr(50, "sparsemax")
+print(f"  Sparse resonator readout            : all-factors-correct N=25 {_r25s:.2f}->{_r25p:.2f}, N=50 {_r50s:.2f}->{_r50p:.2f} "
+      f"(softmax->sparse) -- metastable-mixing fix raises factorization capacity, no regression")
+
+# Same fix in the GENERATIVE attractor: generate_structure's slot-wise blend is softmax too, so sparse cures
+# its MODE COLLAPSE -- softmax funnels many seeds into the same few structures; sparse stays diverse (valid either way).
+from holographic_ai import unitary_vector as _uv, random_vector as _rv, bind as _bd, unbind as _ub
+from holographic_hopfield import generate_structure as _gst, _unit_rows as _ur
+def _gun(v): return v / (_np.linalg.norm(v) + 1e-12)
+def _gdiv(_ro, _sd=18):
+    _r = _np.random.default_rng(55); _rl = _np.array([_uv(1024, _r) for _ in range(3)])
+    _fl = _np.array([_rv(1024, _r) for _ in range(12)]); _fu = _ur(_fl); _cm = set(); _rc = []
+    for _s in range(_sd):
+        _z = _gst(_rl, _fl, steps=16, seed=_s, readout=_ro)
+        _c = tuple(int((_fu @ _gun(_ub(_z, _rl[_i]))).argmax()) for _i in range(3))
+        _rc.append(float(_z @ _gun(_np.sum([_bd(_rl[_i], _fu[_c[_i]]) for _i in range(3)], axis=0)))); _cm.add(_c)
+    return _np.mean(_rc), len(_cm) / _sd
+_gvs, _gds = _gdiv("softmax"); _gvp, _gdp = _gdiv("sparsemax")
+print(f"  Sparse generative readout           : structures valid (reencode cosine) soft {_gvs:.3f} / sparse {_gvp:.3f}; "
+      f"diversity soft {_gds:.2f} -> sparse {_gdp:.2f} -- same fix cures generative mode collapse")
+
+# Grounded answering: construct a SHORT, ACCURATE sentence from RETRIEVED knowledge (the relational layer
+# that works) and ABSTAIN honestly when unknown -- not the Markov walk, which is locally fluent but incoherent.
+_am = UnifiedMind(dim=512, seed=0)
+_am.learn_encyclopedia({'dog': {'is_a': 'mammal'}, 'mammal': {'is_a': 'animal'},
+                        'animal': {'is_a': 'organism'}, 'france': {'is_a': 'country', 'capital': 'paris'}})
+print(f"  Grounded answer (answer_text)       : 'is a dog an animal?' -> {_am.answer_text('is a dog an animal?')}")
+print(f"                                        'capital of france?'  -> {_am.answer_text('what is the capital of france?')}"
+      f"  (constructed, accurate, non-verbatim; unknowns abstain)")
+
+# VSA-native question router: a blend of the question's word meanings picks the intent, a concept-scan WITH
+# ORDER picks the arguments -- so natural/verbose phrasings the regex templates miss now route correctly.
+_anat = "could you tell me whether a dog is an animal"
+print(f"  VSA question router (intent+order)  : {_anat!r}")
+print(f"                                        -> {_am.answer_text(_anat)} "
+      f"(regex misses this phrasing; routed by meaning, subject/ancestor by word order)")
+
 print("\n" + "-" * 66)
-print("  All fifteen subsystems ran on the same vector substrate. Wired up.")
+print("  Every subsystem -- through gradient-free learning -- ran on the same vector substrate. Wired up.")
 print("-" * 66 + "\n")

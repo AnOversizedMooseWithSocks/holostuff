@@ -47,23 +47,31 @@ Pure NumPy, deterministic, no new dependencies.
 import numpy as np
 from holographic_ai import bind, unbind, bundle, cosine, permute, derived_atom
 
-OPCODES = ["LOAD", "BIND", "BUNDLE", "PERMUTE", "CALL", "HALT"]
+OPCODES = ["LOAD", "BIND", "BUNDLE", "PERMUTE", "CALL", "APPLY", "IFMATCH", "ITERATE", "REPEAT", "HALT"]
 DEFAULT_DATA = list("abcdef")
+COUNT_MAX = 8                      # REPEAT's count operand ranges over cnt:1 .. cnt:COUNT_MAX
+# Faculty names an APPLY instruction can name. APPLY <faculty> means ACC := faculty(ACC) -- a unary
+# map run by a host (the mind) that supplies the handlers; the bare VM has none, so APPLY is a no-op
+# here. This is the extension point that lets a procedure invoke the engine's faculties as steps.
+DEFAULT_FACULTIES = ["cleanup", "denoise", "matmul"]
 
 
 class HoloMachine:
     """A formatted holographic drive that can store and execute stored programs."""
 
-    def __init__(self, dim=4096, seed=7, data=None):
+    def __init__(self, dim=4096, seed=7, data=None, faculties=None):
         self.dim = dim
         self.seed = seed
         self.data_names = list(data) if data is not None else list(DEFAULT_DATA)
+        self.faculty_names = list(faculties) if faculties is not None else list(DEFAULT_FACULTIES)
         # "format the drive": the whole alphabet is derived deterministically from the seed.
         self.OP = self._atom("role:OP", unitary=True)     # roles are unitary -> unbind is exact
         self.ARG = self._atom("role:ARG", unitary=True)
         self.SLOT = self._atom("role:SLOT", unitary=True)  # the role a nested 'file' lives under
         self.op_atoms = {o: self._atom(f"op:{o}") for o in OPCODES}
         self.data_atoms = {d: self._atom(f"dat:{d}") for d in self.data_names}
+        self.fac_atoms = {f: self._atom(f"fac:{f}") for f in self.faculty_names}  # APPLY's operand codebook
+        self.cnt_atoms = {n: self._atom(f"cnt:{n}") for n in range(1, COUNT_MAX + 1)}  # REPEAT's count codebook
         # the holographic function LIBRARY: named sub-programs, all held in one vector, callable by name
         self.functions = {}       # name -> assembled program vector
         self.fn_atoms = {}        # name -> unitary name atom (the 'address' of the function)
@@ -78,10 +86,14 @@ class HoloMachine:
 
     # ---- assembling a program into a single hypervector --------------------------------------
     def _instr(self, op, arg):
-        if op == "CALL":
-            arg_vec = self.fn_atoms[arg]                            # CALL's operand is a function NAME
+        if op in ("CALL", "ITERATE"):
+            arg_vec = self.fn_atoms[arg]                            # operand is a function NAME (callee / loop body)
+        elif op == "APPLY":
+            arg_vec = self.fac_atoms[arg]                          # APPLY's operand is a faculty NAME
+        elif op == "REPEAT":
+            arg_vec = self.cnt_atoms[arg]                          # REPEAT's operand is a small-integer count
         else:
-            arg_vec = self.data_atoms.get(arg, self.op_atoms["HALT"])   # HALT carries a don't-care operand
+            arg_vec = self.data_atoms.get(arg, self.op_atoms["HALT"])   # IFMATCH/value operand is a data atom
         return bundle([bind(self.OP, self.op_atoms[op]), bind(self.ARG, arg_vec)])
 
     def define(self, name, program):
@@ -111,22 +123,46 @@ class HoloMachine:
         return best
 
     def decode_instruction(self, program_vec, i):
-        """Read address i: return (opcode, operand) after cleanup. The honest, noisy read step."""
+        """Read address i: return (opcode, operand) after cleanup. The honest, noisy read step.
+        The operand is cleaned against the codebook the opcode implies -- function names for CALL,
+        faculty names for APPLY, data atoms otherwise."""
         raw = unbind(program_vec, self.pos(i))
         op = self._nearest(self.op_atoms, unbind(raw, self.OP))
-        arg = self._nearest(self.data_atoms, unbind(raw, self.ARG))
+        if op in ("CALL", "ITERATE") and self.fn_atoms:
+            arg = self._nearest(self.fn_atoms, unbind(raw, self.ARG))
+        elif op == "APPLY":
+            arg = self._nearest(self.fac_atoms, unbind(raw, self.ARG))
+        elif op == "REPEAT":
+            arg = self._nearest(self.cnt_atoms, unbind(raw, self.ARG))
+        else:
+            arg = self._nearest(self.data_atoms, unbind(raw, self.ARG))
         return op, arg
 
     # ---- executing a program -----------------------------------------------------------------
-    def run(self, program_vec, init_acc=None, max_steps=512, _depth=0):
+    def run(self, program_vec, init_acc=None, max_steps=512, _depth=0, handlers=None,
+            stop=None, max_loop=64, converge_tol=0.999, branch_tol=0.5):
         """Execute the program vector; return (accumulator, trace_of_decoded_instructions).
 
         `init_acc` lets a program start from a given accumulator -- which is what makes a function an
         ACC->ACC transform that CALL can chain. A CALL instruction extracts the named function from the
-        holographic library and runs it on the current ACC (with a recursion-depth guard)."""
+        holographic library and runs it on the current ACC (with a recursion-depth guard). `handlers`
+        maps a faculty name to a unary acc->acc function, supplied by the host (the mind); an APPLY
+        whose faculty has no handler is a safe no-op (so the bare VM still runs the program).
+
+        Control flow:
+        * IFMATCH x : execute the NEXT instruction only if cosine(ACC, x) >= branch_tol, else skip it
+          (a one-instruction conditional -- pair it with CALL for an if-then).
+        * ITERATE f : re-apply library function f to ACC until it CONVERGES (cosine to the previous ACC
+          >= converge_tol -- a fixed point), or the host `stop(acc)` predicate is satisfied (a desired
+          OUTPUT is reached), or `max_loop` is hit. This is the input->process->feed-back-as-input loop
+          that drives so much of the engine (cleanup, resonator, denoise), now expressible as a program.
+          Its trace entry is the 4-tuple (op, f, iterations, reason) where reason is 'converged' /
+          'goal' / 'maxloop'."""
+        handlers = handlers or {}
         acc = init_acc
         trace = []
-        for pc in range(max_steps):
+        pc = 0
+        for _step in range(max_steps):              # cap on TOTAL instructions executed (the safety net)
             raw = unbind(program_vec, self.pos(pc))
             op = self._nearest(self.op_atoms, unbind(raw, self.OP))
             if op == "HALT":
@@ -136,7 +172,56 @@ class HoloMachine:
                 trace.append(("CALL", fn))
                 if _depth < 8 and fn in self.functions:                    # guard against runaway recursion
                     sub = unbind(self.library, self.fn_atoms[fn])          # pull the function body out of the library
-                    acc, _ = self.run(sub, init_acc=acc, _depth=_depth + 1)
+                    acc, _ = self.run(sub, init_acc=acc, _depth=_depth + 1, handlers=handlers,
+                                      stop=stop, max_loop=max_loop, converge_tol=converge_tol, branch_tol=branch_tol)
+                pc += 1
+                continue
+            if op == "APPLY":
+                fac = self._nearest(self.fac_atoms, unbind(raw, self.ARG))  # operand cleaned vs faculty names
+                trace.append(("APPLY", fac))
+                if acc is not None and fac in handlers:                     # the host runs the faculty on ACC
+                    acc = handlers[fac](acc)
+                pc += 1
+                continue
+            if op == "ITERATE":                                            # fixed-point loop over a library function
+                fn = self._nearest(self.fn_atoms, unbind(raw, self.ARG))
+                iters, reason = 0, "maxloop"
+                if _depth < 8 and fn in self.functions and acc is not None:
+                    body = unbind(self.library, self.fn_atoms[fn])
+                    for iters in range(1, max_loop + 1):
+                        prev = acc
+                        acc, _ = self.run(body, init_acc=acc, _depth=_depth + 1, handlers=handlers,
+                                          stop=stop, max_loop=max_loop, converge_tol=converge_tol, branch_tol=branch_tol)
+                        if stop is not None and stop(acc):                  # the desired OUTPUT was reached
+                            reason = "goal"
+                            break
+                        if cosine(acc, prev) >= converge_tol:               # ACC stopped changing: a fixed point
+                            reason = "converged"
+                            break
+                trace.append(("ITERATE", fn, iters, reason))
+                pc += 1
+                continue
+            if op == "REPEAT":                                         # counted loop: run the next CALL n times
+                cnt = self._nearest(self.cnt_atoms, unbind(raw, self.ARG))
+                trace.append(("REPEAT", cnt))
+                nraw = unbind(program_vec, self.pos(pc + 1))           # the instruction to repeat (expects a CALL)
+                if self._nearest(self.op_atoms, unbind(nraw, self.OP)) == "CALL":
+                    fn = self._nearest(self.fn_atoms, unbind(nraw, self.ARG))
+                    trace.append(("CALL", fn))
+                    if _depth < 8 and fn in self.functions:
+                        body = unbind(self.library, self.fn_atoms[fn])
+                        for _ in range(max(1, cnt)):
+                            acc, _ = self.run(body, init_acc=acc, _depth=_depth + 1, handlers=handlers,
+                                              stop=stop, max_loop=max_loop, converge_tol=converge_tol, branch_tol=branch_tol)
+                    pc += 2                                            # skip REPEAT and the CALL it consumed
+                else:
+                    pc += 1                                            # not a CALL -> REPEAT is a no-op
+                continue
+            if op == "IFMATCH":                                            # conditional: gate the NEXT instruction
+                tgt = self._nearest(self.data_atoms, unbind(raw, self.ARG))
+                matched = acc is not None and cosine(acc, self.data_atoms[tgt]) >= branch_tol
+                trace.append(("IFMATCH", tgt))
+                pc += 1 if matched else 2                                   # skip the guarded instruction on no-match
                 continue
             arg = self._nearest(self.data_atoms, unbind(raw, self.ARG))
             trace.append((op, arg))
@@ -149,6 +234,7 @@ class HoloMachine:
                 acc = bundle([acc, d])
             elif op == "PERMUTE":
                 acc = permute(acc, 1)
+            pc += 1
         return acc, trace
 
     # ---- nesting (the inception layer): a program is just another value to store --------------

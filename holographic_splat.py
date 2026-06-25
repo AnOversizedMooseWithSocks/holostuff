@@ -127,3 +127,103 @@ def recall_region(scene_hv, cell, ctx):
         if s > best_s:
             best_q, best_s = q, s
     return best_q / (L - 1)
+
+
+# --- anisotropic splats: full-covariance Gaussians fit by gradient descent (the real 3DGS primitive) ------
+# Each splat is (center, amplitude, L) where L is an n*n lower-triangular Cholesky factor of the INVERSE
+# covariance, so the Gaussian is amp * exp(-0.5 * ||L^T (x - center)||^2). L lower-triangular keeps the
+# precision positive-definite for free. Works in any dimension -- 2-D fields and 3-D volumes share one fit.
+
+def _coords(shape):
+    """All voxel coordinates of an n-D array as an (npix, n) float array (row-major), built once per fit."""
+    grids = np.meshgrid(*[np.arange(s) for s in shape], indexing="ij")
+    return np.stack([g.ravel() for g in grids], axis=1).astype(float)
+
+
+def _iso_pursuit(target, K, scales=(1.0, 2.0, 3.5, 6.0)):
+    """Isotropic matching pursuit in n-D -- the warm start for the anisotropic fit. Returns a list of
+    (center (n,), peak_amplitude, sigma); render is amp * exp(-0.5 |x-center|^2 / sigma^2)."""
+    R = np.asarray(target, float).copy()
+    shape = R.shape
+    C = _coords(shape)
+    out = []
+    for _ in range(K):
+        ctr = np.array(np.unravel_index(np.abs(R).argmax(), shape), float)
+        d2 = ((C - ctr) ** 2).sum(1)
+        best = None
+        for s in scales:
+            g = np.exp(-0.5 * d2 / s ** 2)                      # peak 1
+            amp = float((R.ravel() @ g) / (g @ g + 1e-12))      # least-squares peak amplitude
+            energy = amp * amp * float(g @ g)
+            if best is None or energy > best[0]:
+                best = (energy, amp, s, g)
+        _, amp, s, g = best
+        R = (R.ravel() - amp * g).reshape(shape)
+        out.append((ctr, amp, s))
+    return out
+
+
+def aniso_render(splats, shape):
+    """Render anisotropic splats (center, amp, L) back to an n-D array -- the superposition of full-covariance
+    Gaussians, exactly what aniso_fit optimises."""
+    C = _coords(shape)
+    out = np.zeros(C.shape[0])
+    for ctr, amp, L in splats:
+        u = (C - ctr) @ L
+        out += amp * np.exp(-0.5 * (u * u).sum(1))
+    return out.reshape(shape)
+
+
+def aniso_fit(target, K, steps=200, lr=0.15, scales=(1.0, 2.0, 3.5, 6.0)):
+    """Fit `target` (any n-D array) with K ANISOTROPIC Gaussian splats by gradient descent on the
+    reconstruction MSE -- the 3D-Gaussian-Splatting primitive (oriented, elliptical Gaussians), in NumPy with
+    analytical gradients and a small built-in Adam (no autodiff framework). Warm-started from the isotropic
+    matching pursuit so the covariances only have to specialise. Each splat is (center, amplitude, L), L the
+    lower-triangular Cholesky factor of the inverse covariance. Returns (splats, rendered).
+
+    Anisotropy is decisive where structure is oriented/elongated -- one aligned splat replaces many circular
+    ones. KEPT NEGATIVE: the loss is non-convex, so this finds a LOCAL optimum -- more splats do not help
+    monotonically (a good K=4 fit can beat a messier K=8 one), and the result depends on the warm start. This
+    is the honest from-scratch core of 3DGS, without its tile rasteriser, spherical-harmonic view-dependent
+    colour, or GPU speed."""
+    target = np.asarray(target, float)
+    shape = target.shape
+    n = target.ndim
+    C = _coords(shape)
+    t = target.ravel()
+    iso = _iso_pursuit(target, K, scales)
+    centers = np.array([c for c, _, _ in iso])
+    amps = np.array([a for _, a, _ in iso])
+    Ls = np.array([np.eye(n) / max(sg, 0.5) for _, _, sg in iso])      # L = (1/sigma) I  (isotropic init)
+    tril = np.tril_indices(n)
+    state = {key: (np.zeros_like(v), np.zeros_like(v)) for key, v in (("a", amps), ("c", centers), ("L", Ls))}
+    b1, b2, eps = 0.9, 0.999, 1e-8
+
+    def render(ce, am, Ls_):
+        m = np.zeros(len(t))
+        for k in range(K):
+            u = (C - ce[k]) @ Ls_[k]
+            m += am[k] * np.exp(-0.5 * (u * u).sum(1))
+        return m
+
+    for step in range(1, steps + 1):
+        r = render(centers, amps, Ls) - t                                # residual
+        ga = np.zeros_like(amps); gc = np.zeros_like(centers); gL = np.zeros_like(Ls)
+        for k in range(K):
+            d = C - centers[k]
+            u = d @ Ls[k]                                                # u = L^T d  (per pixel)
+            ex = np.exp(-0.5 * (u * u).sum(1))
+            g = amps[k] * ex
+            ga[k] = float((r * ex).sum())                                # dE/d amp
+            Pd = u @ Ls[k].T                                             # (L L^T) d = precision * d
+            gc[k] = ((r * g)[:, None] * Pd).sum(0)                       # dE/d center = sum r g (P d)
+            for a_, b_ in zip(*tril):                                    # dE/d L_ab = sum r (-g) d_a u_b
+                gL[k][a_, b_] = float((r * (-g) * d[:, a_] * u[:, b_]).sum())
+        for key, par, grad in (("a", amps, ga), ("c", centers, gc), ("L", Ls, gL)):
+            m, v = state[key]
+            m = b1 * m + (1 - b1) * grad
+            v = b2 * v + (1 - b2) * grad * grad
+            par -= lr * (m / (1 - b1 ** step)) / (np.sqrt(v / (1 - b2 ** step)) + eps)
+            state[key] = (m, v)
+    splats = [(centers[k].copy(), float(amps[k]), Ls[k].copy()) for k in range(K)]
+    return splats, render(centers, amps, Ls).reshape(shape)
