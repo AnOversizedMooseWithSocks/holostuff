@@ -611,3 +611,28 @@ def test_unitary_widens_role_filler_cleanup_margin():
                 ms.append(sims[qi] - max(sims[j] for j in range(n_roles) if j != qi))
         return float(np.mean(ms))
     assert margin(unitary_vector) > margin(random_vector)
+
+
+def test_resonator_soft_cleanup_beta_recovers_where_linear_fails():
+    """As-above-so-below: the SBC resonator's softmax-sharpened readout, applied to the
+    circular-convolution ResonatorNetwork. At high codebook load a softmax-sharpened cleanup (beta)
+    recovers a factorization the raw-similarity cleanup misses across all restarts. Deterministic
+    case (F=3, D=1024, N=45). Backward-compatible: beta=None is the original linear cleanup."""
+    import numpy as np
+    import functools
+    from holographic_ai import bind, random_vector
+    from holographic_reasoning import ResonatorNetwork
+    F, D, N = 3, 1024, 45
+    rng = np.random.default_rng(0)
+    cbs = [np.stack([random_vector(D, rng) for _ in range(N)]) for _ in range(F)]
+    R = ResonatorNetwork(cbs)
+    true = tuple(int(np.random.default_rng(7000).integers(N)) for _ in range(F))
+    comp = functools.reduce(bind, [cbs[f][true[f]] for f in range(F)])
+
+    def recovers(beta):
+        return any(tuple(R.factor(comp, iters=50, init=(None if r == 0 else "random"),
+                                  rng=np.random.default_rng(r), beta=beta)) == true
+                   for r in range(4))
+
+    assert not recovers(None)        # raw-similarity cleanup fails all 4 restarts at this load
+    assert recovers(25)              # softmax-sharpened cleanup recovers

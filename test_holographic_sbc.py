@@ -89,3 +89,20 @@ def test_factors_cannot_be_read_off_a_product_naively():
     out = decompose_structure(P, cbs, L, seed=0)
     assert naive != true                                             # naive fails (deconfounding needed)
     assert out["picks"] == true and out["verified"]                  # the joint verified search succeeds
+
+
+def test_topk_readout_recovers_and_verifies():
+    """The TopK readout (Gao et al. 2024) -- the high-load option in the same energy family as
+    softmax/sparsemax -- runs through the resonator, recovers a VERIFIED factorization, and its
+    calibrated confidence null is matched to the readout+k (its measured win at very high N is in
+    NOTES_concepts)."""
+    import numpy as np
+    from holographic_sbc import decompose_structure, sbc_reconstruct
+    L, B, F, N = 64, 16, 3, 40
+    r = np.random.default_rng(0)
+    cbs = [[tuple(r.integers(0, L, size=B)) for _ in range(N)] for _ in range(F)]
+    true = tuple(int(r.integers(N)) for _ in range(F))
+    P = np.asarray(sbc_reconstruct(true, cbs, L))
+    out = decompose_structure(P, cbs, L, readout="topk", k=8, confidence=True)
+    assert out["picks"] == true and out["verified"]       # topk recovers and verifies
+    assert out["pvalue"] < 0.05                            # calibrated confidence (null matched to topk)

@@ -75,3 +75,23 @@ def test_brain_predictive_wiring():
     assert m.generate_predictive(["a", "b"], 4)[:2] == ["c", "a"]
     rep = m.prediction_report(["a", "b", "c"] * 20)
     assert rep["accuracy"] > 0.8 and rep["free_energy"] < 0.2
+
+
+def test_zread_support_weighting_picks_the_frequent_value():
+    # Equal coupling (identical context, cosine 1.0) but unequal SUPPORT: the support weight decides.
+    q = np.zeros(64); q[0] = 1.0
+    vals = [np.eye(64)[1], np.eye(64)[2]]
+    out = zread(q, np.stack([q, q]), vals, t_min=0.5, weights=[5.0, 1.0], ordered=False)
+    assert np.dot(out, vals[0]) > np.dot(out, vals[1])     # higher-support value dominates the blend
+
+
+def test_soft_predict_is_map_correct_on_stochastic_successor():
+    # A context with two successors at 70/30: the SOFT read must return the MAP (frequent) symbol.
+    # Without support-weighting it blends 50/50 and decodes to the 30% symbol -- the bug this pins.
+    from holographic_unified import UnifiedMind
+    rng = np.random.default_rng(3); seq = []
+    for _ in range(400):
+        seq += [0, 2, 3 if rng.random() < 0.7 else 4]     # A(2) -> B(3) 70% / C(4) 30%
+    m = UnifiedMind(dim=2048, seed=0).build_predictor(order=2)
+    m.observe_sequence(seq)
+    assert m.anticipate([0, 2], soft=True)[0] == 3        # soft read returns the MAP successor B

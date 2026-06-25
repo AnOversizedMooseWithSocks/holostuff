@@ -6325,3 +6325,146 @@ shared function handles). It now imports and calls `box_resize` -- one duplicate
 Net: the high-value above/below seam was the vectorized-recall pattern and the lone-signal denoiser (first
 pass); the second pass confirms the rest of the codebase already honours the discipline, with one app-layer
 duplicate folded away. Writing the non-finding down is the same honesty the rest of the project runs on.
+
+
+## TopK resonator readout: the high-load option (shipped)
+
+The SBC resonator's alternating-projection blend had two readouts -- softmax (the original, blends all atoms)
+and sparsemax (Martins & Astudillo 2016, blends only the relevant ones, curing softmax's metastable mixing
+and raising capacity at the MIDDLE of the load range). A third, TopK (Gao et al. 2024 -- the k-sparse
+autoencoder readout; a point in the same Hopfield-Fenchel-Young energy family), keeps exactly the k largest
+atoms and softmaxes over just those. MEASURED on the capacity cliff (all-factors-correct, F=3, B=16, L=64,
+vs codebook size N): TopK wins at the HIGHEST load -- at N=110, where softmax, sparsemax, AND alpha-entmax all
+collapse to 0.05, topk(k=8) is the only readout still recovering factors (0.23), and it leads at N=50 (0.60
+vs sparsemax 0.47). A fixed k keeps k candidates alive where adaptive methods over-prune.
+
+Kept negatives: k must be chosen (k=4 underperformed k=8 badly), and TopK ties or slightly LOSES to sparsemax
+in the MIDDLE of the range (N=80: 0.12 vs 0.25) -- so it is the high-load option, not a new default.
+alpha-entmax (the principled softmax<->sparsemax interpolation at alpha=1.5) was ALSO prototyped and DECLINED:
+it merely tracks sparsemax, finding no sweet spot the annealed resonator benefits from -- the extreme (TopK)
+wins, not the interpolation. The Hopfield-Fenchel-Young framework (Santos et al. 2025) is the theory that
+unifies softmax/sparsemax/entmax/TopK as one energy family; the measurement still rules.
+
+Above/below: TopK is a readout PRIMITIVE, so it lives in holographic_hopfield beside _sparsemax (the shared
+cleanup home, no reimpl) and is imported by the resonator -- one readout family, used wherever a softmax over
+similarities is. Threaded through decompose_structure, resonator_confidence, and the mind's
+decompose_structure faculty with a `k` parameter; the calibrated-confidence null caches per (readout, k) so
+its p-value stays matched to the chosen readout. Backward-compatible: default stays softmax.
+
+Tests: +1 (848 -> 849): test_topk_readout_recovers_and_verifies in test_holographic_sbc.py.
+
+
+## Support-weighted soft predict: MAP-correct on stochastic successors (shipped)
+
+Re-reading Closure-SDK (faltz009) through the lens of "the substrate stores but does not compute" confirmed
+the engine ALREADY owns the predictive loop it inspired (PredictiveMemory: build_predictor / anticipate /
+generate_predictive, plus the meaning-level MeaningPredictor). A re-derivation prototype only reconfirmed
+that holostuff does context-sensitive prediction (A->B after P, A->D after Q: 1.00 vs 0.55 for Markov),
+generalizes to held-out sequences of the same grammar (1.00), and rolls out STABLY over 500 steps with no
+drift -- the discrete cleanup resets the representation each step, so the limit is context ORDER (the n-gram
+curse), not drift, and under-ordered it degrades to wrong-but-VALID, never garbage. No new faculty earned a
+place.
+
+But the Closure-style probabilistic test (a context with two successors at 70/30) surfaced a REAL BUG in the
+existing faculty: the SOFT read (zread blend of next-vectors) weighted candidates by resonance only, so two
+equally-resonant entries (same context, cosine 1.0) contributed EQUALLY regardless of how often each was
+seen -- a 70/30 split blended 50/50 and decoded to the 30% (minority) symbol. The fix is the engine's own
+frequency-weighted-superposition insight (the same trick that lets the scene coder count and recover objects
+from an unnormalised sum): weight the soft blend by each entry's SUPPORT (its reinforcement count, already
+tracked). MEASURED MAP-correct across mixes 60/40..90/10. The same revisit showed the HARD read is itself
+fragile near a tie (at 60/40 it returned the minority), so support-weighted soft is now the reliable read on
+stochastic streams. zread gained an optional `weights` parameter (default None = unchanged); it has exactly
+one caller, so the change is fully backward-compatible.
+
+The honest outcome of the Closure re-read: not a new capability (the predictive loop, itself ported from
+Closure, was already shipped) but a precise fix to it -- plus verification that the engine's scattered
+prediction faculties ARE a from-scratch attention/predictor that learns WITHOUT autodiff, the project's hard
+constraint, vindicated by an independent geometric computer reaching the same place.
+
+Tests: +2 (849 -> 851): test_zread_support_weighting_picks_the_frequent_value and
+test_soft_predict_is_map_correct_on_stochastic_successor in test_holographic_predictive.py.
+
+
+## Soft (sharpened) cleanup for the older resonators (above/below sweep, shipped)
+
+The SBC resonator's readout lesson -- a softmax-SHARPENED blend beats the raw-similarity superposition --
+swept downward to the two older resonators, which both used hard/linear cleanups. MEASURED, both win at
+high codebook load, with the size of the win set by how strong each resonator already was:
+
+  * BIPOLAR resonator (holographic_resonator.py, elementwise-product binding, sign cleanup): replacing
+    sign(B.T @ (B @ est)) with sign(B.T @ softmax(beta * cosines)) gives a 3-25x recovery improvement
+    (F=3, D=1024, 5 restarts): N=50 hard 0.30 -> soft 0.93; N=70 0.03 -> 0.77; N=90 0.00 -> 0.53. And it
+    needs far fewer restarts -- one soft run (0.47) beats five hard restarts (0.30) at N=50.
+  * CIRCULAR-CONVOLUTION resonator (holographic_reasoning.py, the engine's native bind/unbind, continuous
+    cleanup): smaller win because it is already much stronger (linear handles N<=30 perfectly). Through the
+    real class, N=35 0.90 -> 1.00, N=45 0.90 -> 0.95 (beta=25). The scene coder, which uses it, is already
+    near-ceiling on its tiny codebooks (colours 7, shapes 4, textures 4): linear recovers K=7 objects at
+    1.00 and K=9 at 0.96; soft reaches 1.00 at K=9 (+0.04, marginal).
+
+THE BETA SWEET SPOT is unimodal and load-bearing (kept negative): too soft (beta<=5 on cosines) is too flat
+to converge and fails completely; too sharp (beta>=80, or beta applied to RAW unnormalised similarities,
+which is effectively one-hot) collapses the search and also fails. The win lives in the middle -- beta~30
+bipolar, ~15-30 circular-conv -- a sharpening that keeps a thin tail of competitors alive so the resonator
+can still explore. (The first prototype FAILED because beta=8 on raw sims of scale ~1024 was effectively
+one-hot; normalising to cosines and using a fair beta is what surfaced the win -- recorded so the scaling
+trap is on the record.)
+
+SCOPING HONESTY: the biggest win (bipolar, 3-25x) lands on factor_composite's LEGACY dense path; the
+actively-used circular-conv callers (scene coder, the CRT ResidueSystem in holographic_extras) run small
+codebooks where the current cleanup is already near-ceiling, so the practical gain there is marginal. The
+lesson genuinely transfers, but its high-impact regime (large codebooks / high load) is one the current
+callers rarely hit. Wired therefore as a backward-compatible OPTION (a `beta` parameter on
+ResonatorNetwork.factor, default None = the original linear cleanup, no default changed) so any high-load
+use -- larger CRT moduli, the legacy path, a future large-codebook factorization -- gets the win for free,
+without churning the paths that don't need it.
+
+TWO CLEAN NON-FINDINGS from the same sweep, written down because the absence of a change is a measured
+choice: (1) the MoE gate already does sparse top-1 routing, and its docstring records that BLENDING experts
+was measured to HURT -- so top-k (k>1) routing would re-introduce a known failure; the lesson does not
+transfer. (2) the MeaningPredictor already embodies the frequency lesson by construction: fit_transitions
+stores one entry PER OCCURRENCE (no merge), so its coupling-weighted blend is frequency-weighted by
+repetition -- verified MAP-correct (after [p,a] with b 70%/c 30% it returns 'b'), and its settle already
+uses a top-5 readout. The zread support-weighting fix it would have needed is already there, reached a
+different way.
+
+Tests: +1 (851 -> 852): test_resonator_soft_cleanup_beta_recovers_where_linear_fails in test_holographic.py.
+
+
+## Magic-number sweep: the beta=25 cleanup sharpness, checked and justified (sweep, no code change)
+
+A sweep for magic numbers -- arbitrary constants that gate behaviour and might be derived or calibrated
+instead of hand-set. FINDING FIRST: the codebase already runs a strong no-magic-number discipline --
+statistical z-floors that say "exceeds noise" rather than a tuned cutoff, natural-largest-gap splits, the
+auto coherence floor derived from the store's own distribution, the calibrated decide_confidence that
+replaced a hand-set blind_floor. Most thresholds are already data-derived statements, not magic.
+
+The one prominent remaining magic number is beta=25.0 -- the softmax-cleanup SHARPNESS, the default across
+Vocabulary.cleanup, dense_cleanup, codebook_denoise, and HopfieldCleanup. Three derivation hypotheses were
+prototyped and MEASURED; none cleanly beats a sensible fixed value, so the constant earns its place:
+
+  1. SHOULD beta scale with dimension? The principled window is ln(N) < beta < sqrt(2D) -- the softmax must
+     beat the noise pack (N-1 random cosines ~ N(0, 1/sqrt(D))) but not amplify a noise fluctuation into a
+     false winner. MEASURED the resonator's sweet-spot beta at D=512..4096: it sits in 15-40 and does NOT
+     cleanly track sqrt(D) -- lower beta is favoured on HARDER problems (low D), and beta barely matters when
+     D is large (codewords already well separated). No clean formula. beta=25 is within the acceptable range
+     at every D (optimal at 2048); a slightly lower 15-20 is marginally more robust across D.
+  2. DOES sparsemax remove the beta dependence? For PLAIN (non-iterative) cleanup, YES and cleanly: on a
+     continuous manifold, softmax recovery climbs with beta (needs it high enough to stop over-smoothing;
+     beta=25 good-not-maximal) while SPARSEMAX recovers ~1.000 across the ENTIRE beta=4..150 range, D- and
+     density-independent -- the simplex projection self-adapts its sparsity, so beta stops mattering. The
+     magic number's RISK is thus already neutralised where it matters most: the codebase ships sparsemax as a
+     measured-better option for the continuous case. KEPT NEGATIVE: in the ITERATIVE resonator sparsemax is
+     NOT beta-robust -- it just shifts the sweet spot LOW (beta=8: 1.00 vs softmax 0.53; beta=60: collapses
+     to 0.60), because its projection reaches one-hot at lower beta and one-hot breaks the resonator search.
+  3. DOES annealing beta (soft->sharp, the SBC resonator's own design) remove the need for a fixed value? For
+     the DENSE circular-convolution resonator, NO -- annealing from a very soft beta0=0.5 HURTS at every D
+     (0.53-0.80 vs the fixed value's 0.67-1.00): the early super-soft iterations blend everything and waste
+     the descent. Annealing works for the SBC (sparse block code) resonator but does not transfer to the dense one.
+
+Bottom line: beta=25 is a JUSTIFIED default, not loose magic -- safe and even conservative for plain cleanup
+(where sparsemax already neutralises any beta-sensitivity), and a defensible fixed compromise for the
+resonator (where beta is an irreducible tuning knob that does not derive cleanly from the geometry). The
+actionable nuances: prefer sparsemax when cleanup beta-sensitivity is a concern; the resonator's beta sweet
+spot is readout-dependent (softmax ~25, sparsemax ~8) and mildly load-dependent (lower at low D). No code
+change and no test-count change -- writing the measured non-finding down so the three derivation attempts are
+not re-run.

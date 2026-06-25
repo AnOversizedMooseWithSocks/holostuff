@@ -1668,7 +1668,7 @@ class UnifiedMind:
         return out
 
     def decompose_structure(self, composed, codebooks, L, restarts=6, iters=50, seed=None,
-                            readout="softmax", confidence=False):
+                            readout="softmax", confidence=False, k=8):
         """Recover the generating recipe of a COMPOSED structure -- the canonical, higher-capacity
         factorizer (holographic_sbc.decompose_structure), exposed as a faculty the mind speaks directly.
         A bound product is DISSIMILAR to its factors, so per-factor cleanup is chance; the SBC resonator
@@ -1689,7 +1689,7 @@ class UnifiedMind:
         approximate inputs (its null is matched to the chosen readout)."""
         from holographic_sbc import decompose_structure as _decompose
         return _decompose(np.asarray(composed), codebooks, L, restarts=restarts, iters=iters,
-                          seed=self.seed if seed is None else seed, readout=readout, confidence=confidence)
+                          seed=self.seed if seed is None else seed, readout=readout, confidence=confidence, k=k)
 
     # -- one scene faculty, on the same substrate ---------------------------
     def scene(self):

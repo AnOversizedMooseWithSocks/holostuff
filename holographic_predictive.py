@@ -58,13 +58,20 @@ class Step:
     valence: float           # prev_sfe - sfe (>0 = became more self-consistent)
 
 
-def zread(query, contexts, values, t_min=0.5, ordered=True):
+def zread(query, contexts, values, t_min=0.5, ordered=True, weights=None):
     """Soft, coupling-weighted read (the 'population' read): blend the `values`
     whose `contexts` resonate with `query`, each weighted by max(0, cosine)
     above the participation gate t_min. Entries below t_min contribute nothing.
     Returns the blended value vector (unnormalised bundle). If `ordered`, the
     blend respects entry order by folding in a small positional permutation --
-    a path-aware read rather than a commutative sum."""
+    a path-aware read rather than a commutative sum.
+
+    `weights` (optional, one per entry) multiplies each entry's coupling -- pass
+    the per-entry SUPPORT (reinforcement count) to make the blend FREQUENCY-WEIGHTED
+    rather than relevance-only. This is what makes a soft next-symbol read MAP-correct
+    when one context has several successors at different rates: without it, two equally-
+    resonant entries (cosine 1.0) contribute equally regardless of how often each was
+    seen, so a 70/30 successor split blends 50/50 and decodes to the wrong symbol."""
     if len(contexts) == 0:
         return np.zeros_like(query)
     q = query / (np.linalg.norm(query) + 1e-12)
@@ -74,7 +81,8 @@ def zread(query, contexts, values, t_min=0.5, ordered=True):
     for i, (t, v) in enumerate(zip(couplings, values)):
         if t >= t_min:
             vv = permute(v, i % 7) if ordered else v
-            parts.append(t * vv)
+            wt = t if weights is None else t * max(float(weights[i]), 0.0)
+            parts.append(wt * vv)
     if not parts:
         return np.zeros_like(query)
     return np.sum(parts, axis=0)
@@ -126,7 +134,12 @@ class PredictiveMemory:
         C = self._matrix()
         sims = C @ qn
         if soft:
-            blend = zread(q, C, self._next_vec, t_min=self.reinforce_threshold)
+            # frequency-weighted (support) blend, no storage-order permutation: a soft read of the
+            # NEXT symbol must weight candidates by how often each was seen, not by resonance alone,
+            # or a context with several successors decodes to the minority (measured: a 70/30 split
+            # blended 50/50 and returned the 30% symbol). Support-weighting makes it MAP-correct.
+            blend = zread(q, C, self._next_vec, t_min=self.reinforce_threshold,
+                          weights=self._support, ordered=False)
             return self._cleanup(blend)
         j = int(np.argmax(sims))
         return self._next_sym[j], float(sims[j])

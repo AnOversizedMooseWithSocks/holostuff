@@ -2272,6 +2272,43 @@ print(f"  VSA question router (intent+order)  : {_anat!r}")
 print(f"                                        -> {_am.answer_text(_anat)} "
       f"(regex misses this phrasing; routed by meaning, subject/ancestor by word order)")
 
+# Two readouts that earn their place at the extremes of the load range.
+title("High-load factorization: the TopK readout where the softmax blend collapses")
+_tr = UnifiedMind(dim=1024, seed=0)
+_r = _np.random.default_rng(0); _L, _B, _F, _N = 64, 16, 3, 40
+_cbs = [[tuple(_r.integers(0, _L, size=_B)) for _ in range(_N)] for _ in range(_F)]
+_true = tuple(int(_r.integers(_N)) for _ in range(_F))
+from holographic_sbc import sbc_reconstruct as _recon
+_P = _np.asarray(_recon(_true, _cbs, _L))
+_softok = _tr.decompose_structure(_P, _cbs, _L, readout="softmax")["verified"]
+_tk = _tr.decompose_structure(_P, _cbs, _L, readout="topk", k=8)
+print(f"  N={_N} codebook: softmax verified={_softok}; topk(k=8) recovers={_tk['picks'] == _true} verified={_tk['verified']} "
+      f"(keeping exactly k candidates survives where the full softmax blend collapses)")
+
+title("Predictive loop: support-weighted soft read is MAP-correct on a stochastic successor")
+_pm = UnifiedMind(dim=1024, seed=0).build_predictor(order=2)
+_pr = _np.random.default_rng(3); _pseq = []
+for _ in range(400):
+    _pseq += [0, 2, 3 if _pr.random() < 0.7 else 4]            # A -> B 70% / C 30%
+_pm.observe_sequence(_pseq)
+print(f"  after [P,A] with B 70% / C 30%: soft read -> token {_pm.anticipate([0, 2], soft=True)[0]}  "
+      f"(3=B is the MAP; the blend is weighted by how often each successor was seen, not resonance alone)")
+
+# As-above-so-below: the SBC resonator's sharpened readout, swept down to the circular-convolution
+# resonator -- a softmax-sharpened cleanup recovers a high-load factorization the linear cleanup misses.
+title("Sharpened resonator cleanup: recovery where the linear cleanup collapses at high load")
+import functools as _ft
+from holographic_reasoning import ResonatorNetwork as _RN
+_rrng = _np.random.default_rng(0); _F, _Dr, _Nr = 3, 1024, 45
+_rcbs = [_np.stack([random_vector(_Dr, _rrng) for _ in range(_Nr)]) for _ in range(_F)]
+_R = _RN(_rcbs); _rt = tuple(int(_np.random.default_rng(7000).integers(_Nr)) for _ in range(_F))
+_rc = _ft.reduce(bind, [_rcbs[f][_rt[f]] for f in range(_F)])
+def _rec(beta):
+    return any(tuple(_R.factor(_rc, iters=50, init=(None if r == 0 else "random"),
+                               rng=_np.random.default_rng(r), beta=beta)) == _rt for r in range(4))
+print(f"  N={_Nr} codebook, {_F} factors: linear cleanup recovers={_rec(None)}; sharpened (beta=25) recovers={_rec(25)} "
+      f"(the readout lesson that lifted the SBC resonator, applied to the older one)")
+
 print("\n" + "-" * 66)
 print("  Every subsystem -- through gradient-free learning -- ran on the same vector substrate. Wired up.")
 print("-" * 66 + "\n")

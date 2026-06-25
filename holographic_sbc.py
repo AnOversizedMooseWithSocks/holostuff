@@ -37,7 +37,7 @@ Pure NumPy + holostuff spirit (block-local FFT), deterministic given a seed, no 
 """
 
 import numpy as np
-from holographic_hopfield import _sparsemax   # sparse readout, shared with the cleanup primitive (no reimpl)
+from holographic_hopfield import _sparsemax, _topk   # sparse readouts, shared with the cleanup primitive (no reimpl)
 
 
 # ---- SBC algebra: an atom is B integers (active position per block); dense form is one-hot, D = B*L ----
@@ -92,7 +92,7 @@ def _bound_others(est, f, B, L):
     return b
 
 
-def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=12.0, seed=0, readout="softmax"):
+def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=12.0, seed=0, readout="softmax", k=8):
     """Factor `product` (an SBC) into one atom per codebook by annealed alternating projection.
 
     Returns (picks, validated): `picks` is the chosen index per factor; `validated` is True iff the picks
@@ -106,6 +106,15 @@ def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=
     and helps or ties on corrupted products (clean 0.80->0.95; ties under heavy corruption). It never
     regresses; default stays softmax for backward-compatibility. The annealed beta still drives explore->commit
     (low beta keeps a sparse-but-broad set, high beta one atom), so sparsemax preserves the search schedule.
+
+    `readout='topk'` (with `k`, the HARD-sparse readout; Gao et al. 2024) keeps exactly the k largest atoms
+    per step. MEASURED to win at the HIGHEST load: at codebook N=110, where softmax, sparsemax, AND alpha-entmax
+    all collapse to 0.05, topk(k=8) is the only readout still recovering factors (0.23) -- a fixed k keeps k
+    candidates alive where adaptive methods over-prune; it also leads at N=50 (0.60 vs sparsemax 0.47). The
+    honest trade kept on the record: k must be chosen (k=4 underperforms k=8 badly), and topk ties or slightly
+    LOSES to sparsemax in the MIDDLE of the load range (N=80: 0.12 vs 0.25) -- so it is the high-load option,
+    not a new default. (alpha-entmax was also measured and DECLINED: it merely tracks sparsemax, finding no
+    sweet spot the annealed resonator benefits from.)
     """
     F = len(codebooks)
     B = len(product)
@@ -124,6 +133,8 @@ def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=
                 sims = np.einsum('ibl,bl->i', CB[f], resid)
                 if readout == "sparsemax":
                     w = _sparsemax(beta * sims)              # sparse: only the relevant atoms enter the blend
+                elif readout == "topk":
+                    w = _topk(beta * sims, k)                # hard-sparse: exactly k atoms -- best at HIGH load
                 else:
                     w = np.exp(beta * (sims - sims.max())); w /= w.sum()
                 est[f] = np.einsum('i,ibl->bl', w, CB[f])
@@ -138,7 +149,7 @@ def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=
 _RESONATOR_NULL_CACHE = {}
 
 
-def _resonator_noise_null(codebooks, L, restarts, iters, m=100, seed=12345, readout="softmax"):
+def _resonator_noise_null(codebooks, L, restarts, iters, m=100, seed=12345, readout="softmax", k=8):
     """The calibrated noise floor for resonator confidence: the block-agreement the SAME resonator manufactures
     on STRUCTURELESS input (random SBCs run through the real factorizer with THESE codebooks).
 
@@ -151,7 +162,7 @@ def _resonator_noise_null(codebooks, L, restarts, iters, m=100, seed=12345, read
     codebook set + readout pays for it, the rest are free. The readout is part of the procedure, so the null is
     re-fit when it changes -- sparsemax manufactures a different noise-floor agreement than softmax."""
     B = len(codebooks[0][0])
-    sig = (B, L, tuple(len(cb) for cb in codebooks), restarts, iters, readout,
+    sig = (B, L, tuple(len(cb) for cb in codebooks), restarts, iters, readout, (k if readout == "topk" else 0),
            hash(tuple(int(x) for cb in codebooks for a in cb for x in np.asarray(a))) & 0xffffffff)
     if sig not in _RESONATOR_NULL_CACHE:
         r = np.random.default_rng(seed)
@@ -159,13 +170,13 @@ def _resonator_noise_null(codebooks, L, restarts, iters, m=100, seed=12345, read
         for i in range(m):
             nz = r.integers(0, L, size=B)
             pk, _ = sbc_resonator(nz, codebooks, L, restarts=restarts, iters=iters,
-                                  seed=int(r.integers(1_000_000_000)), readout=readout)
+                                  seed=int(r.integers(1_000_000_000)), readout=readout, k=k)
             out[i] = (sbc_reconstruct(pk, codebooks, L) == nz).mean()
         _RESONATOR_NULL_CACHE[sig] = np.sort(out)
     return _RESONATOR_NULL_CACHE[sig]
 
 
-def resonator_confidence(product, codebooks, L, restarts=6, iters=50, seed=0, m_null=100, readout="softmax"):
+def resonator_confidence(product, codebooks, L, restarts=6, iters=50, seed=0, m_null=100, readout="softmax", k=8):
     """Factor `product` AND report a CALIBRATED soft confidence -- the resonator network (Olshausen) with a
     calibrated detector's p-value (Cranmer), the graded answer on APPROXIMATE inputs where the exact-
     reconstruction certificate `verified` is uselessly False even when the factors are right.
@@ -178,9 +189,9 @@ def resonator_confidence(product, codebooks, L, restarts=6, iters=50, seed=0, m_
     p~0.008 (verified True); the true factors recovered under a few corrupted blocks stay p-small (verified
     False -- the rescue); pure noise sits near the abstain line (p~0.5) instead of the random-picks null's
     false p~0.003."""
-    picks, verified = sbc_resonator(product, codebooks, L, restarts=restarts, iters=iters, seed=seed, readout=readout)
+    picks, verified = sbc_resonator(product, codebooks, L, restarts=restarts, iters=iters, seed=seed, readout=readout, k=k)
     agreement = float((sbc_reconstruct(picks, codebooks, L) == np.asarray(product)).mean())
-    null = _resonator_noise_null(codebooks, L, restarts, iters, m=m_null, readout=readout)
+    null = _resonator_noise_null(codebooks, L, restarts, iters, m=m_null, readout=readout, k=k)
     pvalue = float((1 + int((null >= agreement).sum())) / (len(null) + 1))
     return picks, verified, agreement, pvalue
 
@@ -192,7 +203,7 @@ def sbc_identity(B):
     return np.zeros(B, dtype=int)
 
 
-def decompose_structure(composed, codebooks, L, restarts=6, iters=50, seed=0, confidence=False, readout="softmax"):
+def decompose_structure(composed, codebooks, L, restarts=6, iters=50, seed=0, confidence=False, readout="softmax", k=8):
     """Recover the generating recipe of a COMPOSED structure (a bound product of factors) via the verified
     resonator -- the structural inverse of build-1's recipe-store, and the deconfounded superposition-search
     the blend discussion pointed at.
@@ -209,7 +220,7 @@ def decompose_structure(composed, codebooks, L, restarts=6, iters=50, seed=0, co
     of blocks rebuilt, `pvalue` the chance the resonator manufactures that on structureless input (small ->
     trust the factorization, large -> abstain).
     """
-    picks, verified = sbc_resonator(composed, codebooks, L, restarts=restarts, iters=iters, seed=seed, readout=readout)
+    picks, verified = sbc_resonator(composed, codebooks, L, restarts=restarts, iters=iters, seed=seed, readout=readout, k=k)
     B = len(composed)
     ident = sbc_identity(B)
     factors = [np.asarray(codebooks[f][picks[f]]) for f in range(len(codebooks))]
@@ -217,7 +228,7 @@ def decompose_structure(composed, codebooks, L, restarts=6, iters=50, seed=0, co
     out = {"picks": picks, "factors": factors, "verified": verified, "present": present}
     if confidence:                                            # reuse the picks just found -- no second run
         agreement = float((sbc_reconstruct(picks, codebooks, L) == np.asarray(composed)).mean())
-        null = _resonator_noise_null(codebooks, L, restarts, iters, readout=readout)
+        null = _resonator_noise_null(codebooks, L, restarts, iters, readout=readout, k=k)
         out["agreement"] = agreement
         out["pvalue"] = float((1 + int((null >= agreement).sum())) / (len(null) + 1))
     return out
