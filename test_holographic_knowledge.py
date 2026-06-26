@@ -63,3 +63,44 @@ def test_polarity_must_be_signed():
         assert False, "polarity 0 should be rejected"
     except ValueError:
         pass
+
+
+def test_save_load_round_trips_findings_and_tensions(tmp_path):
+    # the registry is a research LOG: saving and loading must reproduce it exactly
+    reg, i0, i1, i4, i5 = _planted()
+    before = {(t["a"], t["b"]): t["type"] for t in reg.tensions()}
+    path = tmp_path / "findings.json"
+    reg.save(str(path))
+    reg2 = FindingRegistry.load(str(path))
+    assert [dict(f) for f in reg2.findings] == [dict(f) for f in reg.findings]
+    assert {(t["a"], t["b"]): t["type"] for t in reg2.tensions()} == before
+    # query reproduces too (the conditioned-tension pair is still recalled by subject)
+    assert {r["index"] for r in reg2.query(subject="efficiency_ratio", k=2)} == {i0, i1}
+
+
+def test_load_rebuilds_vectors_from_seed_not_from_file(tmp_path):
+    # the file stores ONLY structured claims -- no vectors -- and the rebuilt vectors are bit-identical,
+    # so the reloaded registry is not an approximation but the same object (the demoscene / determinism rule)
+    reg, *_ = _planted()
+    path = tmp_path / "findings.json"
+    reg.save(str(path))
+    import json
+    state = json.loads(path.read_text())
+    assert set(state) == {"dim", "seed", "findings"}            # no vectors persisted
+    assert "vec" not in json.dumps(state) and "_vecs" not in json.dumps(state)
+    reg2 = FindingRegistry.load(str(path))
+    assert all(np.array_equal(a, b) for a, b in zip(reg._vecs, reg2._vecs))
+    assert all(np.array_equal(a, b) for a, b in zip(reg._claims, reg2._claims))
+
+
+def test_loaded_registry_keeps_growing(tmp_path):
+    # a durable log: reload, add more findings, and a new tension is detected against the restored ones
+    reg = FindingRegistry(dim=2048, seed=3)
+    reg.add("compression", "recall_margin", +1, condition="few_factors")
+    path = tmp_path / "log.json"
+    reg.save(str(path))
+    reg2 = FindingRegistry.load(str(path))
+    reg2.add("compression", "recall_margin", -1, condition="many_factors")   # opposite, different condition
+    tens = reg2.tensions()
+    assert len(tens) == 1 and tens[0]["type"] == "conditioned"
+

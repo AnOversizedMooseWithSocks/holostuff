@@ -34,6 +34,8 @@ SCOPE / KEPT NEGATIVES:
     pre-filter would be the move at larger scale (the engine's standard sublinear-recall answer), noted
     but not needed yet.
 """
+import json
+
 import numpy as np
 
 from holographic_ai import bind, bundle, cosine, Vocabulary
@@ -46,6 +48,7 @@ class FindingRegistry:
 
     def __init__(self, dim=2048, seed=0):
         self.dim = int(dim)
+        self.seed = int(seed)                       # remembered so a saved registry rebuilds its vectors
         # Unitary role/token atoms: a finding is pure role-filler binding + unbind-by-role, the few-factor
         # path where exact unbinding widens the cleanup margin at no storage cost (the KnowledgeStore lesson).
         self.roles = Vocabulary(self.dim, seed + 1, unitary=True)
@@ -130,6 +133,37 @@ class FindingRegistry:
                 })
         return out
 
+    # -- persistence: a research log should outlive the session ------------------------------------
+    # The saved file holds ONLY the structured claims plus dim/seed -- NO vectors. On load the vectors
+    # are REBUILT from the seeds (the demoscene / determinism rule), so the file is tiny and a reloaded
+    # registry is bit-identical to the original (its query and tension verdicts reproduce exactly).
+    def to_state(self):
+        """Serialise to a plain dict: dimension, seed, and the list of structured findings. The vectors are
+        deliberately NOT stored -- they are a deterministic function of the findings and the seed."""
+        return {"dim": self.dim, "seed": self.seed,
+                "findings": [dict(f) for f in self.findings]}
+
+    @classmethod
+    def from_state(cls, state):
+        """Rebuild a registry from a `to_state` dict: re-add every finding, which regenerates its vectors
+        from the seeds -- so the restored registry recalls and detects tensions identically to the original."""
+        reg = cls(dim=state["dim"], seed=state["seed"])
+        for f in state["findings"]:
+            reg.add(f["subject"], f["object"], f["polarity"], f.get("condition"), f.get("note"))
+        return reg
+
+    def save(self, path):
+        """Write the registry to `path` as JSON (the structured claims; vectors rebuild on load)."""
+        with open(path, "w") as fh:
+            json.dump(self.to_state(), fh, indent=2)
+        return path
+
+    @classmethod
+    def load(cls, path):
+        """Load a registry saved by `save` -- a durable, growable research log."""
+        with open(path) as fh:
+            return cls.from_state(json.load(fh))
+
 
 def _selftest():
     reg = FindingRegistry(dim=2048, seed=0)
@@ -165,12 +199,26 @@ def _selftest():
         f"bracket tension should be FLAT (same/no condition), got {pairs.get((i4, i5))}"
     assert len(tens) == 2, f"expected exactly two tensions, got {len(tens)}: {pairs}"
 
+    # (3) PERSISTENCE: save -> load reproduces the registry exactly. The file stores only the structured
+    # claims (no vectors); the vectors rebuild from the seeds, so recall and tension verdicts are identical.
+    import os, tempfile
+    tmp = os.path.join(tempfile.gettempdir(), "_fr_selftest.json")
+    reg.save(tmp)
+    reg2 = FindingRegistry.load(tmp)
+    os.remove(tmp)
+    assert [dict(f) for f in reg2.findings] == [dict(f) for f in reg.findings], "save/load lost findings"
+    assert all(np.array_equal(a, b) for a, b in zip(reg._vecs, reg2._vecs)), "rebuilt finding vectors differ"
+    assert all(np.array_equal(a, b) for a, b in zip(reg._claims, reg2._claims)), "rebuilt claim vectors differ"
+    assert {(t["a"], t["b"]): t["type"] for t in reg2.tensions()} == pairs, "tensions did not survive save/load"
+
     print("holographic_knowledge selftest OK:")
     print(f"  query subject=efficiency_ratio -> findings {sorted(r['index'] for r in by_subject)} (role-sensitive)")
     print(f"  CONDITIONED tension: ER->momentum  {reg.findings[i0]['condition']} vs {reg.findings[i1]['condition']}  "
           f"(reconcilable, not flat)")
     print(f"  FLAT contradiction:  bracket_order->convexity  (no condition, must resolve)")
     print(f"  exactly {len(tens)} tensions; unrelated findings not flagged")
+    print(f"  save/load round-trip: {len(reg2.findings)} findings restored from claims-only file, "
+          f"vectors rebuilt bit-identical, tensions reproduce")
 
 
 if __name__ == "__main__":

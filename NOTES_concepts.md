@@ -7112,3 +7112,711 @@ noted but not needed yet.
 Tests: +8 (939 -> 947). test_holographic_knowledge.py (selftest + query-by-subject + role-sensitivity + the
 flat-vs-conditioned classification + no-false-positives + same-direction-not-a-tension + signed-polarity) and
 test_finding_registry_faculty in test_integration.py.
+
+
+## D3 made durable: the findings log persists by storing claims, not vectors (shipped)
+
+A research log that evaporates when the session ends is half a tool. D3's FindingRegistry now saves and loads --
+but the design follows the determinism rule the whole engine runs on, rather than the obvious route of pickling
+the vectors.
+
+THE DESIGN. The saved file holds ONLY the structured claims (subject, object, polarity, condition, note) plus the
+dimension and the seed. It does NOT hold a single vector. The vectors -- the bound finding vectors used for recall
+and the claim vectors used for tension pairing -- are a deterministic function of the claims and the seed, so on
+load they are REBUILT by simply re-adding each finding. This is the demoscene move the engine uses everywhere
+(reproduce the structure from the seed instead of storing it): the file is tiny (a JSON list of claims), and the
+restored registry is not an approximation of the original but bit-for-bit the same object.
+
+MEASURED (the selftest and tests are the earns-its-place gate): after save -> load, the findings list is identical,
+every rebuilt finding vector and claim vector is np.array_equal to the original's (so recall and tension verdicts
+are not merely close but exact), and the conditioned-vs-flat tension classification reproduces. A test asserts the
+file contains NO vector data (only dim/seed/findings). And a "keeps growing" test reloads a log, adds an
+opposite-polarity finding under a different condition, and confirms the new conditioned tension is detected against
+the restored findings -- the durable-log use case end to end. Through the mind, m.finding_registry().save(path)
+persists the session's log and FindingRegistry.load(path) restores it standalone.
+
+WHY IT MATTERS HERE. This shipped alongside an image-generation push (VSA-diffusion generate_structure rendering
+novel valid scenes, and the splat sharpness finding that the right splat scale is content-dependent -- small
+splats sharpen edges but hurt smooth fills). Those findings were logged into D3, which surfaced the genuine
+conditioned tension (small_splats -> fidelity, +1 at sharp_content vs -1 at smooth_content), and D1 audited the
+splat-config TUNING procedure (flagging tune-and-report without a held-out split). Persistence is what lets that
+accumulated, reconciled knowledge outlive the conversation it was measured in.
+
+Tests: +4 (947 -> 951). test_holographic_knowledge.py (save/load round-trips findings+tensions+query;
+load-rebuilds-vectors-from-seed-not-file with the no-vectors-in-file assertion; loaded-registry-keeps-growing) and
+test_finding_registry_persists_across_minds in test_integration.py.
+
+
+## Holographic vector-graphics (SVG): the sharp, resolution-independent cousin of the splat archive (shipped)
+
+The splat work kept fighting one thing: a Gaussian basis BLURS sharp edges, so a crisp square needs smaller splats
+(which then hurt smooth content) or supersampling (which spreads a fixed splat budget too thin). The fix turned out
+to be not a better Gaussian but a different primitive. An SVG <rect>/<circle>/<polygon> has analytically EXACT
+edges at any zoom -- the rasteriser computes exact coverage from the maths -- so representing/generating images as
+vector primitives makes the sharpness problem disappear, and makes the result resolution-INDEPENDENT for free.
+
+This is a structural match the engine already had, the same way a splat scene is a bundle: a vector-graphics scene
+is ALSO a bundle of role-bound primitives. holographic_svg.py's HolographicSVG encodes a scene -- a list of
+(type, x, y, size, colour) primitives -- into ONE hypervector: each primitive is bundle(bind(TYPE,t),
+bind(X, encX(x)), bind(Y, encY(y)), bind(SIZE, encS(s)), bind(COLOUR, c)), and the scene is the bundle of those
+primitives each bound to a SLOT. Discrete attributes (type, colour) decode by cleanup; continuous ones (position,
+size) by the ScalarEncoder's grid decode -- the continuous analogue of cleanup. SVG emission is pure string
+formatting (no new dependency -- NumPy and Flask only).
+
+MEASURED (the selftest and tests are the earns-its-place gate):
+- ROUND-TRIP: a 3-primitive scene encodes to one vector and decodes back with type and colour EXACT and
+  position/size within ~0.016 on [0,1] (at dim 4096) -- a faithful content-addressable picture.
+- MORPH AS ARITHMETIC: interpolating two scenes' HYPERVECTORS and decoding the blend matches a direct parameter
+  lerp at the midpoint to within ~0.014. So (1-t)*vA + t*vB really does interpolate the picture -- vector
+  arithmetic in the holographic space, rendered crisp through SVG. This is the same morph the splat experiment did
+  in pixel space, now exact and resolution-free.
+- GENERATE: the composed-manifold diffusion (generate_structure, the B10 sampler) runs over a discrete primitive
+  codebook (type x grid-cell x colour) and produces 6/6 distinct novel scenes, valid by construction, rendered
+  crisp.
+- RESOLUTION INDEPENDENCE (shown in the figure): the same scene stored as a 48px raster and upscaled is visibly
+  blocky; rendered from the SVG at 480px it is razor-sharp. No splat blur, no supersampling.
+
+Wired as the svg_canvas() faculty on UnifiedMind (cached, built at the mind's dim/seed), beside the generative
+faculties. KEPT NEGATIVE / SCOPE: primitives are isotropic (one size, a palette colour) -- anisotropic
+width/height, rotation, gradients/strokes, and bezier paths are the honest next step, the same boundary the
+anisotropic-splat work drew. And round-trip fidelity scales with dimension (a few primitives are faithful at
+2048+; a crowded scene wants more -- the bundle's finite capacity, shown not hidden).
+
+The through-line: the engine generates compositional structures well, and SVG is simply the SHARP, resolution-
+independent renderer that compositional generation deserved -- the sharpness ceiling the splat work measured was a
+property of the Gaussian basis, not of the engine, exactly as the matmul and splat-sharpness corrections kept
+showing (a quality question is empirical, not a structural wall).
+
+Tests: +8 (951 -> 959). test_holographic_svg.py (selftest + round-trip + morph-midpoint + generate-diverse-and-
+deterministic + well-formed-SVG + geometry-scales-with-size + too-many-primitives-rejected) and
+test_svg_canvas_faculty in test_integration.py.
+
+
+## Learned-energy generation: a measured negative (the EP autoencoder denoises but does not generate)
+
+The SVG modality closed with an obvious-looking next lever: swap the hand-built grid codebook the composed-manifold
+diffusion uses for a manifold LEARNED from data -- use LearnedEnergyMemory (the EP autoencoder from the June-24
+work) as the diffusion denoiser, so generation samples a learned manifold. Probed it; it does not work, and the
+measurement says clearly why. NOT SHIPPED.
+
+WHAT WAS MEASURED.
+- On the established 2-D bump manifold (2000 samples, the selftest's working config), the learned energy DENOISES
+  near-manifold points with ~0.43 relative error -- a RELATIVE win over a matched-byte codebook (the kept positive)
+  but modest in absolute terms. From PURE noise a single cleanup lands ~0.51 OFF the manifold; a Langevin walk
+  (seed on the manifold, iterate add-noise -> cleanup) does best -- ~0.33 off, 30/36 latent cells covered, novel
+  (0.32 from any stored sample) -- but still imprecise.
+- On a LOW-DIM SMOOTH manifold (a 9-D scene-parameter family: three circles in a cluster whose centre moves with
+  two latents) it FAILS outright. The decisive test: the raw AVERAGE of two nearby training scenes is already
+  on-manifold (0.014-0.017) -- the manifold is locally convex, so plain interpolation generates a valid in-between
+  scene -- and the learned-energy cleanup makes it WORSE (0.32-1.12) at every bottleneck size (n_hidden in 2,3,4).
+  A figure (learned_svg_generation.png) shows it: clean clusters in, a single collapsed/distorted blob out.
+
+WHY (the load-bearing lesson). A good DENOISER is not a good GENERATOR. Denoising only needs a small local
+correction from a point already near the manifold; generation needs the energy's MINIMA to lie ON the manifold so
+that descending from afar lands on it. A single-noise EP autoencoder's free-state attractors are not reliably on
+the manifold -- they collapse toward a smeared mean -- so it denoises (locally) yet distorts when asked to generate.
+
+THE CONSTRUCTIVE OUTCOME.
+- For COMBINATIONAL generation the engine's right tool is the composed-manifold diffusion (generate_structure),
+  already shipped (9/9 distinct valid SVG scenes).
+- For CONTINUOUS in-style variation, simple INTERPOLATION in the composed/parameter space already works (the raw
+  midpoint is on-manifold to 0.014) -- which is exactly what the shipped SVG morph does. No learned energy needed
+  on locally-convex manifolds.
+- A learned GENERATIVE manifold (for genuinely non-convex cases) would need a denoiser trained ACROSS noise levels
+  -- a real diffusion model, not this single-noise autoencoder. Filed as backlog VG-2.
+
+The kept negative travels in LearnedEnergyMemory's docstring (a SCOPE paragraph: denoiser, not generator) so a
+future caller meets it at the point of use. No test/count change -- nothing shipped; the negative is the result.
+
+
+## Splat edge artifacts are under-reconstruction (density + greedy fit), fixed by a joint refit -- not a basis floor (measured, corrected)
+
+This entry CORRECTS a too-quick conclusion. The question was splat edge blur, and the first pass blamed two things;
+only one held up, and the panel's 3D-graphics seat (and the actual 3DGS literature) pointed at the real cause.
+
+WHAT STILL HOLDS: SUPERSAMPLING A FIXED SPLAT SET IS A NO-OP. Render the same fitted splats direct@N vs
+8x->downscale: coarse 14.89 -> 14.88 dB, fine 20.95 -> 20.82, edge PSNR identical, visually indistinguishable. A
+sum of Gaussians is band-limited -- there is no high-frequency content to alias, so area-averaging equals point-
+sampling. Supersampling fixes ALIASING, which a Gaussian sum does not have. (It DOES become relevant once splats go
+SUB-pixel -- then point-sampling aliases them -- which is the last-mile of edge sharpness and where the SVG modality,
+with analytic exact-coverage edges, is simply the better tool.)
+
+WHAT WAS WRONG: calling the residual blur/lumpiness a "basis floor" ("a smooth basis cannot represent a hard edge").
+At a FINITE output resolution the AA target is itself band-limited, and a sum of Gaussians can approximate it
+arbitrarily well with enough density -- so the artifacts were UNDER-RECONSTRUCTION, not a basis limit. Two causes,
+both fixable: (1) too few splats (K=140 for a 4096-pixel image is sparse -- the exact under-reconstruction adaptive
+density control targets); (2) GREEDY matching pursuit fits each amplitude against the residual at placement time, so
+overlapping splats systematically double-count, and it never goes back to fix it.
+
+THE FIX, MEASURED AND SHIPPED: `splat_refit` -- one JOINT least-squares solve over all amplitudes (positions/scales
+fixed), the "looping" step. On the real engine fit it adds ~2-4 dB (square+blob 23.64 -> 27.11 at K=400; rings 33.27
+-> 35.74), and the gain GROWS with the splat count (more overlap to disentangle). It is closed-form and gradient-FREE,
+so it stays inside the NumPy-only rule -- distinct from the gradient optimisation of positions/scales/opacity that
+full 3DGS does (that needs autodiff and stays out of scope). Wired as `splat_fit(..., refit=True)` and defaulted ON in
+the `splat_field` faculty.
+
+THE 3DGS GROUNDING (web): adaptive density control is the core of 3D Gaussian Splatting -- clone/split Gaussians in
+under-reconstructed (high-error) regions, prune elsewhere, iterating throughout optimisation, with the number of
+Gaussians set automatically by image complexity. The amplitude refit is the gradient-free half of that loop; true
+clone/split densification + position/scale optimisation is the natural next step (backlog), needing the autodiff the
+project avoids -- the existing gradient-free `aniso_fit` is where to push it.
+
+THE LESSON (again): a quality artifact is empirical, not a structural wall. "Smooth basis can't do edges" was the same
+kind of premature-floor claim the matmul and splat-sharpness corrections already caught; measuring it found a real,
+shippable fix instead.
+
+Tests: +4 (959 -> 963). test_holographic_splat.py (joint_refit_beats_greedy_and_gain_grows_with_count,
+splat_fit_refit_flag_matches_manual_refit, splat_refit_handles_empty) and test_splat_field_joint_refit in
+test_integration.py.
+
+## Low-discrepancy sampling: even coverage where random clumps and a grid aliases (shipped)
+
+The rendering-engine lessons arc opens at its cheapest, broadest-backed item (the panel's pick): a low-discrepancy
+sampler. The recurring graphics fact -- random points clump into holes, a regular grid aliases, and the
+blue-noise / low-discrepancy middle ground is what production renderers actually sample on (Pharr's PBRT sampling
+chapter; Roberts 2018) -- applies anywhere the engine PLACES points to COVER rather than to draw an INDEPENDENT
+sample: generation seeds, codebook / anchor placement, the sub-pixel jitter a temporal-accumulation pass will need.
+
+`holographic_lowdiscrepancy.low_discrepancy(n, d, seed)` is Roberts' generalised R-sequence -- the d-dimensional
+golden-ratio / plastic-constant additive recurrence, one line of NumPy, no state, deterministic, and PROGRESSIVE
+(any prefix is itself well-distributed, so you can keep taking points). Measured: 64 points cover ~28% tighter than
+the mean of random (dispersion 0.16 vs 0.23), and as a quasi-Monte-Carlo integrator the same points estimate a
+smooth integral with ~13x less error than plain Monte Carlo at equal count (0.0011 vs 0.0143) -- the downstream
+payoff of even coverage, not just a prettier scatter. Wired as the `low_discrepancy_sample` faculty (defaults to
+the mind's seed). KEPT SCOPE: this is a COVERAGE tool; where genuine independence is wanted (bootstrap, noise
+injection) default_rng stays -- these points are correlated by construction. It is the sampler the later
+jitter-accumulate (ACCUM-1) and anchor-placement (CACHE-1/3) backlog items will draw on.
+
+Tests: +2 (963 -> 965). test_holographic_lowdiscrepancy.py (the module _selftest: coverage beats random, QMC beats
+MC, deterministic + progressive) and test_low_discrepancy_sample_faculty in test_integration.py.
+
+## Throughput-gated traversal: Russian roulette for holographic paths (shipped)
+
+The second rendering-engine-lessons item, and the one with the broadest cross-seat backing on the panel. The
+identity behind it -- in the FFT/phasor domain a bind is elementwise complex MULTIPLICATION, so a chain of
+binds is a running PRODUCT of per-step transfer functions, exactly a ray's THROUGHPUT -- means a holographic
+traversal (a multi-hop recall, the resonator's iterative peeling, a recursive descent) is a ray bouncing
+through the space, its recoverable signal attenuating until every further step is noise. Path tracers terminate
+such a path with Russian roulette once its throughput is negligible; this ports that move.
+
+`holographic_traverse.gated_traverse(step, start, floor, max_steps, min_steps)` drives a step function --
+step(state) -> (next_state, throughput, payload) -- with a cheap running confidence (a cleanup cosine, a
+convergence margin) and STOPS the instant it falls below the floor, abstaining on that step (not recording
+noise). Measured on a directed linked list stored in superposition: the gate recovers every valid hop and then
+abstains the moment the chain is exhausted (signal gone) -- the correct prefix [1..10] in order, stopping where
+the past-end unbind is noise (throughput 0.03 vs ~0.3 for valid hops), i.e. 10 steps vs a fixed depth of 30.
+Crucially it needs NO ground truth: the cheap confidence tracks the true recoverable cosine closely enough to
+know when the ray has gone dark. Wired as the `gated_traverse` faculty (between the recall and resonator
+faculties it serves).
+
+KEPT NEGATIVE / SCOPE: the gate keys on LOW confidence (the ray dark); it does NOT catch a CONFIDENT-but-WRONG
+step -- the capacity-ambiguity regime where crosstalk returns a wrong atom at moderate confidence -- which is a
+calibration problem (the calibrated-null / MIS items), not a throughput one. And this is the deterministic FLOOR
+(right for FOLLOWING a path); the unbiased STOCHASTIC Russian roulette (terminate with prob 1-T, boost survivors
+by 1/T) is for ACCUMULATING a sum and is a separate, not-yet-measured extension. The directed chain reused the
+RAY-3 lesson in passing -- a bundle of bind(x_i, x_{i+1}) is undirected, so the links are permuted (a direction
+role) to make traversal unambiguous.
+
+Tests: +2 (965 -> 967). test_holographic_traverse.py (the module _selftest: gating logic on a known profile,
+and the real directed-chain traversal) and test_gated_traverse_faculty_recovers_chain_then_abstains in
+test_integration.py.
+
+## Adaptive splat count: sample to a noise floor, not a budget (shipped)
+
+The third rendering-engine-lessons item: V-Ray's adaptive sampler (and 3DGS densification in spirit) ported to
+splats. A path tracer doesn't spend a fixed number of rays per pixel -- it spends until the variance is below a
+noise floor, few where the image is smooth and many where it is busy. The splat fitter previously took a fixed K
+regardless of content; this makes the COUNT adaptive.
+
+`holographic_splat.adaptive_fit(target, noise_thresh, k_min, k_max, refit)` runs the same matching pursuit as
+splat_fit but stops once the residual RMS falls below noise_thresh * the target's range (bounded [k_min, k_max]),
+returning (splats, k_used). Exposed through the existing `splat_field` faculty as a `noise_thresh` argument
+(default None keeps the fixed-k path byte-for-byte). Measured at noise_thresh=0.03: a one-blob field fit to 33.2
+dB with 13 splats, a seven-blob field to 33.0 dB with 36 -- matched quality, count tracking content -- where a
+fixed k=20 over-spends on the easy field (36.5 dB, splats wasted) and starves the busy one (27.0 dB). The count
+is orthogonal to the joint refit: the count is WHERE the splats go, the refit is HOW STRONG they are.
+
+KEPT CAVEAT (in the docstring and a test): the threshold gates the GREEDY residual, so quality is only
+APPROXIMATELY equalised; and a HARD-EDGED target the smooth isotropic basis cannot represent simply runs to k_max
+rather than converging -- the adaptive count is meaningful only for fields the Gaussian basis can actually fit.
+The gradient optimisation of positions and anisotropic covariances (full 3DGS) still needs autodiff and stays out
+of scope; this item moves only the COUNT.
+
+Tests: +3 (967 -> 970). test_holographic_splat.py (adaptive_fit_count_tracks_content_at_matched_quality,
+adaptive_fit_respects_bounds) and test_splat_field_adaptive_count in test_integration.py.
+
+## SHARP-1: a Mitchell-Netravali reconstruction kernel does NOT sharpen the scalar decode (measured negative)
+
+The rendering-lessons backlog's SHARP-1 proposed giving the ScalarEncoder a Mitchell-Netravali reconstruction
+kernel: the encoder is a Fourier phase encoder whose similarity kernel is the characteristic function of its phase
+distribution (Bochner), already shipping rbf (Gaussian phases -> all-positive, blurs) and sinc (uniform phases ->
+the ideal band-limited reconstruction filter, sharp but it rings). Mitchell is the production reconstruction filter
+that lives BETWEEN those two -- band-limited negative lobes like sinc, but with the ringing tamed. The hypothesis:
+its negative lobes would sharpen the scalar decode, the same negative-lobe sharpening the splat joint-refit already
+exploits. Prototyped it thoroughly; it does not yield a measurable win. NOT SHIPPED.
+
+WHAT WAS MEASURED.
+- The Mitchell kernel IS realisable in this encoder: its frequency response (the phase distribution it needs) is
+  non-negative to 0.2% (clip the tiny negative lobes, sample phases from it). kernel_at then matches the Mitchell
+  cubic by Bochner. So the kernel exists and is correct -- that part worked.
+- At matched main-lobe width it sits exactly where theory says: peak side-lobe (ringing) 0.022 vs sinc's 0.166 vs
+  rbf's 0.008 -- the reconstruction-filter compromise, confirmed.
+- But DECODE accuracy is a TIE across all three kernels: single value, value-under-noise (sigma 0.3-1.0), and a
+  value bundled with 0-8 distractors all land within noise of each other. The decode is an argmax over a fine grid
+  -- a peak DETECTION -- and argmax is insensitive to side-lobe shape, the only thing the kernel choice changes. So
+  the negative lobes have nothing to grip.
+- A multi-value DENSITY read-out (a SUM, where side-lobes DO shape the output) is messy and does not favour
+  Mitchell: sinc's ringing corrupts it badly (1 peak recovered for 3-7 separated values), rbf is adequate, and
+  Mitchell's own residual ringing OVER-counts on structured inputs (10 peaks for 5 equally-spaced values). On
+  random dense sets Mitchell (3.12 mean peak-count error) only ties rbf (3.63) -- both poor -- so it does not beat
+  the simplest existing kernel.
+
+WHY (the load-bearing lesson). Negative-lobe reconstruction-filter sharpening helps where you SUM the kernel and
+the OUTPUT IS that sum -- image reconstruction, where the splat joint-refit's ~51%-negative amplitudes measurably
+sharpened edges. The scalar decode is the opposite kind of operation: a peak DETECTION (argmax), which reads only
+where the main lobe is highest and ignores the side-lobes entirely. The rendering lesson is real but DOMAIN-bound
+to reconstruction, not detection -- and the encoder already brackets the genuine sharpness/ringing tradeoff with
+its existing rbf and sinc kernels.
+
+THE CONSTRUCTIVE OUTCOME.
+- No new kernel is wired: per the project's own rule an option earns its place by measurement, and Mitchell earns
+  none here (ties rbf at best, regresses on structured density read-outs). The rbf/sinc pair already spans the axis.
+- The place negative-lobe sharpening DID pay is reconstruction -- the shipped splat joint-refit -- so its natural
+  generalisation (SHARP-2: a tunable negative-lobe sharpening for the splat/image reconstruction path) is the branch
+  of this lesson worth pursuing, not the scalar encoder.
+
+No test/count change -- nothing shipped; the negative is the result.
+
+## Directed structure: a permutation direction role for sequences and graphs (shipped)
+
+The fourth rendering-lessons item -- RAY-3, the one Plate's seat argued to pull early for substrate-correctness.
+A memory of edges bundled as bind(x_i, x_{i+1}) is UNDIRECTED: unbinding by a node returns BOTH neighbours,
+predecessor and successor, at equal strength (measured ~0.33 vs ~0.33 at the operating dimension), so a traversal
+cannot tell forward from backward -- the "predecessor leak". The engine's existing chain_structure (B7) carries
+exactly this leak and relies on holographic_peel's per-peel history-aware cleanup to suppress it at decode time.
+
+RAY-3 fixes it at ENCODE time. Binding the successor through a fixed PERMUTATION first -- bind(x_i, perm(x_{i+1}))
+-- breaks the symmetry: unbinding by x_i and undoing the permutation recovers the successor (~0.34), while the
+predecessor term lands in the permuted subspace as noise (~0.00). The permutation does at encoding time what the
+peel cleanup does at decoding time. It also generalises past linear chains: any set of directed EDGES bundles the
+same way (a graph), and a branching node returns its whole successor set from one unbind (a 0 -> {1,2,3} node
+hands back all three, ~0.40 each, cleanly above the non-successors).
+
+`holographic_directed` ships build()/encode_directed (M = superpose bind(node_i, perm(node_j))), successors()
+(perm_inv . unbind . cleanup, with topk / thresh for branching), and make_step() (a gated_traverse-ready
+closure). Wired as three faculties: directed_structure (build a sequence or graph), directed_successor (one
+forward hop), and directed_traverse (a forward walk gated by recovery confidence -- the RAY-3 substrate under the
+RAY-1 throughput gate, so the directed chain and the Russian-roulette walk compose into a clean forward traversal
+that stops when the chain runs out).
+
+NOTE on the landscape: the permutation-direction-role mechanism already lived inside sequentiality_z's order test
+(bind(a, permute(b,1)) as its transition model), but it was buried in a statistical probe, not exposed as a
+general directed encoding; and SequenceMemory is a different representation entirely (POSITIONAL -- each element
+rotated by its absolute position, for "what's at position i" / "does A precede B"), not edge/transition based.
+RAY-3 is the additive, first-class directed-EDGE structure -- traversable, graph-capable, gated.
+
+Tests: +3 (970 -> 973). test_holographic_directed.py (the module _selftest: the directed-vs-undirected
+predecessor-leak contrast, graph branching, gated-walk composition) and
+test_directed_structure_forward_only_and_graph + test_directed_traverse_walks_chain_forward in test_integration.py.
+
+## Multiple Importance Sampling: Veach's balance heuristic for combining estimators (shipped)
+
+The fifth rendering-lessons item -- MIS-1, and the first genuinely NEW machinery in the arc rather than a port.
+The engine has several estimators of the SAME quantity that each win in a different regime: exact 1-NN (Bayes-
+optimal on discrete atoms), the soft dense-Hopfield blend (wins on continuous off-grid values, the B1 kept
+negative), the manifold projection (smooth low-rank data), the forest (sublinear/approximate). Until now you PICK
+one by hand. Veach's MIS combines them, weighting each by its per-query reliability.
+
+The load-bearing WARNING MIS encodes -- and the thing this module MEASURES -- is that NAIVELY AVERAGING estimators
+reliable in different regimes makes things WORSE: the average carries each estimator's error into the other's
+regime, landing below the better single. On a coarse sharp-kernel ScalarEncoder manifold with a 50/50 mix of
+on-grid + off-grid cues, naive averaging of hard 1-NN and soft Hopfield scores error 0.0061 -- worse than soft
+alone at 0.0040. The BALANCE HEURISTIC (w_i = r_i / sum_j r_j, the per-query reliability) lands at 0.0037, beating
+both singles AND the naive average.
+
+`holographic_mis` ships combine_estimators(pairs, power) (the Veach balance/power heuristic primitive: pairs of
+(estimate, reliability), w_i = r_i^power / sum r_j^power, power=1 balance / 2 power) and mis_recover(q, codebook,
+beta, power) (combines hard 1-NN and soft Hopfield per-query, reliability = the cosine distribution's peakiness: a
+sharp single winner trusts the exact atom, a close runner-up trusts the interpolating blend). Wired as two
+faculties: combine_estimators and mis_recover.
+
+SCOPE / KEPT NEGATIVE: MIS beats EVERY single only in the CROSSOVER regime where neither estimator dominates. When
+one dominates the whole regime (e.g., a very sharp kernel where soft wins almost everywhere), MIS MATCHES that
+dominant estimator within a few percent rather than beating it -- mixing in the weak one costs a little. The
+ALWAYS-TRUE win is over NAIVE AVERAGING; the win over the best single needs a genuine mix -- which is exactly the
+MIS property: its value is when no single strategy is uniformly best.
+
+Tests: +2 (973 -> 975). test_holographic_mis.py (the module _selftest: naive-averaging-worse-than-best, MIS beats
+naive and both singles, on the mix) and test_mis_recover_beats_naive_average_and_singles in test_integration.py.
+
+## Gradient-cached decode: Ward's irradiance gradients for smooth maps (shipped)
+
+The seventh rendering-lessons item -- CACHE-1, and the second of Group B's "combining & caching" pair (MIS was the
+first). The engine evaluates smooth maps (a manifold decode, a splat field), and the naive dense read is a fine
+grid + nearest-neighbour snap (the decode argmax, piecewise constant). Greg Ward's irradiance caching does better:
+store the value AND its local gradient (Jacobian) at SPARSE anchors and interpolate FIRST-ORDER -- each anchor
+extrapolates its own linear model v_i + J_i.(q - a_i) to the query, blended by 1/distance.
+
+MEASURED on a smooth splat / Gaussian-mixture field (analytic gradients): first-order gradient interp cuts error
+~28% at a fixed 25 anchors vs the nearest-neighbour baseline (0.135 vs 0.189), and first-order @25 anchors roughly
+MATCHES nearest-neighbour @49 -- gradients ~HALVE the anchor count a smooth decode needs.
+
+KEPT NEGATIVE (the load-bearing part): the blend MUST be local. A naive GLOBAL weighting (every anchor contributes,
+weight ~1/distance, no cutoff) lets a distant anchor dump a wildly wrong long-range linear extrapolation into the
+query -- measured ~2.7x WORSE than the local version (0.363 vs 0.135). This rediscovers exactly why Ward's
+irradiance caching carries a validity radius + neighbour clamping. So the borrowable unit is the whole PACKAGE:
+sparse anchors + stored gradients + a validity-radius locality guard.
+
+`holographic_cache` ships gradient_cache(anchors, values, jacobians) (scalar OR vector fields), gradient_cache_fd
+(build from a field function alone via central finite differences), and interp_first_order(cache, q,
+validity_radius, global_weights=False) (Ward first-order interp with the validity-radius guard; global_weights=True
+exposes the negative). Wired as two faculties: gradient_cache and cache_interp.
+
+Tests: +2 (975 -> 977). test_holographic_cache.py (the module _selftest: gradients beat nearest-neighbour at fixed
+anchors, ~halve the count, and global weights fail) and
+test_gradient_cache_first_order_beats_nearest_and_global_weights_fail in test_integration.py.
+
+## Robust accumulation: harmonic weights + firefly clamping (shipped)
+
+The eighth rendering-lessons item -- ACCUM-2 and ACCUM-3, two cheap robustness fixes for the engine's averaging
+paths (consolidation over a growing store, HoloForest vote-averaging, any iterate-and-average).
+
+ACCUM-2 (harmonic weights, TAA's lesson). A fixed-alpha exponential blend x <- (1-a)x + a*sample never fully
+converges -- it keeps forgetting old samples, so its variance plateaus. The harmonic (1/n) running average
+x <- x + (sample - x)/n weights every sample equally and converges. MEASURED on a stationary noisy stream: harmonic
+error falls with N (0.0073 @ N=50 -> 0.0012 @ N=200 -> 0.0004 @ N=800), while the fixed-alpha EMA flatlines at
+~0.034. KEPT CAVEAT: on a DRIFTING target the forgetful EMA tracks BETTER (0.031 vs harmonic 0.043) -- so
+schedule='ema' stays available for non-stationary accumulation.
+
+ACCUM-3 (firefly clamping, V-Ray's adaptivity clamp / TAA history rectification). One outlier estimate (a firefly
+recall/vote with a huge magnitude) skews a mean. Clamping each sample's deviation from the MEDIAN to k robust-scales
+(the median deviation) winsorizes the outliers. MEASURED: with 5 injected fireflies, plain mean error 0.0467 vs
+clamped 0.0004 (~100x more robust); on clean data, clamped == plain (no loss).
+
+`holographic_accumulate` ships robust_accumulate(samples, schedule, alpha, clamp_k) (schedule 'harmonic'/'ema'/'mean'
++ optional firefly clamp_k -- the two compose), plus harmonic_accumulate and clamped_accumulate conveniences. Wired
+as one faculty: robust_accumulate. NOT forced into consolidation/forest internals (that would risk a regression);
+shipped as the available robust accumulator for those paths, demonstrated on the canonical stationary-stream and
+firefly cases.
+
+Tests: +2 (977 -> 979). test_holographic_accumulate.py (the module _selftest: harmonic converges + EMA plateaus +
+drift caveat + firefly clamp robust/no-loss) and
+test_robust_accumulate_harmonic_converges_and_clamp_resists_fireflies in test_integration.py.
+
+## Denoise-by-downscale: find a pattern by coarsening until noise averages out (shipped)
+
+XDATA-1, the entry point of Group G (the cross-data-type through-line) and the first rendering lesson that is
+explicitly NOT about images. The lesson: "patterns can be found by downscaling to eliminate noise." Downsampling an
+image pools neighbouring pixels so independent noise averages out while structure survives -- a MANIFOLD operation,
+not an image one. The engine already owns its forms: consolidation (low-rank SVD) is downscaling for CORRELATED
+VECTORS (pool across samples; the shared subspace reinforces, per-coordinate noise cancels), and low-pass filtering
+is downscaling for SIGNALS.
+
+MEASURED on two non-image data types:
+- LOW-RANK: a rank-3 subspace INVISIBLE in any single noisy vector (per-sample subspace energy ~0.03) is recovered
+  by pooling many samples -- subspace overlap grows with the sample count (0.22 @ N=100 -> 0.91 @ N=2000), the
+  averaging mechanism. (Requires the signal above the SVD/BBP recovery threshold; below it, fails safe -- nothing.)
+- LOW-FREQUENCY SIGNAL: slow sinusoids buried under 2x noise (full-res corr 0.47) recovered by keeping the top-k
+  spectral components -- corr 0.90 to the clean signal.
+
+THE HONEST PART (fail-safe detection): keeping the top-k components ALWAYS concentrates a little, even on pure noise
+(you select the largest of many random components -- the FFT noise concentration was 0.10 vs a uniform 0.023). So
+"a pattern was found" is NOT read off the concentration; it is decided against a PERMUTATION NULL (shuffle to
+destroy the structure, keep the noise level, recompute the score). Signal scores land ~60 sigma (low-rank) / ~14
+sigma (signal) above the null; pure noise lands AT the null -> found=False. The faculty does not hallucinate a
+pattern in noise.
+
+`holographic_downscale` ships downscale_lowrank (SVD subspace), downscale_lowfreq (top-k FFT), and
+find_pattern_by_downscale(data, kind='vectors'/'signal', k, n_null, seed) -> PatternResult(pattern, score,
+null_mean, null_std, found). Wired as one faculty: find_pattern_by_downscale.
+
+Tests: +2 (979 -> 981). test_holographic_downscale.py (the module _selftest: recover buried subspace + buried
+sinusoids, both found; pure noise of either type -> nothing) and
+test_find_pattern_by_downscale_recovers_buried_pattern_and_noise_fails_safe in test_integration.py.
+
+## Looping denoise as diffusion on an arbitrary manifold (shipped)
+
+XDATA-2, the diffusion half of Group G. "A looping denoising process": iterate a denoiser and it walks onto the
+manifold (DENOISING) or, from pure noise, walks ONTO it (GENERATING) -- the same operation in two regimes (B10).
+The engine already ran this over the discrete CODEBOOK (hopfield.generate); XDATA-2 generalizes it to a LEARNED or
+COMPOSED manifold given as a point cloud (a curved manifold, or a consolidation subspace from
+find_pattern_by_downscale -- the two halves of Group G compose).
+
+The denoiser is a dense-Hopfield step over the manifold's samples: x <- softmax(beta * S.x) @ S (a soft move toward
+the local samples). Iterating settles a point onto the manifold; annealing beta UP while injecting DECREASING noise
+turns it into a diffusion sampler.
+
+MEASURED on a curved manifold (a unit RING in R^D -- the case where interpolation provably leaves the manifold):
+- IDEMPOTENT DENOISE: a noisy ring point settles from ring-distance 0.59 to 0.029 and stays there (further steps
+  flat). The 0.029 floor is the sample-spacing limit (N=48 discrete samples), not error.
+- BEATS INTERPOLATION: the chord midpoint of two ring samples is off the ring (0.74); the denoiser settles it back
+  on (0.029). Looping-denoise beats interpolation for staying on a curved manifold.
+- NOVEL-BUT-VALID GENERATION: from-noise annealed diffusion lands on the ring (dist ~0.02, valid) BETWEEN the stored
+  samples (dist-to-nearest-stored ~0.04, novel) -- where bare-codebook generation just returns a stored sample
+  (dist-to-stored 0, degenerate).
+
+`holographic_diffuse` ships manifold_denoise_step (one dense-Hopfield step), settle (iterate -- denoise), and
+generate (annealed diffusion -- from-noise generation). Wired as two faculties: manifold_denoise and
+manifold_generate.
+
+Tests: +2 (981 -> 983). test_holographic_diffuse.py (the module _selftest: idempotent settling, interpolation
+beaten, novel-but-valid generation, codebook degeneracy) and
+test_manifold_denoise_settles_and_generate_is_novel_but_valid in test_integration.py.
+
+## Looping negative-lobe sharpening for arbitrary signals (shipped)
+
+XDATA-3, the SHARPEN half of Group G and the partner to SHARP-2 -- closing the denoise/generate/sharpen trio. A
+smooth basis (low-rank reconstruction, Gaussian splat, over-consolidated truncation) LOW-PASSES a signal,
+attenuating its high-frequency detail. Sharpening counteracts that by repeatedly adding a high-pass (negative-lobe)
+correction -- the mechanism the splat joint-refit used (its ~51%-negative amplitudes sharpened edges), now
+data-type-agnostic.
+
+THE HONEST SUBTLETY: the naive loop (iterated unsharp x <- x + a(x - blur(x))) DIVERGES -- its high-freq gain
+(1+a)^k is unbounded, recovering detail for a few steps then exploding (measured: error 0.22 -> 0.069 at iter 6,
+then -> 38 by iter 10). The stable loop is VAN CITTERT (residual-fitting deconvolution, x <- x + lam(y - blur(x))):
+its accumulated operator converges to the INVERSE blur (a negative-lobe sharpening filter) with bounded eigenvalues,
+so it CONVERGES.
+
+MEASURED on a 1-D signal (slow component + a localized high-frequency burst, Gaussian-blurred sigma=3):
+- NO NOISE: looping sharpening recovers the burst and converges -- relative error 0.222 -> 0.001, no blow-up.
+- WITH NOISE (kept negative): Van Cittert recovers up to an OPTIMUM then amplifies high-freq NOISE (over-sharpening).
+  The principled stop is Morozov's DISCREPANCY PRINCIPLE (halt when residual ||y - blur(x)|| <= noise norm): lands
+  near the optimum (err ~0.12 vs blurred 0.22); running UNGUARDED over-sharpens to ~0.45.
+- lam above the stability bound (~2/||blur||^2) DIVERGES into ringing (err -> 1300+) -- why lam is bounded.
+
+`holographic_sharpen` ships _gauss_blur (default FFT low-pass) and sharpen_loop(x, blur, sigma, lam, iters,
+noise_level) (Van Cittert with the discrepancy-principle guard; blur is the smoothing operator, callable). Wired as
+one faculty: sharpen_loop.
+
+Tests: +2 (983 -> 985). test_holographic_sharpen.py (the module _selftest: no-noise recovery+convergence, noise
+guard-beats-unguarded, over-large-step divergence) and
+test_sharpen_loop_recovers_detail_converges_and_guard_beats_oversharpening in test_integration.py.
+
+This closes Group G -- the cross-data-type through-line: denoise-by-downscale (XDATA-1), looping diffusion denoise +
+generate (XDATA-2), and looping sharpen (XDATA-3) are all ONE manifold operation, applicable to any data type the
+engine holds, each with its honest negative and fail-safe/stability guard.
+
+## Smooth/sharp two-layer representation (shipped)
+
+CACHE-2, the architectural move borrowed from irradiance caching (cache the smooth indirect light, compute the
+sharp direct light). The principle: NO SINGLE basis is cheap across a signal that is smooth in places and sharp in
+others. The same split recurs in the negative-lobe sharpening finding, the SVG (smooth morph + exact vector edges),
+and manifold-plus-residual decompose. At a fixed budget, split:
+  smooth layer = the k_smooth lowest-frequency coefficients (cheap dense basis), and
+  sharp layer  = the k_sharp largest residual coefficients, in a basis where the sharp content is sparse.
+
+The earlier attempt was only a MODEST win (15.7 vs 13.7 dB) because its sharp basis was weak (pixel-exact). The win
+here is LARGE because the sharp basis is the RIGHT one for the sharp content: localized spikes are BROADBAND in
+frequency but SPARSE in the SAMPLE domain, so a sparse sample-domain residual holds them in a handful of
+coefficients (a low-frequency basis would need a great many).
+
+MEASURED on a signal = two slow sinusoids + 6 spikes, at a budget covering both layers (k_smooth=6, k_sharp=6):
+- SPLIT 40.4 dB vs single-FFT 28.0 vs single-sparse 18.3 -- the split wins by a wide margin.
+- 30% of the signal energy sits in the residual the low-frequency layer provably cannot hold (the spikes).
+- KEPT CAVEAT: at too SMALL a budget (k_smooth=4, k_sharp=4) the split LOSES (23.5 vs single-FFT 27.5) -- it cannot
+  afford enough of either layer; the win needs a budget large enough to hold both layers' essential coefficients.
+
+ANSWER to the backlog's open research question "what is the right sharp basis in the hypervector domain": whichever
+one the sharp content is sparse in -- sample-sparse for spikes, a wavelet basis for edges. CACHE-2 is the STORAGE
+counterpart to XDATA-3's RECOVERY: CACHE-2 stores the detail explicitly (the sharp layer); XDATA-3 recovers it from
+an over-smoothed estimate. Complementary store-vs-recover.
+
+`holographic_twolayer` ships TwoLayerCode, smooth_sharp_split(x, k_smooth, k_sharp), smooth_sharp_reconstruct(code),
+and the single-basis baselines _fft_topk / _sparse_topk. Wired as two faculties: smooth_sharp_split +
+smooth_sharp_reconstruct.
+
+Tests: +2 (985 -> 987). test_holographic_twolayer.py (the module _selftest: split beats both single bases at
+sufficient budget, sharp positions exact, small-budget caveat) and
+test_smooth_sharp_split_beats_single_basis_at_fixed_budget in test_integration.py.
+
+## FHRR phase-domain morph (shipped)
+
+PHASE-1, borrowing phase-based frame interpolation's move into the PHASE domain (phase shift = motion), not
+amplitude blending. Under large motion, amplitude blending GHOSTS (two faint copies fading through each other); a
+phase shift MOVES the feature. FHRR is already the engine's phase domain (every atom = a vector of complex unit
+phasors), so the engine gets phase-domain interpolation for free: shift each component's phase along the shortest
+arc, staying on the unit-phasor manifold, instead of blending the complex vectors (the amplitude-domain morph).
+
+MEASURED on an FHRR fractional-power position encoding (a feature moving a large distance, xA=0.1 -> xB=0.9):
+- UNIFORM MOTION (the win): the phase morph moves the decoded feature at CONSTANT velocity -- tracks the ideal
+  trajectory exactly (max deviation 0.000). The amplitude blend STALLS near each endpoint and rushes through the
+  middle (an eased S-curve, deviation 0.057), because the phase of a weighted complex sum is biased toward the
+  heavier endpoint.
+- ENERGY / VALIDITY: the phase morph is a valid unit phasor at every t (|z_j|=1). The amplitude blend COLLAPSES
+  where components fall out of phase -- mean magnitude 0.75 at the midpoint (toward 0.64 for independent states),
+  so it is not even a valid FHRR vector without renormalising.
+
+THE HONEST NEGATIVE (kept loud): phase-domain morphing is NOT a free win under arbitrarily large change. The morph
+uses the SHORTEST ARC per component, which WRAPS once a component's phase difference exceeds pi -- past that it
+takes the wrong way round and stops tracking the true intermediate (measured: at a separation where phase diffs
+reach ~1.6*pi, deviation 0.983 -- completely lost). And near-orthogonal endpoints have no well-defined intermediate
+for ANY method. So the win holds while the change keeps per-component phase differences under pi; beyond that it
+degrades gracefully on energy (still unit phasors) but not on tracking.
+
+`holographic_phasemorph` ships phase_morph(a,b,t) (shortest-arc phase interpolation) and amplitude_morph(a,b,t) (the
+baseline blend). Wired as one faculty: phase_morph. This connects to the WiFi/CSI phase-as-information thread on
+record: phase IS the information, and interpolating it directly is what FHRR's phasor domain makes natural.
+
+Tests: +2 (987 -> 989). test_holographic_phasemorph.py (the module _selftest: uniform-motion win, energy
+preservation, wrapping negative) and test_phase_morph_uniform_motion_and_energy_with_wrapping_negative in
+test_integration.py.
+
+## Adaptive iteration count for the resonator (shipped)
+
+ADAPT-2, the variance-gate applied to iteration COUNT rather than sample count. The SBC resonator
+(holographic_sbc.sbc_resonator / decompose_structure) factors a bound product by annealed alternating projection. It
+already returned early per RESTART once the picks verified, but its INNER loop always ran a fixed 50 iters even after
+the estimate had converged. Adaptive sampling is the engine's own pattern (the SPRT in the recall path), and the
+resonator has an even cleaner stop signal: an EXACT reconstruction.
+
+The opt-in `early_stop=True` (default off, bit-identical when off) stops the moment the picks RECONSTRUCT the product
+exactly. Because no further iteration can improve a verified answer, this returns the SAME verified answer the fixed
+count would, only sooner -- so it is RISK-FREE (accuracy never changes, iters never increase).
+
+MEASURED (B=24, L=7, F=3):
+- EASILY-SOLVABLE workload (codebook N=10): early-stop cut average iters ~62% (68 -> 26) at IDENTICAL accuracy
+  (19/20 == 19/20). A single solvable problem went 50 -> 6 iters, same verified picks.
+- HARD / mostly-unsolved workload (N=50): 0% change, 0 harm -- unsolved problems never verify, so they run the full
+  search either way. The win is workload-dependent: large where the fixed count over-computes an easy problem, a
+  clean no-op where the search genuinely needs the iterations.
+
+Wired additively: `early_stop=False, min_iters=5, stats=None` on sbc_resonator and decompose_structure (module), and
+`early_stop=False, stats=None` on the UnifiedMind decompose_structure faculty. Pass stats={} to read stats['iters']
+(the inner iterations actually run) so the saving is measurable. Existing SBC suite passes unchanged (back-compat).
+
+Tests: +2 (989 -> 991). test_holographic_adaptive_resonator.py (the module _adapt2_selftest: matched accuracy at
+lower avg iters on solvable, no-op on hard) and test_decompose_structure_early_stop_matches_at_lower_cost in
+test_integration.py.
+
+## Adaptive curvature-driven cache anchor placement (shipped)
+
+CACHE-3, irradiance caching's adaptive record density instead of a uniform grid. Uniform placement wastes anchors on
+flat regions and under-resolves the bends; the GI literature reports ~7x fewer records for the same quality with
+adaptive density. The same waste applies to any cache or codebook over a field with non-uniform smoothness.
+
+THE RULE (equidistribution). For piecewise-linear reconstruction the error on an interval of width h scales like
+|f''|*h^2, so to make every interval contribute equally: |f''|*h^2 = const -> h ~ |f''|^(-1/2) -> anchor DENSITY ~
+|f''|^(1/2). Estimate the curvature, raise to the 1/2 power, add a small floor so flat regions still get a few
+anchors, place anchors at equal-mass quantiles of that density (inverse-CDF sample).
+
+MEASURED on a gentle slope + one sharp narrow bump:
+- adaptive placement matches uniform quality at ~7.5x FEWER anchors (uniform needs 239 to match adaptive-32), and at
+  a fixed count is far better (N=32: uniform RMSE 0.070 vs adaptive 0.0017) -- the bump resolved, not stepped over.
+- HONEST CONTROL (kept scope): on a UNIFORMLY-smooth field (a plain sinusoid) adaptive does NOT beat uniform
+  (uniform-32 0.0106 vs adaptive-32 0.0084, ~tied) -- no curvature concentration to exploit. The win is quality
+  MOVED to where the field needs it, not free quality; it is specifically a property of NON-uniform smoothness.
+
+Ties to ADAPT-1 (residual-peak splat placement, gradient-ish) and CACHE-1 (the irradiance cache whose anchors this
+places), and to the Group H AO-1 local-crowding hypothesis. `holographic_adaptive_cache` ships adaptive_anchors(x,
+y, n, floor, power) and reconstruct_from_anchors(x, anchor_x, y). Wired as two faculties.
+
+Tests: +2 (991 -> 993). test_holographic_adaptive_cache.py (the module _selftest: adaptive beats uniform at fixed N
+and at ~7x fewer anchors, ~tied on a smooth field) and test_adaptive_anchors_beat_uniform_on_nonuniform_field in
+test_integration.py.
+
+## Backward warping is hole-free (shipped / validated)
+
+PHASE-2, a validated note (not a new faculty -- unbind already is the backward map). Frame interpolation moved from
+FORWARD warping (push each source pixel to where it goes) to BACKWARD warping (for each target pixel, pull from where
+it came) because a forward warp under a non-uniform deformation leaves HOLES (target cells no source landed on) and
+OVERLAPS (cells several sources collide on), while a backward warp visits every target exactly once and fills them
+all by construction. The engine gets the backward form for free: unbind is a BACKWARD, invertible map -- to recover a
+stored value you take the target role and unbind its source out (a gather), not scatter the composite forward and
+hope every slot fills.
+
+MEASURED (a signal resampled under a non-uniform but monotonic warp warp(s) = s + 0.12*sin(2pi*s), N=256):
+- FORWARD scatter: 62 holes + 39 overlaps out of 256 cells (the warp locally stretches -> gaps; locally compresses
+  -> collisions).
+- BACKWARD gather: 0 holes, reconstruction RMSE 0.0 -- every target read its source exactly.
+
+The note for the engine: wherever it could either splat a representation forward or unbind it backward, the backward
+route is the hole-free one to prefer. `holographic_backwardwarp` ships forward_scatter (the cautionary baseline) and
+backward_gather (the unbind form) as the demonstration behind the note; no UnifiedMind faculty (unbind already
+exists).
+
+Tests: +1 (993 -> 994). test_holographic_backwardwarp.py (the module _selftest: forward leaves holes+overlaps,
+backward leaves none and is exact).
+
+## Multi-resolution pyramid / mipmap (shipped)
+
+SCALE-1, making coarse-to-fine an explicit ARCHIVE (mipmaps / flow pyramids / 3DGS densification). Keep the signal at
+several resolutions, read the level a query needs, refine toward fine only where it matters. The engine already leans
+this way implicitly (recursive/fractal structure, HoloForest's coarse descent, consolidation's low-rank-first); this
+makes the multi-resolution archive explicit.
+
+THE DECISIVE PROPERTY: anti-aliasing on a COARSE read. You cannot get a low-resolution view by SUBSAMPLING the full
+store -- content above the coarse Nyquist FOLDS into the low band and corrupts it (aliasing). A mipmap level was
+LOW-PASS FILTERED before downsampling, so its coarse view is clean. Each level is also smaller (cheap coarse read),
+and the levels are a progressive code (coarsest is a usable approximation, finer levels add detail back, exact at top).
+
+MEASURED (a low-freq signal + a high freq ABOVE the coarse Nyquist; pyramid [1024, 512, 256, 128, 64]):
+- a 1/8 coarse query matches the true low-frequency band ~11x better than a naive subsample (mipmap RMSE 0.035 vs
+  naive 0.388), which aliases the high frequency into a spurious low tone (the aliased bin has >100x the spurious
+  energy under naive vs mipmap).
+- each level is half the size of the one below (cheap LOD read); the full level reconstructs exactly.
+
+RELATION TO CACHE-2 (kept honest): CACHE-2's smooth/sharp split is a fixed TWO-level decomposition tuned to a storage
+budget; SCALE-1 is the multi-LEVEL spatial hierarchy with the distinct anti-aliased-LOD property (each coarse level
+is a smaller, alias-free array readable on its own). Same family, different job. Relates to XDATA-1 (downscale =
+low-pass = the same anti-aliasing, here stacked into a pyramid). `holographic_multires` ships build_pyramid,
+upsample_to, naive_subsample (the baseline). Wired as two faculties: multires_pyramid + pyramid_reconstruct.
+
+Tests: +2 (994 -> 996). test_holographic_multires.py (the module _selftest: anti-aliased coarse query beats naive
+subsample, levels halve, full level exact) and test_multires_pyramid_anti_aliased_coarse_query in test_integration.py.
+
+## Re-anchoring is load-bearing for deep traversal (shipped / audited)
+
+RAY-2, the path-traced form of "a shared kernel is not a shared manifold." In the FFT/phasor domain a bind is
+elementwise complex multiplication, so a chain of binds is a ray whose recoverable signal ATTENUATES multiplicatively
+with each hop. The fix is next-event estimation: connect to a KNOWN anchor (the codebook) at every bounce via cleanup
+-- re-project the intermediate state onto the manifold each step. Without it the state drifts off-manifold and the
+signal collapses.
+
+THE AUDIT (the VALIDATE half): every deep-composition / traversal faculty already re-anchors at each step --
+gated_traverse (RAY-1) and directed_traverse (RAY-3) clean up inside their step; the peel-based decode_structure
+cleans up per peel (measured 2 -> 15 hops); the pack/recover and nested-decode paths resolve each item to the
+codebook. No deep path is missing the discipline, so there is no cleanup to add -- RAY-2 is a validation, not a build.
+
+THE CONTRAST (what the existing tests omit): the traverse self-test shows the RE-ANCHORED traversal works, but never
+shows it FAILING without re-anchoring -- the whole claim. This drives the engine's REAL gated_traverse over a directed
+linked list two ways, identical except for the one line that carries the CLEANED node forward vs the RAW one.
+
+MEASURED (a 12-hop directed linked list in superposition):
+- RE-ANCHORED reaches every hop (12/12) in order, then the throughput gate abstains exactly when the chain runs out
+  (the signal is genuinely gone, not lost to drift).
+- RAW collapses almost immediately (~1 hop): the carried noise compounds each hop, throughput falls through the
+  floor, and the gate stops the dark ray. Per-hop cost: one codebook argmax (O(vocab)) -- cheap, and plainly
+  justified, since without it the traversal does not survive past the first hop.
+
+Complements peel's BUNDLE result (iterated decode 2 -> 15) with the CHAIN case, on the real faculty.
+`holographic_reanchor` ships directed_linked_list (build the superposed chain) and make_steps (the re-anchored vs raw
+step functions); no new faculty (gated_traverse already is the faculty -- this audits it).
+
+Tests: +2 (996 -> 998). test_holographic_reanchor.py (the module _selftest: re-anchored reaches all hops, raw
+collapses early) and test_reanchoring_is_load_bearing_for_deep_traversal in test_integration.py.
+
+## Jittered sub-pixel splat accumulation -- KEPT NEGATIVE (ACCUM-1)
+
+ACCUM-1, the "TAA/DLSS done correctly" idea. The splat fit places every splat at an INTEGER grid position (residual
+peak) and the joint refit keeps positions fixed, so the natural idea: jitter the FIT at sub-pixel offsets across
+passes (Halton/golden-ratio) and accumulate, letting splats land between grid points to sharpen sub-pixel edges. The
+honest question: does it sharpen PAST the joint refit? MEASURED ANSWER: NO.
+
+MEASURED (a continuous target with a sharp SUB-PIXEL feature, K splats, scored at high resolution):
+- REFIT-ONLY (base grid): RMSE 0.0201 -- grid-aligned splats can't sit on the sub-pixel feature.
+- JITTERED accumulation (fit K/j on j sub-pixel-shifted grids, accumulate, joint-refit): RMSE 0.0022 -- better than
+  base, BUT only because it SAMPLES the target at sub-pixel offsets (supersampling), not because of jittering.
+- THE CONTROL THAT SETTLES IT: given the SAME sub-pixel samples, fitting DIRECTLY on a 4x-finer grid (an ordinary
+  refit at higher resolution) is RMSE 0.0011 -- STRICTLY BETTER than the jittered accumulation. A global greedy +
+  joint refit over all sub-pixel positions beats fitting each shifted grid independently and summing.
+- AND with NO new info (shifted grids interpolated from the base grid), jittering can't manufacture sub-pixel detail
+  the base samples never held.
+
+THE NEGATIVE: jittered sub-pixel accumulation is NOT a sharpening tool. The only lever is the SAMPLING RESOLUTION of
+the target -- if you have sub-pixel samples, fit directly on them (a finer-grid refit wins); if you don't, jittering
+adds nothing. Pixel-aligned placement + joint refit, at sufficient sampling resolution, is already the right answer.
+Consistent with the earlier no-op (supersampling a band-limited Gaussian sum has nothing to anti-alias). Nothing is
+wired -- `holographic_jittersplat` records the experiment and the negative.
+
+Tests: +1 (998 -> 999). test_holographic_jittersplat.py (the module _selftest: jittered beats base only by
+supersampling; a finer-grid refit beats jittered -- jittering doesn't sharpen past the refit).

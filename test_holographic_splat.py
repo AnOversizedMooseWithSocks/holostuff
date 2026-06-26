@@ -1,6 +1,6 @@
 """Holographic Gaussian splatting (B8): a scene as a superposition of Gaussian primitives."""
 import numpy as np
-from holographic_splat import splat_fit, splat_render, splat_denoise, psnr
+from holographic_splat import splat_fit, splat_render, splat_refit, splat_denoise, psnr, adaptive_fit
 
 
 def _target(G=48, seed=0):
@@ -38,3 +38,70 @@ def test_rbf_encoder_is_a_gaussian_splat_in_hv_space():
                      (np.linalg.norm(c) * np.linalg.norm(enc.encode(v)) + 1e-12)) for v in vals])
     assert abs(vals[int(sims.argmax())] - 0.5) < 0.06   # peaks at the encoded value
     assert sims.max() > 0.95 and sims.min() < sims.max() - 0.2   # smooth Gaussian-like falloff
+
+
+def _hard_target(N=64):
+    # a hard-edged square + a smooth blob: greedy MP overlap double-counting shows up at the edge.
+    ys, xs = np.mgrid[0:N, 0:N] / N
+    T = np.zeros((N, N)); T[(xs > 0.25) & (xs < 0.68) & (ys > 0.25) & (ys < 0.68)] = 1.0
+    T += 0.8 * np.exp(-((xs - 0.72) ** 2 + (ys - 0.74) ** 2) / (2 * 0.10 ** 2))
+    return np.clip(T, 0, 1)
+
+
+def test_joint_refit_beats_greedy_and_gain_grows_with_count():
+    # the 'looping': re-solving amplitudes jointly removes greedy MP's overlap double-counting.
+    T = _hard_target()
+    gains = []
+    for K in (80, 400):
+        greedy = splat_fit(T, K)
+        gq = psnr(T, splat_render(greedy, T.shape))
+        rq = psnr(T, splat_render(splat_refit(greedy, T), T.shape))
+        assert rq > gq + 1.0                       # joint refit is a clear win
+        gains.append(rq - gq)
+    assert gains[1] > gains[0]                      # and the gain grows with the splat count
+
+
+def test_splat_fit_refit_flag_matches_manual_refit():
+    T = _hard_target()
+    placed = splat_fit(T, 120)
+    via_flag = splat_fit(T, 120, refit=True)        # same positions/scales, amplitudes re-solved
+    via_manual = splat_refit(placed, T)
+    assert np.allclose([s[2] for s in via_flag], [s[2] for s in via_manual])
+    assert psnr(T, splat_render(via_flag, T.shape)) > psnr(T, splat_render(placed, T.shape))
+
+
+def test_splat_refit_handles_empty():
+    assert splat_refit([], _hard_target()) == []
+
+
+def test_adaptive_fit_count_tracks_content_at_matched_quality():
+    """ADAPT-1: with a noise threshold the splat COUNT adapts to content -- a simple field finishes in far
+    fewer splats than a busy one, both at matched quality (V-Ray's adaptive sampler: sample to a noise floor,
+    not a budget). The fixed-k baseline, by contrast, over-spends on the easy field and starves the busy one."""
+    ys, xs = np.mgrid[0:48, 0:48] / 48.0
+    def bump(cy, cx, s, a=1.0):
+        return a * np.exp(-((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * s * s))
+    simple = bump(.5, .5, .18); simple /= simple.max()
+    busy = sum(bump(*p) for p in [(.25, .25, .07), (.3, .7, .06), (.7, .3, .06), (.72, .72, .05),
+                                  (.5, .5, .05), (.2, .55, .05), (.6, .15, .05)])
+    busy /= busy.max()
+    sp_s, k_s = adaptive_fit(simple, noise_thresh=0.03)
+    sp_b, k_b = adaptive_fit(busy, noise_thresh=0.03)
+    assert k_b > k_s + 5                                       # the busy field genuinely needs more splats
+    q_s = psnr(simple, splat_render(sp_s, simple.shape))
+    q_b = psnr(busy, splat_render(sp_b, busy.shape))
+    assert abs(q_s - q_b) < 4.0                               # matched quality (both hit the same noise floor)
+    assert q_s > 25 and q_b > 25                              # and both are genuinely good reconstructions
+
+
+def test_adaptive_fit_respects_bounds():
+    """ADAPT-1 bounds: k_min is honoured (and a smooth field converges below k_max), while a HARD-EDGED target
+    -- which the smooth isotropic basis cannot drive to a low residual -- runs all the way to k_max. The kept
+    caveat: the adaptive count is meaningful only for fields the Gaussian basis can actually represent."""
+    ys, xs = np.mgrid[0:48, 0:48] / 48.0
+    smooth = np.exp(-((xs - .5) ** 2 + (ys - .5) ** 2) / (2 * .2 ** 2))
+    _, k = adaptive_fit(smooth, noise_thresh=0.03, k_min=6, k_max=50)
+    assert 6 <= k < 50                                        # honoured k_min, converged before the ceiling
+    hard = ((xs > .3) & (xs < .7) & (ys > .3) & (ys < .7)).astype(float)
+    _, k_hard = adaptive_fit(hard, noise_thresh=0.005, k_min=4, k_max=25)
+    assert k_hard == 25                                       # the smooth basis can't resolve a hard edge -> k_max

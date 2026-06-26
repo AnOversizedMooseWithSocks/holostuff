@@ -85,6 +85,17 @@ class LearnedEnergyMemory:
     than a fixed codebook. `cleanup(x)` clamps x, relaxes the EP net, and returns the cleaned vector --
     the projection onto the learned manifold. The learned companion to the fixed modern-Hopfield
     `dense_cleanup`: use that for discrete-atom recall, this for a continuous manifold.
+
+    SCOPE (measured, kept negative): this is a DENOISER, not a GENERATOR. It earns its place where a noisy
+    point already sits NEAR the manifold, beating a matched-byte codebook (the selftest's relative win on a
+    2-D bump manifold) -- but the absolute fidelity is modest. It does NOT generate: descending the energy from
+    pure noise, or even 'cleaning' an already-clean point on a low-dimensional smooth manifold, COLLAPSES and
+    distorts, because the free-state attractors are not reliably ON the manifold (so they cannot be sampled to
+    produce novel valid points). For GENERATION use the composed-manifold diffusion
+    (holographic_hopfield.generate_structure), or -- on a locally-convex manifold -- simple interpolation in the
+    composed/parameter space, which already lands on the manifold (the SVG morph does exactly this). A learned
+    GENERATIVE manifold would need a denoiser trained ACROSS noise levels (a real diffusion model); this
+    single-noise EP autoencoder is not one. See backlog VG-2.
     """
 
     def __init__(self, net):

@@ -2101,3 +2101,371 @@ def test_finding_registry_faculty():
     assert m.finding_registry() is reg
 
 
+def test_finding_registry_persists_across_minds(tmp_path):
+    """D3 persistence: the mind's findings log can be saved and reloaded into a standalone registry, so a
+    conditioned tension recorded in one session survives into the next. The file holds only the structured
+    claims; the vectors rebuild from the seeds, so the reloaded registry detects the same tension."""
+    from holographic_knowledge import FindingRegistry
+    m = UnifiedMind(dim=256, seed=0)
+    reg = m.finding_registry()
+    reg.add("efficiency_ratio", "momentum", +1, condition="horizon_10d")
+    reg.add("efficiency_ratio", "momentum", -1, condition="intraday")    # conditioned tension
+    path = tmp_path / "mind_findings.json"
+    reg.save(str(path))
+    restored = FindingRegistry.load(str(path))
+    tens = restored.tensions()
+    assert len(tens) == 1 and tens[0]["type"] == "conditioned"
+    assert [dict(f) for f in restored.findings] == [dict(f) for f in reg.findings]
+
+
+def test_svg_canvas_faculty():
+    """The holographic vector-graphics (SVG) faculty: through the mind, a scene of typed primitives encodes into
+    one hypervector and decodes back (type/colour exact, position close), two scenes morph by interpolating their
+    vectors, the diffusion generates distinct novel scenes, and any scene renders as crisp resolution-independent
+    SVG. The sharp cousin of the splat archive; the canvas is cached on the mind."""
+    m = UnifiedMind(dim=4096, seed=0)
+    svg = m.svg_canvas()
+    assert m.svg_canvas() is svg                                  # cached on the mind
+
+    # round-trip a scene through one hypervector
+    scene = [(1, 0.30, 0.35, 0.12, 1), (0, 0.70, 0.62, 0.10, 0), (2, 0.52, 0.40, 0.09, 2)]
+    dec = svg.decode(svg.encode(scene), len(scene))
+    assert all(a[0] == b[0] and a[4] == b[4] for a, b in zip(scene, dec))   # type + colour exact
+    perr = np.mean([abs(a[1] - b[1]) + abs(a[2] - b[2]) for a, b in zip(scene, dec)]) / 2
+    assert perr < 0.06
+
+    # generate distinct novel scenes and render crisp SVG
+    scenes = [tuple(svg.generate(k=4, seed=s)) for s in range(5)]
+    assert len(set(scenes)) >= 3
+    out = svg.to_svg(scenes[0])
+    assert out.startswith("<svg") and 'viewBox=' in out and out.rstrip().endswith("</svg>")
+
+
+def test_splat_field_joint_refit():
+    """The splat_field faculty: the joint amplitude refit (the gradient-free 'looping') is on by default and
+    reconstructs a hard-edged image better than the raw greedy matching pursuit -- the under-reconstruction the
+    adaptive-density-control literature targets, addressed here by re-solving overlap-double-counted amplitudes."""
+    from holographic_splat import psnr
+    m = UnifiedMind(dim=512, seed=0)
+    ys, xs = np.mgrid[0:64, 0:64] / 64.0
+    T = np.zeros((64, 64)); T[(xs > 0.25) & (xs < 0.68) & (ys > 0.25) & (ys < 0.68)] = 1.0
+    T += 0.8 * np.exp(-((xs - 0.72) ** 2 + (ys - 0.74) ** 2) / (2 * 0.10 ** 2)); T = np.clip(T, 0, 1)
+    _, greedy = m.splat_field(T, k=200, refit=False)
+    _, refit = m.splat_field(T, k=200, refit=True)               # default is refit=True
+    assert psnr(T, refit) > psnr(T, greedy) + 1.0
+
+
+
+
+def test_low_discrepancy_sample_faculty():
+    """The mind exposes low_discrepancy_sample as a COVERAGE sampler: it returns a valid quasi-random set in
+    [0,1)^d that covers more evenly than default_rng (lower dispersion -- the measured win) and is
+    deterministic via the mind's seed. The right sampler for placement/jitter, vs default_rng for independence."""
+    from holographic_lowdiscrepancy import dispersion
+    m = UnifiedMind(dim=512, seed=0)
+    pts = m.low_discrepancy_sample(64, d=2)
+    assert pts.shape == (64, 2) and pts.min() >= 0.0 and pts.max() < 1.0
+    rand = np.mean([dispersion(np.random.default_rng(s).random((64, 2))) for s in range(8)])
+    assert dispersion(pts) < rand                                # even coverage beats random
+    assert np.allclose(pts, m.low_discrepancy_sample(64, d=2))   # deterministic (mind's seed)
+
+def test_gated_traverse_faculty_recovers_chain_then_abstains():
+    """The gated_traverse faculty drives a REAL holographic traversal -- a directed linked list stored in
+    superposition -- recovering every valid hop via a cleanup-confidence throughput gate, then abstaining the
+    instant the chain is exhausted (the recoverable signal gone), at a fraction of a fixed depth's steps. The
+    Russian-roulette stop, on the engine's own bind/unbind. (The traversal sets its own dimension D; the
+    mind's dim is irrelevant -- gated_traverse is a generic driver over a step closure.)"""
+    from holographic_ai import bind, involution
+    m = UnifiedMind(dim=512, seed=0)
+    rng = np.random.default_rng(1); D, Lc = 8192, 8
+    def unit():
+        v = rng.standard_normal(D); return v / np.linalg.norm(v)
+    perm = rng.permutation(D); inv = np.argsort(perm)               # the DIRECTION role
+    chain = [unit() for _ in range(Lc + 1)]
+    cb = np.array(chain + [unit() for _ in range(8)])
+    cbn = cb / np.linalg.norm(cb, axis=1, keepdims=True)
+    M = np.zeros(D)
+    for i in range(Lc):
+        M = M + bind(chain[i], chain[i + 1][perm])
+    def rstep(cur):
+        probe = bind(M, involution(cur))[inv]
+        cs = cbn @ (probe / (np.linalg.norm(probe) + 1e-12))
+        j = int(np.argmax(cs)); return (cb[j], cs[j], j)
+    res = m.gated_traverse(rstep, chain[0], floor=0.2, max_steps=25)
+    assert res.payloads == list(range(1, Lc + 1))                   # every chain node, in order
+    assert res.stopped == "floor" and res.steps == Lc and res.steps < 25   # abstains when exhausted, cheaply
+
+def test_splat_field_adaptive_count():
+    """ADAPT-1 faculty: splat_field(noise_thresh=...) makes the splat COUNT adapt to content -- a simple field
+    fits with far fewer splats than a busy one at matched quality, where a fixed k would over- or under-spend.
+    The default path (noise_thresh=None) is unchanged -- backward compatible."""
+    from holographic_splat import psnr
+    m = UnifiedMind(dim=512, seed=0)
+    ys, xs = np.mgrid[0:48, 0:48] / 48.0
+    def bump(cy, cx, s):
+        return np.exp(-((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * s * s))
+    simple = bump(.5, .5, .18); simple /= simple.max()
+    busy = sum(bump(*p) for p in [(.25, .25, .07), (.3, .7, .06), (.7, .3, .06), (.72, .72, .05),
+                                  (.5, .5, .05), (.2, .55, .05), (.6, .15, .05)]); busy /= busy.max()
+    sp_s, r_s = m.splat_field(simple, noise_thresh=0.03)
+    sp_b, r_b = m.splat_field(busy, noise_thresh=0.03)
+    assert len(sp_b) > len(sp_s) + 5                          # the busy field is given more splats
+    assert abs(psnr(simple, r_s) - psnr(busy, r_b)) < 4.0     # at matched quality (a common noise floor)
+    sp_fixed, _ = m.splat_field(simple, k=12)                 # default path unchanged: a fixed-k fit
+    assert len(sp_fixed) == 12
+
+def test_directed_structure_forward_only_and_graph():
+    """RAY-3: a directed structure recovers a node's SUCCESSOR with the predecessor suppressed to noise (unlike
+    the undirected chain, where both neighbours come back equal), and a branching graph node returns all its
+    successors from one unbind."""
+    m = UnifiedMind(dim=2048, seed=0)
+    ds = m.directed_structure(7)                              # linear chain 0->...->6
+    for i in (2, 4):
+        hits = dict(m.directed_successor(ds, i, topk=7))
+        top = m.directed_successor(ds, i)[0]
+        assert top[0] == i + 1 and top[1] > 0.25             # successor recovered, confidently
+        assert hits[i - 1] < 0.10                            # predecessor is noise -- forward-only
+    g = m.directed_structure(6, edges=[(0, 1), (0, 2), (0, 4)])
+    assert {k for k, _ in m.directed_successor(g, 0, topk=3)} == {1, 2, 4}   # a branching node's successors
+
+
+def test_directed_traverse_walks_chain_forward():
+    """RAY-3 x RAY-1: directed_traverse walks a stored directed chain forward via the throughput-gated walk,
+    recovering every node in order and abstaining when the chain runs out (the directed substrate under the
+    Russian-roulette traversal)."""
+    m = UnifiedMind(dim=2048, seed=0)
+    ds = m.directed_structure(9)
+    res = m.directed_traverse(ds, start_index=0, floor=0.2, max_steps=20)
+    assert res.payloads == list(range(1, 9)) and res.stopped == "floor"
+
+def test_mis_recover_beats_naive_average_and_singles():
+    """MIS-1: m.mis_recover combines hard 1-NN and soft Hopfield per-query by the balance heuristic. On a mix
+    of on-grid + off-grid cues over a coarse sharp-kernel manifold it beats naive averaging AND both singles,
+    where naive averaging is worse than the better single (the MIS warning). combine_estimators is the
+    reusable primitive."""
+    from holographic_encoders import ScalarEncoder
+    m = UnifiedMind(dim=512, seed=0)
+    D = 512
+    enc = ScalarEncoder(D, lo=0.0, hi=1.0, seed=1, kernel="rbf", bandwidth=6.0)
+    gv = np.linspace(0, 1, 8); CB = np.stack([enc.encode(g) for g in gv])
+    CBn = CB / np.linalg.norm(CB, axis=1, keepdims=True)
+    def cos(a, b):
+        return float(a @ b / ((np.linalg.norm(a) * np.linalg.norm(b)) + 1e-12))
+    rng = np.random.default_rng(3); eh = es = ea = em = 0.0; N = 400
+    for _ in range(N):
+        on = rng.random() < 0.5
+        v = float(rng.choice(gv)) if on else float(rng.uniform(0.03, 0.97))
+        t = enc.encode(v); q = t + 0.5 * rng.standard_normal(D) / np.sqrt(D)
+        cs = CBn @ (q / np.linalg.norm(q)); xh = CB[int(cs.argmax())]
+        w = np.exp(10 * (cs - cs.max())); w /= w.sum(); xs = (w[:, None] * CB).sum(0)
+        xm = m.mis_recover(q, CB)
+        eh += 1 - cos(xh, t); es += 1 - cos(xs, t); ea += 1 - cos(0.5 * xh + 0.5 * xs, t); em += 1 - cos(xm, t)
+    eh, es, ea, em = eh / N, es / N, ea / N, em / N; best = min(eh, es)
+    assert ea > best and em < ea and em < best            # naive worse than best; MIS beats naive AND both singles
+    a = m.combine_estimators([(np.array([1.0, 0.0]), 0.0), (np.array([0.0, 1.0]), 4.0)])
+    assert cos(a, np.array([0.0, 1.0])) > 0.99            # the primitive: weight collapses onto the reliable one
+
+def test_gradient_cache_first_order_beats_nearest_and_global_weights_fail():
+    """CACHE-1: m.gradient_cache + m.cache_interp do Ward first-order interpolation of a smooth field. First-order
+    gradient interp beats the nearest-neighbour (grid-argmax) baseline at fixed anchors, and global weights (no
+    validity radius) fail badly -- a distant anchor dumps a bad long-range extrapolation into the query."""
+    m = UnifiedMind(dim=256, seed=0)
+    rng = np.random.default_rng(1); K = 5
+    cx = rng.uniform(0, 1, K); cy = rng.uniform(0, 1, K)
+    amp = rng.uniform(0.5, 1.5, K); sig = rng.uniform(0.2, 0.32, K)
+    def f(u, v):
+        return float(np.sum(amp * np.exp(-(((u - cx) ** 2 + (v - cy) ** 2) / (2 * sig ** 2)))))
+    def grad(u, v):
+        e = amp * np.exp(-(((u - cx) ** 2 + (v - cy) ** 2) / (2 * sig ** 2)))
+        return np.array([np.sum(e * (-(u - cx) / sig ** 2)), np.sum(e * (-(v - cy) / sig ** 2))])
+    g = np.linspace(0, 1, 5); A = np.array([[u, v] for u in g for v in g])
+    V = np.array([f(u, v) for u, v in A]); J = np.array([grad(u, v) for u, v in A])
+    cache = m.gradient_cache(A, V, J); R = 1.7 / 4
+    Q = [[u, v] for u in np.linspace(0.1, 0.9, 12) for v in np.linspace(0.1, 0.9, 12)]
+    e_fo = np.mean([abs(float(m.cache_interp(cache, q, R)) - f(*q)) for q in Q])
+    e_nn = np.mean([abs(float(V[np.argmin(np.linalg.norm(A - q, axis=1))]) - f(*q)) for q in Q])
+    e_glob = np.mean([abs(float(m.cache_interp(cache, q, R, global_weights=True)) - f(*q)) for q in Q])
+    assert e_fo < e_nn                    # gradients beat the nearest-neighbour baseline at fixed anchors
+    assert e_glob > e_fo * 1.5            # global weights FAIL -- the validity-radius guard is required
+
+def test_robust_accumulate_harmonic_converges_and_clamp_resists_fireflies():
+    """ACCUM-2/3: m.robust_accumulate. Harmonic (1/n) weights converge on a stationary noisy stream where a
+    fixed-alpha EMA plateaus; and clamp_k makes the average robust to injected fireflies with no loss on clean."""
+    m = UnifiedMind(dim=128, seed=0)
+    rng = np.random.default_rng(5); D = 128
+    def cos(a, b):
+        return float(a @ b / ((np.linalg.norm(a) * np.linalg.norm(b)) + 1e-12))
+    mu = rng.standard_normal(D); mu /= np.linalg.norm(mu)
+    stream = [mu + 0.8 * rng.standard_normal(D) / np.sqrt(D) for _ in range(400)]
+    e_harm = 1 - cos(m.robust_accumulate(stream, schedule="harmonic"), mu)
+    e_ema = 1 - cos(m.robust_accumulate(stream, schedule="ema", alpha=0.2), mu)
+    assert e_harm < e_ema                      # harmonic converges; the EMA plateaus on a stationary stream
+    clean = [mu + 0.3 * rng.standard_normal(D) / np.sqrt(D) for _ in range(40)]
+    truth = np.mean(clean, 0)
+    fire = clean + [8.0 * rng.standard_normal(D) / np.sqrt(D) for _ in range(5)]
+    e_plain = 1 - cos(m.robust_accumulate(fire, schedule="mean"), truth)
+    e_clamp = 1 - cos(m.robust_accumulate(fire, schedule="mean", clamp_k=2.5), truth)
+    assert e_clamp < e_plain * 0.5             # clamping resists fireflies; no loss on clean data
+
+def test_find_pattern_by_downscale_recovers_buried_pattern_and_noise_fails_safe():
+    """XDATA-1: m.find_pattern_by_downscale recovers a pattern invisible at full resolution by downscaling, on
+    two non-image data types, with a permutation null making it fail safe on pure noise."""
+    m = UnifiedMind(dim=64, seed=0)
+    rng = np.random.default_rng(7); D, r = 256, 3
+    B, _ = np.linalg.qr(rng.standard_normal((D, r)))
+    C = rng.standard_normal((800, r)); X = C @ B.T; X /= np.linalg.norm(X, axis=1, keepdims=True)
+    Xn = X + 0.4 * rng.standard_normal((800, D))
+    res = m.find_pattern_by_downscale(Xn, kind="vectors", k=r, n_null=40, seed=1)
+    overlap = float(np.sum((res.pattern.T @ B) ** 2) / r)
+    assert res.found and overlap > 0.5                              # recovered the buried subspace, flagged found
+    assert not m.find_pattern_by_downscale(rng.standard_normal((800, D)), kind="vectors",
+                                           k=r, n_null=40, seed=1).found        # pure noise -> nothing (fail safe)
+    T = 512; t = np.arange(T)
+    clean = np.sin(2 * np.pi * 3 * t / T) + 0.7 * np.sin(2 * np.pi * 7 * t / T); clean /= np.std(clean)
+    sres = m.find_pattern_by_downscale(clean + 2.0 * rng.standard_normal(T), kind="signal", k=6, n_null=80, seed=1)
+    assert sres.found                                              # buried sinusoids recovered by low-pass downscale
+    assert not m.find_pattern_by_downscale(rng.standard_normal(T), kind="signal",
+                                           k=6, n_null=80, seed=1).found        # pure noise -> nothing (fail safe)
+
+def test_manifold_denoise_settles_and_generate_is_novel_but_valid():
+    """XDATA-2: m.manifold_denoise settles points onto a curved manifold (a ring) -- idempotent, and beats
+    interpolation (the chord midpoint leaves the ring; denoise settles it back). m.manifold_generate produces
+    novel-but-valid samples from noise where the bare codebook would be degenerate."""
+    m = UnifiedMind(dim=64, seed=0)
+    rng = np.random.default_rng(11); D, N = 64, 48
+    U, _ = np.linalg.qr(rng.standard_normal((D, 2))); u, v = U[:, 0], U[:, 1]
+    th = np.linspace(0, 2 * np.pi, N, endpoint=False); S = np.stack([np.cos(t) * u + np.sin(t) * v for t in th])
+    def ring_dist(x):
+        a, b = u @ x, v @ x; plane = a * u + b * v
+        return float(np.hypot(np.linalg.norm(x - plane), abs(np.hypot(a, b) - 1)))
+    noisy = S[7] + 0.6 * rng.standard_normal(D) / np.sqrt(D)
+    settled = m.manifold_denoise(noisy, S)
+    assert ring_dist(noisy) > 0.3 and ring_dist(settled) < 0.15        # settles onto the ring
+    mid = 0.5 * (S[4] + S[24])                                          # interpolation midpoint
+    assert ring_dist(mid) > 0.3 and ring_dist(m.manifold_denoise(mid, S)) < 0.15   # off-manifold -> settled back on
+    xgs = [m.manifold_generate(S, seed=s) for s in range(8)]
+    gd = [ring_dist(xg) for xg in xgs]
+    nov = [min(float(np.linalg.norm(xg - si)) for si in S) for xg in xgs]
+    assert np.mean(gd) < 0.1 and np.mean(nov) > 0.01                    # generated: valid (on ring) and novel (between samples)
+
+def test_sharpen_loop_recovers_detail_converges_and_guard_beats_oversharpening():
+    """XDATA-3: m.sharpen_loop recovers detail an over-smoothed signal lost (Van Cittert negative-lobe
+    sharpening), converging with no noise; the discrepancy guard stops near the optimum and beats running
+    unguarded under noise (over-sharpening kept negative); an over-large step diverges into ringing."""
+    m = UnifiedMind(dim=64, seed=0)
+    from holographic_sharpen import _gauss_blur
+    rng = np.random.default_rng(13); T = 256; t = np.arange(T)
+    truth = np.sin(2 * np.pi * 3 * t / T) + 0.6 * np.sin(2 * np.pi * 30 * t / T) * np.exp(-((t - 128) ** 2) / (2 * 25 ** 2))
+    blurred = _gauss_blur(truth, 3.0)
+    def err(z):
+        return float(np.linalg.norm(z - truth) / np.linalg.norm(truth))
+    rec = m.sharpen_loop(blurred, sigma=3.0, lam=1.0, iters=80, noise_level=0.0)
+    assert err(rec) < 0.05 and err(rec) < err(blurred)           # recovers detail, converges (no blow-up)
+    noisy = blurred + 0.005 * rng.standard_normal(T)
+    guarded = m.sharpen_loop(noisy, sigma=3.0, lam=1.0, iters=80, noise_level=0.005)
+    unguarded = m.sharpen_loop(noisy, sigma=3.0, lam=1.0, iters=80, noise_level=0.0)
+    assert err(guarded) < err(blurred) and err(guarded) < err(unguarded) * 0.6   # guard beats over-sharpening
+    blown = m.sharpen_loop(blurred, sigma=3.0, lam=2.5, iters=30, noise_level=0.0)
+    assert err(blown) > 10.0                                     # over-large step diverges into ringing
+
+def test_smooth_sharp_split_beats_single_basis_at_fixed_budget():
+    """CACHE-2: m.smooth_sharp_split + m.smooth_sharp_reconstruct store a smooth-plus-sharp signal as a
+    low-frequency smooth layer + a sparse-sample sharp layer. At a budget covering both layers it beats both a
+    single-FFT and a single-sparse representation, and the sharp positions reconstruct exactly."""
+    m = UnifiedMind(dim=64, seed=0)
+    from holographic_twolayer import _fft_topk, _sparse_topk
+    rng = np.random.default_rng(17); T = 256; t = np.arange(T)
+    smooth = np.sin(2 * np.pi * 2 * t / T) + 0.6 * np.cos(2 * np.pi * 5 * t / T)
+    sharp = np.zeros(T); pos = rng.choice(T, 6, replace=False); sharp[pos] = rng.uniform(-3, 3, 6)
+    x = smooth + sharp
+    def psnr(rec):
+        mse = np.mean((rec - x) ** 2); return float(10 * np.log10((x.max() - x.min()) ** 2 / (mse + 1e-12)))
+    code = m.smooth_sharp_split(x, 6, 6)
+    rec = m.smooth_sharp_reconstruct(code)
+    assert psnr(rec) > psnr(_fft_topk(x, 12)) + 5 and psnr(rec) > psnr(_sparse_topk(x, 12)) + 5   # split wins
+    assert np.allclose(x[code.sharp_idx], rec[code.sharp_idx])      # sharp positions reconstruct exactly
+
+def test_phase_morph_uniform_motion_and_energy_with_wrapping_negative():
+    """PHASE-1: m.phase_morph interpolates FHRR phasors in the phase domain -- moving an encoded feature at
+    constant velocity (tracks the ideal trajectory; the amplitude blend eases) and staying a valid unit phasor
+    (the blend collapses). Kept negative: under extreme change the shortest-arc morph wraps and loses tracking."""
+    m = UnifiedMind(dim=64, seed=0)
+    from holographic_fhrr import phasor_atom, fhrr_sim
+    from holographic_phasemorph import amplitude_morph
+    rng = np.random.default_rng(0); D = 2048; phi = np.angle(phasor_atom(D, rng))
+    def encode(x):
+        return np.exp(1j * x * phi)
+    def decode_x(q, grid):
+        s = np.array([fhrr_sim(q, encode(x)) for x in grid]); return float(grid[np.argmax(s)])
+    xA, xB = 0.1, 0.9; a, b = encode(xA), encode(xB)
+    grid = np.linspace(-0.1, 1.1, 481); ts = np.linspace(0.1, 0.9, 9)
+    dev_p = max(abs(decode_x(m.phase_morph(a, b, t), grid) - ((1 - t) * xA + t * xB)) for t in ts)
+    dev_a = max(abs(decode_x(amplitude_morph(a, b, t), grid) - ((1 - t) * xA + t * xB)) for t in ts)
+    assert dev_p < 0.02 and dev_p < dev_a * 0.5                  # phase = uniform motion, amplitude = eased
+    assert np.allclose(np.abs(m.phase_morph(a, b, 0.5)), 1.0)    # valid unit phasor at the midpoint
+    a2, b2 = encode(-0.3), encode(1.3); grid2 = np.linspace(-0.5, 1.5, 601)   # extreme change
+    dev_ext = max(abs(decode_x(m.phase_morph(a2, b2, t), grid2) - ((1 - t) * (-0.3) + t * 1.3)) for t in ts)
+    assert dev_ext > 0.2                                          # kept negative: shortest arc wraps, loses tracking
+
+def test_decompose_structure_early_stop_matches_at_lower_cost():
+    """ADAPT-2: m.decompose_structure(early_stop=True) returns the same verified factorization as the fixed count,
+    at lower iteration cost on a solvable problem (stats['iters'] reports the saving)."""
+    m = UnifiedMind(dim=64, seed=0)
+    from holographic_sbc import sbc_codebook, sbc_reconstruct
+    B, L, F, N = 24, 7, 3, 10
+    cbs = [sbc_codebook(B, L, N, seed=300 + f) for f in range(F)]
+    rt = np.random.default_rng(11); true = tuple(int(rt.integers(0, N)) for _ in range(F))
+    prod = sbc_reconstruct(true, cbs, L)
+    sf, se = {}, {}
+    rf = m.decompose_structure(prod, cbs, L, seed=0, stats=sf)
+    re = m.decompose_structure(prod, cbs, L, seed=0, early_stop=True, stats=se)
+    assert rf["verified"] and tuple(rf["picks"]) == true        # fixed count solves it
+    assert re["verified"] and tuple(re["picks"]) == true        # early-stop returns the SAME verified answer
+    assert se["iters"] < sf["iters"]                            # at lower iteration cost
+
+def test_adaptive_anchors_beat_uniform_on_nonuniform_field():
+    """CACHE-3: m.adaptive_anchors places cache anchors denser where the field bends, matching uniform-placement
+    quality at materially fewer anchors on a non-uniformly-smooth field (and ~tied on a uniformly-smooth one)."""
+    m = UnifiedMind(dim=64, seed=0)
+    xs = np.linspace(0, 1, 4001)
+    f = 0.3 * xs + np.exp(-((xs - 0.7) / 0.015) ** 2)
+    def rmse(ax):
+        return float(np.sqrt(np.mean((m.reconstruct_from_anchors(xs, ax, f) - f) ** 2)))
+    uni = rmse(np.linspace(0, 1, 32)); ada = rmse(m.adaptive_anchors(xs, f, 32))
+    assert ada < uni * 0.5                                       # far better at a fixed anchor count
+    need = next(N for N in range(32, 800) if rmse(np.linspace(0, 1, N)) <= ada)
+    assert need > 32 * 3                                         # uniform needs >3x as many anchors to match
+    g = np.sin(2 * np.pi * 2 * xs)                               # honest control: uniformly-smooth -> ~tied
+    def rmse_g(ax):
+        return float(np.sqrt(np.mean((m.reconstruct_from_anchors(xs, ax, g) - g) ** 2)))
+    assert rmse_g(m.adaptive_anchors(xs, g, 32)) > rmse_g(np.linspace(0, 1, 32)) * 0.5
+
+def test_multires_pyramid_anti_aliased_coarse_query():
+    """SCALE-1: m.multires_pyramid builds an anti-aliased mipmap -- a coarse query matches the true low-frequency
+    band far better than a naive subsample (which aliases high frequency into the low band), levels halve in size,
+    and the full level is exact."""
+    m = UnifiedMind(dim=64, seed=0)
+    N = 1024; x = np.arange(N) / N
+    sig = np.sin(2 * np.pi * 2 * x) + 0.6 * np.sin(2 * np.pi * 150 * x)
+    true_low = np.sin(2 * np.pi * 2 * x)
+    pyr = m.multires_pyramid(sig, n_levels=5)
+    assert [len(l) for l in pyr] == [1024, 512, 256, 128, 64]
+    assert np.allclose(pyr[0], sig)                              # full level is exact
+    rmse = lambda a, b: float(np.sqrt(np.mean((a - b) ** 2)))
+    mip = m.pyramid_reconstruct(pyr[3], N)                       # 1/8 anti-aliased level
+    naive = m.pyramid_reconstruct(sig[::8], N)                   # 1/8 aliased subsample
+    assert rmse(mip, true_low) < rmse(naive, true_low) * 0.5     # mipmap far cleaner at the coarse LOD
+
+def test_reanchoring_is_load_bearing_for_deep_traversal():
+    """RAY-2 (audit): m.gated_traverse with a re-anchored step recovers every hop of a directed linked list, while
+    the SAME traversal with a raw (no-cleanup) step collapses almost immediately -- re-anchoring is load-bearing."""
+    m = UnifiedMind(dim=64, seed=0)
+    from holographic_reanchor import directed_linked_list, make_steps
+    L = 12
+    ll = directed_linked_list(L, dim=1024, seed=0)
+    reanchored_step, raw_step = make_steps(ll)
+    start = ll["chain"][0]
+    g_re = m.gated_traverse(reanchored_step, start, floor=0.20, max_steps=L + 5)
+    g_raw = m.gated_traverse(raw_step, start, floor=0.20, max_steps=L + 5)
+    assert g_re.payloads == list(range(1, L + 1))               # re-anchored: every hop, in order
+    assert len(g_raw.payloads) < len(g_re.payloads) - 5         # raw: collapses early (noise compounds)

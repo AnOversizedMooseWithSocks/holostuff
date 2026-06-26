@@ -1224,6 +1224,68 @@ class UnifiedMind:
         p = float(null.pvalue(float(score))) if null is not None else float("nan")
         return payload, float(score), p
 
+    def combine_estimators(self, pairs, power=1.0):
+        """Veach's balance/power heuristic (MIS): combine several estimators of the SAME quantity, weighting
+        each by its per-query RELIABILITY (the 'pdf' analog). `pairs` is a list of (estimate, reliability);
+        returns sum_i w_i * estimate_i with w_i = r_i**power / sum_j r_j**power (power=1 = the balance
+        heuristic, 2 = the power heuristic). The reusable combiner behind mis_recover -- the point being that
+        this BEATS a naive average, which instead carries each estimator's error into the other's weak regime
+        (holographic_mis)."""
+        from holographic_mis import combine_estimators
+        return combine_estimators(pairs, power=power)
+
+    def mis_recover(self, x, codebook, beta=10.0, power=1.0):
+        """Recover a vector by combining HARD 1-NN and SOFT (dense-Hopfield) cleanups per-query via the balance
+        heuristic -- the B1 kept-negative ('hard wins on discrete atoms, soft wins on continuous off-grid
+        values') turned into one combiner that needs NO regime label. The cosine distribution's peakiness is
+        the reliability: a sharp single winner trusts the exact atom; a close runner-up trusts the interpolating
+        soft blend. `codebook` is the matrix of atoms to recover against. Measured to beat naive averaging
+        always, and both singles in the crossover regime where neither estimator dominates (holographic_mis)."""
+        from holographic_mis import mis_recover
+        return mis_recover(np.asarray(x, float), np.asarray(codebook, float), beta=beta, power=power)
+
+    def gradient_cache(self, anchors, values, jacobians):
+        """Package sparse anchors with cached values AND local Jacobians for first-order (Ward irradiance-
+        gradient) decode (CACHE-1). `anchors` (N,d), `values` (N,) or (N,M), `jacobians` (N,d) or (N,M,d). Read
+        back with cache_interp -- the gradient lets each anchor cover more ground, ~halving the anchor count a
+        smooth decode needs vs a nearest-neighbour grid argmax. (Use holographic_cache.gradient_cache_fd to
+        build from a field function alone, with finite-difference Jacobians.)"""
+        from holographic_cache import gradient_cache
+        return gradient_cache(anchors, values, jacobians)
+
+    def cache_interp(self, cache, q, validity_radius, global_weights=False):
+        """Read a gradient cache at query `q` by first-order interpolation with a VALIDITY-RADIUS locality guard
+        (CACHE-1): each anchor within the radius extrapolates its linear model v_i + J_i.(q-a_i), blended by
+        1/distance. The guard is load-bearing -- global_weights=True removes it and a distant anchor dumps a bad
+        long-range extrapolation into the query (measured ~2.7x worse); kept callable so the failure is visible."""
+        from holographic_cache import interp_first_order
+        return interp_first_order(cache, q, validity_radius, global_weights=global_weights)
+
+    def adaptive_anchors(self, x, y, n, floor=0.05, power=0.5):
+        """Place n cache/codebook anchor positions along `x` so they crowd where the field `y` bends (high
+        curvature) and thin out where it is flat -- irradiance caching's adaptive record density instead of a
+        uniform grid (CACHE-3). Density ~ |y''|^power equidistributes the piecewise-linear reconstruction error, so
+        this matches uniform-placement quality at MATERIALLY fewer anchors (~7x on a non-uniformly-smooth field).
+        Scope kept honest: on a UNIFORMLY-smooth field there is no concentration to exploit, so it ~ties uniform --
+        the win is quality MOVED to where the field needs it, not free quality. Returns the anchor x-positions."""
+        from holographic_adaptive_cache import adaptive_anchors
+        return adaptive_anchors(x, y, n, floor=floor, power=power)
+
+    def reconstruct_from_anchors(self, x, anchor_x, y):
+        """Piecewise-linear reconstruction of field `y` (sampled at `x`) from its values at `anchor_x` (CACHE-3) --
+        the cache read paired with adaptive_anchors: sample at the anchors, then interpolate between them."""
+        from holographic_adaptive_cache import reconstruct_from_anchors
+        return reconstruct_from_anchors(x, anchor_x, y)
+
+    def robust_accumulate(self, samples, schedule="harmonic", alpha=0.2, clamp_k=None):
+        """Average noisy estimates of one quantity robustly, for the engine's averaging paths (consolidation over
+        a growing store, forest vote-averaging). schedule='harmonic' uses 1/n weights (ACCUM-2: converges, best
+        for a STATIONARY target; 'ema' tracks a DRIFTING target but plateaus; 'mean' is the plain mean). clamp_k
+        (ACCUM-3), if set, winsorizes outlier samples to clamp_k robust-scales from the median first, so one
+        firefly can't dominate -- measured ~100x lower error under outliers, with no loss on clean data."""
+        from holographic_accumulate import robust_accumulate
+        return robust_accumulate(samples, schedule=schedule, alpha=alpha, clamp_k=clamp_k)
+
     def capacity_report(self, alpha=0.05, loads=(64, 256, 1024), n_floor=800, n_fa=800):
         """Where this store sits relative to the noise-wins CLIFF (Plate's HRR capacity theory), AND whether
         the calibrated false-alarm rate holds as the store GROWS (Cranmer's coverage-vs-LOAD -- the question
@@ -1662,6 +1724,19 @@ class UnifiedMind:
         toks = tokens.split() if isinstance(tokens, str) else list(tokens)
         return att.attribute(toks, topk=topk)
 
+    def gated_traverse(self, step, start, floor=0.15, max_steps=64, min_steps=1):
+        """Drive an iterative holographic traversal with a THROUGHPUT GATE -- Russian roulette for a path
+        through the space (a multi-hop recall, the resonator's peeling, a recursive descent). In the phasor
+        domain a bind is multiplicative, so a chain of binds is a ray whose recoverable signal attenuates;
+        `step(state) -> (next_state, throughput, payload)` reports a cheap per-step confidence (a cleanup
+        cosine, a convergence margin) and the traversal STOPS the instant it falls below `floor` -- the ray
+        has gone dark -- abstaining on that step. Returns TraversalResult(payloads, throughputs, steps,
+        stopped, final_throughput). Measured: it recovers the valid prefix and abstains exactly when the
+        signal is gone, without ground truth, at lower average cost than a fixed depth (holographic_traverse).
+        `step` may return None for a natural end; `floor` is on whatever scale the step reports as throughput."""
+        from holographic_traverse import gated_traverse
+        return gated_traverse(step, start, floor=floor, max_steps=max_steps, min_steps=min_steps)
+
     def factor_composite(self, composite, codebooks, restarts=20, L=None, iters=None, seed=0, confidence=False,
                          readout="softmax"):
         """Pull a single bound composite APART into the factors that built it -- the inverse of binding,
@@ -1713,7 +1788,7 @@ class UnifiedMind:
         return out
 
     def decompose_structure(self, composed, codebooks, L, restarts=6, iters=50, seed=None,
-                            readout="softmax", confidence=False, k=8):
+                            readout="softmax", confidence=False, k=8, early_stop=False, stats=None):
         """Recover the generating recipe of a COMPOSED structure -- the canonical, higher-capacity
         factorizer (holographic_sbc.decompose_structure), exposed as a faculty the mind speaks directly.
         A bound product is DISSIMILAR to its factors, so per-factor cleanup is chance; the SBC resonator
@@ -1731,10 +1806,16 @@ class UnifiedMind:
         which is MEASURED to raise factorization capacity (all-correct at N=50 0.00->0.12, N=80 0.00->0.25,
         N=25 0.47->0.62) by curing the softmax blend's metastable mixing; the default 'softmax' is unchanged.
         With confidence=True the result also carries {agreement, pvalue} -- the calibrated soft confidence for
-        approximate inputs (its null is matched to the chosen readout)."""
+        approximate inputs (its null is matched to the chosen readout).
+
+        early_stop=True (ADAPT-2) stops the resonator the moment its picks VERIFY: an exact reconstruction cannot be
+        improved by more iterations, so this returns the SAME verified answer the fixed count would, only sooner --
+        matched quality at lower average cost on easily-solved problems, a no-op on hard ones. Pass stats={} to read
+        back stats['iters'] (the inner iterations actually run), so the saving is measurable."""
         from holographic_sbc import decompose_structure as _decompose
         return _decompose(np.asarray(composed), codebooks, L, restarts=restarts, iters=iters,
-                          seed=self.seed if seed is None else seed, readout=readout, confidence=confidence, k=k)
+                          seed=self.seed if seed is None else seed, readout=readout, confidence=confidence, k=k,
+                          early_stop=early_stop, stats=stats)
 
     # -- self-verifying storage: tamper-evidence as an O(log n) property of the structure (BLD-1) -----
     def verify_store(self, items, seed=None):
@@ -1887,6 +1968,17 @@ class UnifiedMind:
             self._hcap = (PhasorMemory(d), PhasorVocabulary(d, seed=self.seed + 23, derived=True))
         return self._hcap
 
+    def phase_morph(self, a, b, t):
+        """Morph between two FHRR phasor vectors in the PHASE domain (phase shift = motion) -- interpolate each
+        component's phase along the shortest arc, staying on the unit-phasor manifold (PHASE-1). This moves the
+        decoded feature at CONSTANT velocity and keeps the morph a valid full-energy phasor at every t, where the
+        amplitude-domain blend ((1-t)a + t*b) eases non-uniformly and collapses in magnitude where components fall
+        out of phase. KEPT NEGATIVE / scope: the shortest arc wraps once a component's phase difference exceeds pi,
+        so under extreme (near-orthogonal) change it stops tracking the true intermediate -- the win holds while the
+        change keeps per-component phase differences under pi. `t` in [0, 1]."""
+        from holographic_phasemorph import phase_morph
+        return phase_morph(a, b, t)
+
     def compose_nested(self, groups):
         """Fractal composition -- the SAME bind+superpose that builds a scene from objects,
         applied ONE LEVEL UP to build a scene-of-scenes. `groups` is a dict {group_key:
@@ -1974,6 +2066,42 @@ class UnifiedMind:
         steps = (len(nodes) - 1) if steps is None else steps
         return traverse(np.asarray(memory), nodes, steps, cleanup=cleanup, beta=beta)
 
+    def directed_structure(self, n, edges=None, seed=None):
+        """Encode a directed SEQUENCE or GRAPH with a permutation DIRECTION ROLE (RAY-3): the successor of
+        each edge is bound through a fixed permutation, M = superpose bind(node_i, perm(node_j)), so unbinding
+        a node and undoing the permutation recovers its successor while the predecessor term is pushed into
+        noise. The substrate-correct counterpart to chain_structure (B7, UNDIRECTED), whose predecessor leak
+        otherwise needs holographic_peel's per-peel cleanup to suppress -- the permutation does at ENCODE time
+        what the peel cleanup does at DECODE time. `n` node atoms are minted at this mind's dim/seed; `edges`
+        is a list of (src, dst) index pairs (default: the linear chain 0->...->n-1; pass your own for a
+        graph). Returns a DirectedStructure(memory, nodes, perm, perm_inv) -- query it with
+        directed_successor() or walk it with directed_traverse()."""
+        from holographic_directed import build
+        s = self.seed if seed is None else seed
+        rng = np.random.default_rng(s)
+        nodes = rng.standard_normal((n, self.dim))
+        nodes = nodes / np.linalg.norm(nodes, axis=1, keepdims=True)
+        return build(nodes, edges=edges, seed=s + 1)
+
+    def directed_successor(self, ds, node_index, topk=1, thresh=None):
+        """Recover the successor(s) of a node in a DirectedStructure (RAY-3): perm_inv(unbind(M, node))
+        cleaned up against the node codebook. Returns [(index, cosine), ...] -- the strongest `topk`, or every
+        node at/above `thresh` (a branching node's whole successor set). The forward step of a directed walk;
+        unlike the undirected baseline it returns the successor only, not both neighbours."""
+        from holographic_directed import successors
+        return successors(ds, node_index, topk=topk, thresh=thresh)
+
+    def directed_traverse(self, ds, start_index=0, floor=0.15, max_steps=64, min_steps=1):
+        """Walk a directed chain FORWARD from `start_index`, gated by recovery confidence -- the directed
+        substrate (RAY-3) under the throughput-gated traversal (RAY-1). Each hop recovers the successor and
+        reports its cleanup cosine as throughput; the walk stops when that drops below `floor` (the chain
+        exhausted, the ray dark). Returns the TraversalResult (payloads = the recovered node indices in
+        order). Unambiguously forward, because the direction role suppressed the predecessor leak."""
+        from holographic_directed import make_step
+        from holographic_traverse import gated_traverse
+        return gated_traverse(make_step(ds), ds.nodes[start_index], floor=floor,
+                              max_steps=max_steps, min_steps=min_steps)
+
     # ---- the DECOMPOSE / DENOISE / FIT half of the loop (integration plan, Tier 1) -------------
     # UnifiedMind was already strong on one half of the loop: COMPOSE / RECALL / PREDICT / GENERATE.
     # These three faculties add the inverse half -- take a FOREIGN signal APART into a generator (a
@@ -2031,6 +2159,76 @@ class UnifiedMind:
             info["mode"] = "multiplicative" if f.log_space else "additive"
             info["compression_ratio"] = f.compression_ratio(len(y))
         return f, info
+
+    def find_pattern_by_downscale(self, data, kind="vectors", k=3, n_null=80, seed=0):
+        """Find a pattern in noisy data by DOWNSCALING -- project to a coarse representation where independent
+        noise averages out and structure survives (XDATA-1, the Group G entry). kind='vectors' pools correlated
+        vectors to a top-k subspace (consolidation/SVD); kind='signal' keeps a signal's k strongest spectral
+        components (low-pass FFT). 'found' is decided against a PERMUTATION NULL so it FAILS SAFE -- pure noise
+        reports nothing rather than a hallucinated pattern. Returns PatternResult(pattern, score, null_mean,
+        null_std, found). Same mechanism, any data type: downscale = low-pass = noise removal = pattern reveal."""
+        from holographic_downscale import find_pattern_by_downscale
+        return find_pattern_by_downscale(np.asarray(data, float), kind=kind, k=k, n_null=n_null, seed=seed)
+
+    def multires_pyramid(self, signal, n_levels=5):
+        """Build an anti-aliased mipmap of `signal` -- [full, half, quarter, ...], each level low-pass filtered
+        before downsampling by two (SCALE-1). The decisive property is anti-aliasing on a COARSE read: a coarse
+        pyramid level is a clean (alias-free), smaller view, where naively subsampling the full store folds
+        high-frequency content into the low band. The levels are also a progressive code (coarsest is a usable
+        approximation, finer levels add detail back, exact at the top). Returns the list of levels, coarsest last."""
+        from holographic_multires import build_pyramid
+        return build_pyramid(signal, n_levels=n_levels)
+
+    def pyramid_reconstruct(self, level, n):
+        """Resample a pyramid level (from multires_pyramid) back to length `n` -- the LOD read, so a coarse,
+        anti-aliased level can be used or compared at full length (SCALE-1)."""
+        from holographic_multires import upsample_to
+        return upsample_to(level, n)
+
+    def manifold_denoise(self, x, manifold, beta=18.0, steps=8):
+        """Settle a (noisy) point ONTO a sample-defined manifold by looping a dense-Hopfield step (XDATA-2) --
+        denoising as iterated projection. Generalises the codebook cleanup to ANY manifold given as a point cloud
+        (a curved manifold, or a consolidation subspace from find_pattern_by_downscale). Idempotent: once on the
+        manifold, further steps leave it fixed. Beats interpolation on a curved manifold (the chord midpoint
+        leaves the manifold; this settles it back)."""
+        from holographic_diffuse import settle
+        return settle(np.asarray(x, float), np.asarray(manifold, float), beta=beta, steps=steps)
+
+    def manifold_generate(self, manifold, steps=30, beta_lo=2.0, beta_hi=25.0, noise_hi=0.5,
+                          noise_lo=0.0, settle_steps=5, seed=0):
+        """Generate a NOVEL-but-VALID sample on a sample-defined manifold by annealed diffusion (XDATA-2): from
+        noise, loop the denoise step with beta rising and injected noise falling, then settle. Lands ON the
+        manifold (valid) but BETWEEN the stored samples (novel) -- where bare-codebook generation just returns a
+        stored sample. The B10 diffusion generalised off the discrete codebook to a learned/composed manifold."""
+        from holographic_diffuse import generate
+        return generate(np.asarray(manifold, float), steps=steps, beta_lo=beta_lo, beta_hi=beta_hi,
+                        noise_hi=noise_hi, noise_lo=noise_lo, settle_steps=settle_steps, seed=seed)
+
+    def sharpen_loop(self, x, blur=None, sigma=3.0, lam=1.0, iters=60, noise_level=0.0):
+        """Recover detail an over-smoothed signal LOST, by looping a converging negative-lobe (Van Cittert)
+        sharpening (XDATA-3, the sharpen half of Group G). `blur` is the smoothing operator that over-smoothed it
+        (callable; default a Gaussian low-pass with `sigma`). The accumulated correction is the INVERSE blur, a
+        sharpening filter with negative lobes. With `noise_level` > 0 it stops by the discrepancy principle
+        (residual hits the noise floor) to avoid amplifying noise -- the kept negative is that running past that
+        over-sharpens, and an over-large `lam` diverges into ringing. Data-type-agnostic: the partner to the
+        splat negative-lobe sharpening, for any smeared signal."""
+        from holographic_sharpen import sharpen_loop
+        return sharpen_loop(np.asarray(x, float), blur=blur, sigma=sigma, lam=lam, iters=iters, noise_level=noise_level)
+
+    def smooth_sharp_split(self, x, k_smooth, k_sharp):
+        """Split a signal into a SMOOTH layer (its k_smooth lowest-frequency coefficients) and a SHARP layer (the
+        k_sharp largest residual samples -- sparse in the sample domain) (CACHE-2). At a budget covering both
+        layers this beats any single basis, because no single basis is cheap across smooth-plus-sharp content (the
+        spikes are broadband in frequency but sparse in samples). Returns a TwoLayerCode; reconstruct with
+        smooth_sharp_reconstruct. The right sharp basis matches the sharp content (sample-sparse for spikes)."""
+        from holographic_twolayer import smooth_sharp_split
+        return smooth_sharp_split(np.asarray(x, float), k_smooth, k_sharp)
+
+    def smooth_sharp_reconstruct(self, code):
+        """Reconstruct a signal from a two-layer code (CACHE-2): the smooth layer everywhere plus the exact sharp
+        residual at the stored sharp positions."""
+        from holographic_twolayer import smooth_sharp_reconstruct
+        return smooth_sharp_reconstruct(code)
 
     def denoise(self, x, method="auto", samples=None, codebook=None, sigma=None,
                 rank=8, beta=25.0, steps=3, forward=None, adjoint=None, mu=0.5, pnp_steps=30,
@@ -2357,6 +2555,17 @@ class UnifiedMind:
     # built beside the mind reconcile straight into it: generate a vector by the cleanup-attractor
     # diffusion, and represent a 2-D field as a superposition of Gaussian primitives.
 
+    def low_discrepancy_sample(self, n, d=2, seed=None):
+        """`n` low-discrepancy (quasi-random) points in [0, 1)^d -- even coverage of a domain. The right
+        sampler wherever you PLACE points to COVER (generation seeds, codebook / anchor placement, sub-pixel
+        jitter) rather than to draw an INDEPENDENT sample. Roberts' generalised golden-ratio sequence
+        (holographic_lowdiscrepancy): deterministic, progressive (any prefix is well-distributed), and
+        measurably tighter coverage than default_rng -- a quasi-Monte-Carlo integrator with far lower error
+        than plain MC at equal count. Use default_rng where genuine independence is wanted (these points are
+        correlated by construction). `seed` defaults to the mind's seed."""
+        from holographic_lowdiscrepancy import low_discrepancy
+        return low_discrepancy(n, d, self.seed if seed is None else seed)
+
     def generate_vector(self, codebook, steps=12, beta0=4.0, beta1=40.0, noise0=0.6, seed=None,
                         readout="softmax"):
         """GENERATE a hypervector by denoising FROM PURE NOISE (B10) -- the cleanup attractor as a tiny
@@ -2398,6 +2607,22 @@ class UnifiedMind:
         from holographic_hopfield import generate_structure as _gs
         return _gs(np.asarray(roles, float), np.asarray(fillers, float), steps=steps, beta0=beta0,
                    beta1=beta1, noise0=noise0, seed=self.seed if seed is None else seed, readout=readout)
+
+    def svg_canvas(self):
+        """The holographic vector-graphics (SVG) faculty (holographic_svg.HolographicSVG) -- the sharp,
+        resolution-INDEPENDENT cousin of splat_archive. Encode a scene of typed primitives (rect/circle/triangle,
+        each with a continuous position, size, and palette colour) into ONE hypervector, decode it back, MORPH two
+        scenes by interpolating their vectors (vector arithmetic that tracks a parameter lerp), GENERATE novel
+        scenes via the composed-manifold diffusion (generate_structure), and render any scene as crisp SVG. A
+        vector <rect>/<circle> has analytically exact edges at any zoom, so this sidesteps the Gaussian-basis blur
+        the splat work had to fight with smaller splats or supersampling; SVG emission is pure string formatting,
+        no new dependency. Cached on the mind, built at this mind's dim/seed -- round-trip fidelity scales with
+        dimension (a few primitives are faithful at 2048+; a crowded scene wants more, the bundle's honest
+        capacity limit). MEASURED: round-trip type/colour exact and position within ~0.03 on [0,1]."""
+        if getattr(self, "_svg_canvas", None) is None:
+            from holographic_svg import HolographicSVG
+            self._svg_canvas = HolographicSVG(dim=self.dim, seed=self.seed)
+        return self._svg_canvas
 
     def _fractal_codebooks(self, G=8):
         """Deterministic codebooks for the fractal-kernel seed: a G*G grid of offset POSITIONS in the unit
@@ -2460,7 +2685,7 @@ class UnifiedMind:
         return {"offsets": offsets, "scale": s, "n_maps": N, "points": pts,
                 "dimension": dim, "expected": expected, "depth": d}
 
-    def splat_field(self, target, k=20, denoise=False):
+    def splat_field(self, target, k=20, denoise=False, refit=True, noise_thresh=None, k_min=4, k_max=200):
         """Represent a 2-D field/image as a SUPERPOSITION of K Gaussian primitives (holographic_splat) --
         the structural twin of bundle (a Gaussian-splat scene IS a bundle, and the RBF ScalarEncoder is
         already a Gaussian splat in hypervector space). Fits the splats by matching pursuit (greedy
@@ -2468,12 +2693,28 @@ class UnifiedMind:
         code and `rendered` is their sum. With denoise=True returns just the rendered field, which is a
         DENOISER -- a few smooth Gaussians have no capacity for high-frequency noise.
 
+        refit=True (default) re-solves the amplitudes JOINTLY after placement (`splat_refit`) -- greedy
+        matching pursuit double-counts overlapping splats, and one least-squares solve removes that for
+        ~2-4 dB (the gain grows with k). It is closed-form and gradient-FREE.
+
+        noise_thresh (default None) switches the COUNT from fixed to ADAPTIVE (`adaptive_fit`, V-Ray's
+        adaptive sampler): placement runs until the residual is below noise_thresh*range, bounded to [k_min,
+        k_max], so a simple field uses few splats and a busy one uses more at MATCHED quality. Orthogonal to
+        refit -- the count is WHERE the splats go, refit is HOW STRONG they are. None keeps the fixed-k path
+        unchanged. (Meaningful only for fields the smooth Gaussian basis can represent: a hard edge runs to k_max.)
+
         KEPT NEGATIVE / SCOPE: isotropic splats and a fixed scale set (the honest matching-pursuit
-        baseline); anisotropic covariances and gradient refinement (full 3DGS) remain out of scope.
-        Storing a whole gallery AS splat codes is now splat_archive() (holographic_splat_archive)."""
+        baseline); the *amplitude* refit is the gradient-free half of 'looping', but the gradient
+        optimisation of positions/scales and anisotropic covariances (full 3DGS) needs autodiff and stays
+        out of scope. Storing a whole gallery AS splat codes is now splat_archive() (holographic_splat_archive)."""
         from holographic_splat import splat_fit, splat_render
-        splats = splat_fit(np.asarray(target, float), k)
-        rendered = splat_render(splats, np.asarray(target).shape)
+        target = np.asarray(target, float)
+        if noise_thresh is not None:                          # ADAPT-1: let the COUNT adapt to content
+            from holographic_splat import adaptive_fit
+            splats, _ = adaptive_fit(target, noise_thresh=noise_thresh, k_min=k_min, k_max=k_max, refit=refit)
+        else:
+            splats = splat_fit(target, k, refit=refit)
+        rendered = splat_render(splats, target.shape)
         return rendered if denoise else (splats, rendered)
 
     def distributed_forward(self, layers, x, K=1, cleanup_books=None, relu=True):

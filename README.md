@@ -153,7 +153,13 @@ through a structured save -- re-learn those). `generate_vector` is the vector-le
 pointed at the diffusion sampler: denoising run *backwards* from pure noise until it lands on the codebook
 manifold -- generation and denoising the same operation in different regimes. And `splat_field` represents a 2-D
 field as a superposition of Gaussian primitives (a splat scene IS a bundle), which both reconstructs compactly
-and, because smooth Gaussians have no room for noise, doubles as a denoiser. Two later boundaries closed the
+and, because smooth Gaussians have no room for noise, doubles as a denoiser. Its fit now does the "looping" the
+3D-Gaussian-splatting literature calls for: greedy matching pursuit places each splat against the residual at
+that moment, so overlapping splats double-count, and one joint least-squares amplitude re-solve (`splat_refit`,
+on by default) removes that for ~2-4 dB -- gradient-free, so it stays inside the NumPy rule while the gradient
+optimisation of positions and scales that full 3DGS does stays out of scope. (An earlier read of the residual
+blur as a hard "basis floor" was wrong: it was under-reconstruction -- too few splats, greedily fit -- not a
+limit of the Gaussian basis.) Two later boundaries closed the
 same way: an **axial** perception modality (`axial_similarity` / `decode_axial`) puts orientation-like values
 on the Mobius base via the double-angle map, so the one memory stops treating theta and theta+pi as different
 (measured +1.00 where the plain number modality gives +0.76 and never sees the flip); and a **splat-bundle
@@ -822,13 +828,13 @@ in, and a Labyrinth mode has it learn the way out of a maze -- all on a prototyp
 **Test suite** (runs the full pytest suite), **Query & recall** (the interactive image demo - degrade an
 image, optionally destroy part of the plate, watch it get recalled), **Recall by description**
 (cross-modal recall - describe an image in words and get the matching one back from the tag address space),
-**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (947 at last count; up to six skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out (and that resonator now takes an optional softmax-sharpened cleanup -- the SBC readout lesson swept down -- which recovers more at high codebook load; default off, so the small-vocabulary scene case is unchanged). Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
+**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (999 at last count; up to six skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out (and that resonator now takes an optional softmax-sharpened cleanup -- the SBC readout lesson swept down -- which recovers more at high codebook load; default off, so the small-vocabulary scene case is unchanged). Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
 
 ### From the command line
     python tour.py                    # guided tour of all subsystems (~20s)
     python holographic_creature.py    # any module runs its own demo
     python holographic_encoders.py    # numbers / text / records demos
-    pytest -q                         # the whole test suite (947 tests)
+    pytest -q                         # the whole test suite (999 tests)
 
 ---
 
@@ -1536,7 +1542,296 @@ says so rather than calling it a contradiction. The discipline holds: retrieval 
 bound claim finds the candidate conflicts) but the verdict is exact (the polarity sign and the condition
 equality decide), the same one-exact-door rule the whole engine runs on. The honest boundary stays where the
 audit drew it — findings are *structured* claims, not free prose; turning a 2300-line narrative log into
-structured claims is an NLP step this engine, with no embeddings and no parser, does not do.
+structured claims is an NLP step this engine, with no embeddings and no parser, does not do. And because a
+research log is only useful if it outlives the session, the registry now saves and loads — but it writes
+*only the structured claims plus the dimension and seed*, never the vectors, because the vectors are a
+deterministic function of the claims and the seed. On load they rebuild bit-for-bit, so a reloaded log is not
+an approximation of the original but the same object: it recalls and detects the very same tensions, and it
+keeps growing. The file is tiny (a JSON list of claims), and the determinism rule the whole engine leans on —
+reproduce the structure from the seed rather than store it — carries the persistence for free.
+
+Then a different way to draw what the engine generates. The splat archive represents an image as a superposition
+of Gaussians, which is content-addressable and compact but blurs sharp edges — a Gaussian basis has to fight an
+edge with smaller splats or supersampling. SVG dissolves that problem instead of fighting it: a vector `<rect>`
+or `<circle>` has analytically exact edges at *any* zoom, because the rasteriser computes exact coverage from the
+maths. So the **holographic vector-graphics faculty** (`svg_canvas`) is the sharp, resolution-independent cousin
+of the splat archive. A scene is a short list of typed primitives — each a rectangle, circle, or triangle with a
+continuous position and size and a palette colour — and it encodes into *one* hypervector the engine's usual way:
+each primitive is a bundle of role-bound attributes, the scene a bundle of those primitives each bound to a slot.
+A whole picture is then content-addressable; it round-trips with type and colour exact (by cleanup) and position
+within about three percent of the canvas (by the scalar encoder's grid decode); and — the pretty part — two
+scenes *morph* by interpolating their hypervectors and decoding the blend, a vector-space interpolation measured
+to track a direct parameter lerp, so arithmetic on the vectors really does interpolate the picture. The same
+composed-manifold diffusion that generates structures (`generate_structure`) runs over a primitive codebook to
+generate novel scenes, and any scene renders to crisp SVG with pure string formatting — no new dependency, the
+NumPy-and-Flask rule intact. The honest boundary is drawn where the anisotropic-splat one was: primitives are
+isotropic for now (one size, a flat colour), with anisotropic width/height, rotation, gradients, and bezier paths
+the deliberate next step rather than a hidden gap.
+
+A first piece from the rendering-engine lessons arc is **low-discrepancy sampling** (`low_discrepancy_sample`),
+the answer to a question that runs through graphics: where do you place points to *cover* a domain — generation
+seeds, codebook anchors, the sub-pixel jitter a temporal-accumulation pass needs — when independent random points
+clump into holes and a regular grid aliases? Pharr's PBRT sampling chapter and Roberts' generalised golden-ratio
+(R) sequence give the deterministic middle ground, and the engine now ships it: one line of NumPy, no state,
+seed-reproducible, and *progressive* — any prefix is itself well-distributed, so you can keep taking points.
+Measured, sixty-four R-sequence points cover about twenty-eight percent tighter than the mean of random (a
+dispersion of 0.16 against 0.23), and as a quasi-Monte-Carlo integrator the same points estimate a smooth integral
+with roughly an order of magnitude less error than plain Monte Carlo at equal count — the downstream payoff of even
+coverage. It is a coverage tool, deliberately *not* a replacement for `default_rng` where genuine independence is
+wanted (these points are correlated by construction); it is the sampler the later jitter-and-accumulate and
+anchor-placement items will draw on.
+
+The second piece from that arc comes from a different rendering idea. In the FFT/phasor domain a bind is
+elementwise multiplication, so a *chain* of binds is a running product of per-step transfer functions — exactly
+a ray's *throughput*, attenuating as it bounces. A holographic traversal — following a sequence stored in
+superposition, the resonator's iterative peeling, a recursive scene descent — is therefore a ray through the
+space, and its recoverable signal decays the same way: once the throughput is gone, every further step is noise.
+Path tracers handle that with Russian roulette, terminating a path once its throughput is negligible, and the
+engine now does the same. **`gated_traverse`** drives any step function with a cheap running confidence (a
+cleanup cosine, a convergence margin) and stops the instant it drops below a floor — abstaining on that step
+rather than recording noise. Measured on a directed linked list in superposition, the gate recovers every valid
+hop and then abstains the moment the chain runs out, recovering the correct prefix at a fraction of a fixed
+depth's steps, and it does so *without ground truth* — the cheap confidence tracks the true recoverable signal
+closely enough to know when the ray has gone dark. The honest boundary: it keys on *low* confidence, so it
+catches a ray going dark but not a confident-but-wrong step in the capacity-ambiguous regime (that is a
+calibration question, for the calibrated-null and estimator-combination items, not a throughput one); and this
+is the deterministic floor, with the unbiased stochastic variant — for accumulating a sum rather than following
+a path — left as a separate, not-yet-measured step.
+
+A third piece, the adaptive sampler, comes straight from production rendering: a path tracer doesn't shoot a
+fixed number of rays per pixel, it shoots until the variance is below a noise floor — few where the image is
+smooth, many where it's busy. The splat fitter now does the same. Passing **`noise_thresh`** to `splat_field`
+switches the splat *count* from a fixed budget to content-driven: the same matching pursuit keeps placing splats
+until the residual drops below the floor, bounded by k_min and k_max, so a simple field finishes in a handful and
+a busy one keeps going — both at matched quality. Measured, a one-blob field fit to about 33 dB with thirteen
+splats while a seven-blob field reached the same 33 dB with thirty-six; a fixed count of twenty, by contrast,
+over-spends on the easy field (36 dB, splats wasted) and starves the busy one (27 dB). It's orthogonal to the
+joint refit — the count decides *where* the splats go, the refit decides *how strong* they are — and it leaves
+the fixed-k path untouched by default. The honest caveat, kept in the docstring and a test: the threshold gates
+the greedy residual, so quality is only approximately equalised, and a hard edge the smooth isotropic basis can't
+represent simply runs to k_max rather than converging. This is Drettakis's 3D-Gaussian-splatting densification in
+miniature.
+
+A fourth piece is a correctness fix for sequences and graphs, the one Plate's seat kept pushing to do early.
+When you bundle edges as bind(node, next) and later unbind by a node to ask "what comes next," you get back
+*both* neighbours — predecessor and successor — at the same strength, because the bind is symmetric: the memory
+has no sense of direction. The fix is to bind the successor through a fixed permutation first, bind(node,
+perm(next)) — unbinding by a node and undoing the permutation recovers the successor, while the predecessor term
+lands in the permuted subspace as noise. Measured on the substrate, a directed unbind returns the successor at
+~0.34 with the predecessor down at ~0.00, where the undirected version returns both at ~0.33 — genuinely
+ambiguous. **`directed_structure`** builds this for a sequence or an arbitrary directed graph,
+**`directed_successor`** recovers a node's successor (or, for a branching node, all of them — a node with three
+out-edges hands back all three from one unbind), and **`directed_traverse`** walks a chain forward under the
+throughput gate from the previous item, so the directed substrate and the Russian-roulette walk compose into a
+clean forward traversal that stops when the chain runs out. This is the substrate-correct counterpart to the
+engine's existing undirected chain structure, which carries the same predecessor leak and leans on per-peel
+cleanup to suppress it — the permutation does at encode time what that cleanup does at decode time.
+
+A fifth piece is the first genuinely new machinery in this arc rather than a port: Multiple Importance Sampling.
+The engine has several cleanup estimators that each win in a different regime — exact 1-NN is unbeatable on
+discrete atoms, the soft dense-Hopfield blend wins on continuous off-grid values (a kept negative from the energy
+work), the manifold projection wins on smooth low-rank data — and until now you chose one by hand. Veach's insight
+from rendering is that you don't have to choose: combine the estimators, weighting each by how reliable it is for
+*this* query. The sharp warning MIS carries, and the thing the engine now measures, is that a *naive* average of
+estimators reliable in different regimes makes things WORSE — it carries each estimator's error into the other's
+regime, so it lands below the better single. The balance heuristic (weight each by its per-query reliability, here
+the peakiness of the cosine distribution: a sharp single winner means a discrete atom and trusts the exact 1-NN; a
+close runner-up means a value *between* atoms and trusts the interpolating blend) fixes that. Measured on a coarse
+sharp-kernel manifold with a mix of on-grid and off-grid cues, naive averaging lands at error 0.0061 — worse than
+soft alone at 0.0040 — while **`mis_recover`** lands at 0.0037, beating both singles and the naive average,
+recovering whichever estimator is right per query with no regime label. **`combine_estimators`** is the reusable
+balance-heuristic primitive behind it. The honest scope, kept in the docstring: MIS beats *every* single only when
+no single estimator is uniformly best (the crossover); when one dominates the whole regime, MIS *matches* it within
+a few percent rather than beating it — the robust win is always over naive averaging.
+
+A sixth piece accelerates a smooth decode the way a renderer caches indirect light. The engine evaluates smooth
+maps — a manifold decode, a splat field — and the naive way to read one densely is a fine grid plus a
+nearest-neighbour snap (the decode's argmax). Greg Ward's irradiance caching does better: store the value *and*
+its local gradient at sparse anchors, and interpolate first-order — each anchor extrapolates its own linear model
+to the query, blended by distance, so a stored gradient lets each anchor cover more ground. Measured on a smooth
+splat (Gaussian-mixture) field, first-order gradient interpolation cuts error ~28% at a fixed 25 anchors and
+roughly matches the nearest-neighbour baseline at *double* the anchors — gradients roughly halve the count a
+smooth decode needs. The catch, and the kept negative, is that the blend must be local: a naive *global* weighting
+(every anchor contributes, weight ~1/distance with no cutoff) lets a distant anchor dump a wildly wrong long-range
+extrapolation into the query — measured ~2.7× worse than the local version. So the borrowable unit is the whole
+package: sparse anchors + stored gradients + a *validity-radius* locality guard, which is exactly why Ward's
+caching carries a validity radius and neighbour clamping. **`gradient_cache`** packages the anchors, and
+**`cache_interp`** reads them back first-order with the guard (and exposes the global-weight failure so it stays
+visible).
+
+A seventh piece hardens the engine's averaging paths with two cheap fixes the rendering world learned the hard
+way. Wherever the engine accumulates noisy estimates of one quantity — consolidation over a growing store, forest
+vote-averaging — a fixed-alpha exponential blend (the obvious online average) never fully converges: it keeps
+forgetting old samples, so its variance plateaus. Temporal anti-aliasing's lesson is to use *harmonic* (1/n)
+weights instead, which weight every sample seen so far equally and converge — measured error keeps falling with
+the sample count (0.0073 → 0.0004 over a stationary stream) while the fixed-alpha blend flatlines at ~0.034. The
+honest caveat is kept in the code: on a *drifting* target the forgetful blend tracks better, so the EMA schedule
+stays available for that case. The second fix is V-Ray's firefly clamp: a single outlier estimate — a bad recall
+or vote with a huge magnitude — skews a mean badly, so clamping each sample's deviation from the *median* to a few
+robust scales keeps one firefly from dominating — measured ~100× lower error under injected outliers, with zero
+loss on clean data. **`robust_accumulate`** exposes both, composably: pick the harmonic or EMA schedule, and set a
+clamp threshold to winsorize the fireflies first.
+
+The eighth piece opens the cross-data-type through-line the whole arc was building toward, and it is the first where
+the rendering lesson is explicitly *not* about images. The lesson is "patterns can be found by downscaling to
+eliminate noise" — downsampling an image pools neighbouring pixels so independent noise averages out while the
+structure survives. That is a manifold operation, and the engine already owns its forms: consolidation (low-rank
+SVD) is downscaling for *correlated vectors* — pool across samples, and the shared subspace reinforces while
+per-coordinate noise cancels — and low-pass filtering is downscaling for *signals*. `find_pattern_by_downscale`
+makes "downscale to find the pattern" a first-class faculty and points it at non-image data. Measured on both: a
+rank-3 subspace that is invisible in any single noisy vector (per-sample subspace energy ~0.03) is recovered by
+pooling many samples (subspace overlap ~0.8); a sum of slow sinusoids buried under 2× noise is recovered by keeping
+the strongest spectral components (correlation ~0.9 to the clean signal). The honest catch is that keeping the
+top-k components always concentrates a little even on pure noise — you are selecting the largest of many random
+components — so "a pattern was found" is decided not from the concentration but against a *permutation null*
+(shuffle the data to destroy the structure, keep the noise level, recompute). A score far above that null is real
+structure; a score at the null is nothing. That makes the faculty fail safe: on pure noise of either type it reports
+nothing rather than hallucinating a pattern. The same mechanism, the same fail-safe, on any data type the engine
+holds — which is the entire point of the through-line.
+
+The ninth piece is the second half of the through-line: if downscaling defines a manifold, *looping* a denoiser on
+it does the other two jobs — denoise and generate — and they turn out to be the same operation in two regimes. The
+denoiser is a dense-Hopfield step over the manifold's samples (a soft move toward the nearby points); iterate it and
+a noisy input settles onto the manifold, or, started from pure noise with the temperature annealed up and the
+injected noise annealed down, the walk commits to the manifold and lands on it — a generated sample. The engine
+already ran this over the discrete codebook; the generalization Eno asked for is looping over a *learned or
+composed* manifold instead. Demonstrated on a curved manifold (a ring embedded in R^D, the case where interpolation
+provably fails): a noisy ring point settles from 0.59 to 0.029 and stays there (idempotent); the chord midpoint of
+two ring points is off the ring (0.74) but the denoiser settles it back on (0.029), so looping-denoise beats
+interpolation for staying on a curved manifold; and generation from noise lands on the ring (distance ~0.02, valid)
+but *between* the stored samples (distance-to-nearest ~0.04, novel) — where bare-codebook generation would just
+return a stored sample verbatim. **`manifold_denoise`** settles onto any sample-defined manifold and
+**`manifold_generate`** samples from it, both taking the manifold as a point cloud — which is exactly what
+`find_pattern_by_downscale` produces, so the two halves of Group G compose.
+
+The tenth piece completes the through-line's trio — denoise, generate, and now *sharpen* — and closes Group G. A
+smooth basis (a low-rank reconstruction, a Gaussian splat, an over-consolidated truncation) low-passes a signal,
+attenuating its high-frequency detail; sharpening counteracts that by repeatedly adding a high-pass — that is, a
+negative-lobe — correction, exactly the mechanism the splat joint-refit used when its ~51%-negative amplitudes
+sharpened edges. The honest subtlety the engine measures is that the *naive* loop (iterated unsharp) diverges: its
+high-frequency gain grows unboundedly, so it recovers detail for a few steps then explodes into ringing. The stable
+loop is Van Cittert's residual-fitting deconvolution, whose accumulated operator converges to the inverse blur — a
+sharpening filter with negative lobes — but with bounded eigenvalues, so it converges instead of blowing up.
+Measured on a non-image signal (a slow component plus a localized high-frequency burst, Gaussian-blurred): with no
+noise the loop recovers the burst and converges, relative error 0.22 → 0.001. The kept negative is the
+deconvolution tradeoff — with noise present, Van Cittert recovers the signal up to an optimum, then keeps going and
+amplifies the high-frequency noise, so the principled stop is Morozov's discrepancy principle (halt when the
+residual falls to the noise level): it lands near the optimum (error ~0.12 vs the blurred 0.22), where running
+unguarded over-sharpens to ~0.45. And a step above the stability bound diverges into ringing — which is why the step
+is bounded and the guard exists. **`sharpen_loop`** ships it, taking the smoothing operator as an argument so it
+sharpens any over-smoothed signal, not just a Gaussian-blurred one.
+
+A companion piece records the architecture those operations live in. Irradiance caching's deepest idea is to cache
+the smooth indirect light and compute the sharp direct light — two layers, each in the representation it is cheap in
+— and that same smooth-plus-sharp split recurs in the negative-lobe finding, in the SVG (a smooth morph plus exact
+vector edges), and in manifold-plus-residual decompose. No single basis is cheap across a signal that is smooth in
+places and sharp in others, so at a fixed budget the split wins: a smooth layer of low-frequency coefficients plus a
+sharp layer of the largest residual coefficients, in a basis where the sharp content is sparse. An earlier attempt
+was only a modest win because its sharp basis was weak; here the win is large because the sharp basis is the *right*
+one — localized spikes are broadband in frequency but sparse in the sample domain, so a sparse sample-domain
+residual holds them in a handful of coefficients. Measured on a signal of two slow sinusoids plus a few spikes, at a
+budget covering both layers the split reaches ~40 dB against ~28 for a single-FFT code and ~18 for a single-sparse
+code, with 30% of the energy sitting in the residual the low-frequency layer provably cannot represent. The kept
+caveat is that at too small a budget the split loses — it cannot afford enough of either layer — so the win needs a
+budget large enough to hold both. **`smooth_sharp_split`** and **`smooth_sharp_reconstruct`** ship the codec, and the
+answer to the backlog's open question "what is the right sharp basis" is: whichever one the sharp content is sparse
+in — sample-sparse for spikes, a wavelet basis for edges.
+
+One more piece borrows from frame interpolation's move into the phase domain. Phase-based interpolation shifts a
+feature's phase (which encodes where it is) instead of blending amplitudes, because amplitude blending under large
+motion produces a ghost — two faint copies fading through each other — while a phase shift moves the feature. FHRR
+is already the engine's phase domain: every atom is a vector of complex unit phasors, so the engine gets phase-domain
+interpolation for free, by shifting each component's phase along the shortest arc instead of blending the complex
+vectors the way the amplitude-domain morph does. Measured on an FHRR-encoded position — a feature moving a large
+distance — the phase morph moves the decoded feature at constant velocity, tracking the ideal trajectory exactly,
+while the amplitude blend stalls near each endpoint and rushes through the middle (a non-physical eased S-curve),
+because the phase of a weighted complex sum is biased toward the heavier endpoint; and the phase morph is a valid
+unit phasor at every step where the amplitude blend collapses to ~0.75 of full magnitude at the midpoint. The honest
+negative is kept loud: phase-domain morphing is not a free win under arbitrarily large change — the shortest arc
+wraps once a component's phase difference exceeds π, past which it takes the wrong way round and stops tracking the
+intermediate (measured deviation ~0.98 at a separation where phase differences reach ~1.6π), and near-orthogonal
+states have no well-defined intermediate for any method. So the win holds while the change keeps per-component phase
+differences under π. **`phase_morph`** ships it.
+
+A last piece in this arc applies the same adaptive-compute idea to iteration COUNT rather than sample count. The
+resonator that factors a bound product runs an annealed alternating projection, and it already returned early once a
+restart's picks verified — but its inner loop always ran a fixed fifty iterations even after the estimate had
+settled. Adaptive sampling is the engine's own pattern (the SPRT in the recall path accumulates evidence and stops
+at a confidence bound), and the resonator carries an even cleaner stop signal: an exact reconstruction. So an opt-in
+`early_stop` halts the moment the picks rebuild the product exactly — and because no further iteration can improve a
+verified answer, this returns the same answer the fixed count would, only sooner. Measured on a workload of
+easily-solved factorizations it cut the average iteration count by ~62% (68 → 26) at identical accuracy; on a hard,
+mostly-unsolved workload it changed nothing — those searches genuinely need every iteration, and stopping early
+would only forfeit a chance to solve them. That is the honest shape of the win: a large saving where the fixed count
+over-computes an easy problem, a clean no-op where it does not, and never a loss of accuracy. It stays off by default
+(the fixed count is bit-for-bit unchanged); `decompose_structure(..., early_stop=True)` opts in, and a `stats` dict
+reports the iterations actually run so the saving is measurable.
+
+One more cache piece decides WHERE the anchors go. Irradiance caching never places its records on a uniform grid; it
+places them denser where the cached quantity changes fast and sparser where it is flat, and that adaptive density
+buys the same reconstruction quality at far fewer records — the literature reports roughly seven times fewer. The
+same waste applies to any cache or codebook the engine builds over a field with non-uniform smoothness. The rule is
+equidistribution: for piecewise-linear reconstruction the error on an interval scales like the curvature times the
+square of its width, so to make every interval contribute equally the anchor spacing must follow the inverse square
+root of the curvature — anchor density proportional to the square root of |f''|. Estimate the curvature, raise it to
+the half power, add a small floor so genuinely flat regions still get a few anchors, and place the anchors at
+equal-mass quantiles of that density. Measured on a gentle slope carrying one sharp narrow bump, adaptive placement
+matched uniform-placement quality at about seven and a half times fewer anchors, and at a fixed anchor count its
+error was dramatically lower — the bump resolved instead of stepped over. The honest control keeps the scope clear:
+on a uniformly-smooth field there is no curvature to concentrate on, so adaptive and uniform are essentially tied.
+Adaptive placement is not free quality; it is quality moved to where the field needs it. **`adaptive_anchors`** and
+**`reconstruct_from_anchors`** ship it.
+
+A short note closes the interpolation group. Frame interpolation moved from forward warping — push each source pixel
+to where it goes — to backward warping — for each target pixel, pull from where it came — because a forward warp
+under a non-uniform deformation leaves holes (target cells no source landed on) and overlaps (cells several sources
+collide on), while a backward warp visits every target exactly once and fills them all by construction. The engine
+gets the backward form for free: unbind is a backward, invertible map. To recover a stored value the engine does not
+scatter the composite forward and hope every slot gets filled; it takes the target role and unbinds its source out,
+so each target finds its own source. Measured on a signal resampled under a non-uniform warp, a forward scatter left
+62 holes and 39 overlaps out of 256 cells, while a backward gather left none and reconstructed the signal exactly —
+which is why, wherever the engine could either splat a representation forward or unbind it backward, the backward
+route is the hole-free one to prefer.
+
+The interpolation group ends by making coarse-to-fine an explicit archive. Mipmaps, flow pyramids and 3DGS
+densification all keep a signal at several resolutions and read the one a query needs, refining toward fine only
+where it matters; the engine already leans this way implicitly, in its recursive structure and its coarse-first
+descents, and this makes the multi-resolution archive explicit. The decisive property is anti-aliasing on a coarse
+read: you cannot get a low-resolution view by simply subsampling the full store, because any content above the
+coarse Nyquist folds down into the low band and corrupts it. A mipmap level was low-pass filtered before it was
+downsampled, so its coarse view is clean. Measured on a low-frequency signal carrying a high frequency above the
+coarse Nyquist, a one-eighth query from the pyramid matched the true low-frequency band about eleven times better
+than a naive subsample, which aliased the high frequency into a spurious low tone; each level is half the size of the
+one below, so a coarse read is cheap, and the full level reconstructs exactly. Kept honest, this is the multi-level
+cousin of the smooth/sharp two-layer codec — that one is a fixed two-way split tuned to a budget, this is the
+resolution hierarchy with the distinct anti-aliased-LOD property. **`multires_pyramid`** and
+**`pyramid_reconstruct`** ship it.
+
+A closing audit confirms the discipline that holds all of this together. In the phasor domain a bind is a
+multiplication, so a chain of binds is a ray whose recoverable signal attenuates with every hop, and the path-traced
+fix is next-event estimation — connect to a known anchor at each bounce rather than hope the path stays valid. In the
+engine that anchor is the codebook and the connection is cleanup: re-project the intermediate state onto the manifold
+every step. The audit checked every deep-composition and traversal faculty — the throughput-gated traverse, the
+directed traverse, the peel-based decode, the pack/recover and nested-decode paths — and found that all of them
+already re-anchor at each step, so there was nothing to add. What the existing tests never showed is the traversal
+*failing* without it, which is the whole claim. Driving the engine's real gated traverse over a twelve-hop directed
+linked list two ways — identical but for the one line that carries the cleaned node forward versus the raw one —
+re-anchoring recovers all twelve hops in order and then abstains exactly when the chain runs out, while the raw
+version collapses after a single hop as its noise compounds and the throughput gate stops the dark ray. The per-hop
+cost is one codebook lookup, plainly justified, since without it the traversal does not survive past the first hop —
+a shared kernel is not a shared manifold. The contrast ships as a runnable audit beside `gated_traverse`.
+
+One last experiment in this arc is kept on the record as a negative. TAA and DLSS supersample by jittering the camera
+sub-pixel across frames and accumulating, and since the splat fit places every splat at an integer grid position, the
+natural idea was to jitter the fit at sub-pixel offsets across passes and accumulate, letting splats land between grid
+points and sharpen sub-pixel edges. Measured against a continuous target with a sharp sub-pixel feature, the jittered
+accumulation did beat the plain base-grid refit — but only because it samples the target at sub-pixel offsets, which
+is ordinary supersampling, not anything special about jittering. The control settled it: given the same sub-pixel
+samples, fitting directly on a finer grid (an ordinary refit at higher resolution) was strictly better than the
+jittered accumulation, and with no new information the jitter could not manufacture sub-pixel detail the base samples
+never held. So jittered accumulation does not sharpen past the refit; the only lever is the sampling resolution of the
+target, and a finer-grid refit uses it better. Nothing is wired — the experiment and its negative are recorded, in
+keeping with the rule that a kept negative is a result.
 
 **More engine pieces** (each with a runnable demo): residue (exact integer)
 arithmetic on vectors, signed-distance regions of the sphere, a predictive filter
@@ -1657,7 +1952,7 @@ The app and tour:
     tour.py       command-line tour of every subsystem
     run.bat       Windows launcher
 
-Tests (947 total):
+Tests (999 total):
 
     test_holographic.py           core engine (bind/bundle/memory/reflex/drift)
     test_holographic_image.py     image store / WHT / quantisation
@@ -1804,8 +2099,87 @@ Tests (947 total):
                                   back from its program vector, flagging a SEARCH with no procedure-matched
                                   NULL and a select-then-score with no out-of-sample SPLIT (the audit_procedure faculty)
     test_holographic_knowledge.py D3: the findings registry -- a research log as a holographic knowledge
-                                  structure: structured claims recalled by (role-sensitive) similarity, and the
-                                  log's own contradictions detected, flat vs conditioned (the finding_registry faculty)
+                                  structure: structured claims recalled by (role-sensitive) similarity, the
+                                  log's own contradictions detected, flat vs conditioned, and the log saved/loaded
+                                  (claims only; vectors rebuilt from seeds) so it persists across sessions
+    test_holographic_svg.py       holographic vector-graphics (SVG): a scene of typed primitives encodes into one
+                                  hypervector and decodes back, two scenes morph by interpolating their vectors,
+                                  the diffusion generates novel scenes, and any scene renders as crisp,
+                                  resolution-independent SVG (the svg_canvas faculty -- sharp, no splat blur)
+    test_holographic_lowdiscrepancy.py
+                                  low-discrepancy (quasi-random) sampling: Roberts' golden-ratio R-sequence
+                                  covers a domain ~28% tighter than random and integrates a smooth function
+                                  ~13x more accurately than Monte Carlo at equal count (the
+                                  low_discrepancy_sample faculty -- even coverage for seeds / placement /
+                                  jitter, deterministic and progressive)
+    test_holographic_traverse.py  throughput-gated traversal (Russian roulette for holographic paths): the gate
+                                  stops at the throughput floor and recovers the good prefix, and on a directed
+                                  linked list in superposition recovers every valid hop then abstains the instant
+                                  the chain is exhausted -- a fraction of a fixed depth's steps (gated_traverse)
+    test_holographic_directed.py  directed structure -- a permutation direction role for sequences/graphs: the
+                                  direction role suppresses the predecessor leak that makes the undirected chain
+                                  ambiguous (successor recovered, predecessor -> noise), a branching graph node
+                                  returns all its successors, and it composes with the gated walk (directed_*)
+    test_holographic_mis.py       multiple importance sampling (Veach's balance heuristic): combining hard 1-NN
+                                  and soft Hopfield per-query by reliability beats naive averaging AND both
+                                  singles on a mix of on-grid/off-grid cues -- where naive averaging is WORSE
+                                  than the better single (the warning); combine_estimators / mis_recover
+    test_holographic_cache.py     gradient-cached decode (Ward's irradiance gradients): caching value + Jacobian
+                                  at sparse anchors with first-order interpolation beats nearest-neighbour and
+                                  ~halves the anchor count -- but GLOBAL weights fail (~2.7x worse), so a
+                                  validity-radius locality guard is required (gradient_cache / cache_interp)
+    test_holographic_accumulate.py  robust accumulation: harmonic (1/n) weights converge on a stationary stream
+                                    where a fixed-alpha EMA plateaus (EMA wins on a drifting target -- kept
+                                    caveat), and firefly clamping is ~100x more robust to outliers, no loss clean
+                                    (robust_accumulate)
+    test_holographic_downscale.py   denoise-by-downscale (XDATA-1): a pattern invisible at full resolution is
+                                    recovered by projecting to a coarse representation -- low-rank SVD for
+                                    correlated vectors, low-pass FFT for signals -- with a permutation null so
+                                    pure noise reports nothing (find_pattern_by_downscale; the Group G entry)
+    test_holographic_diffuse.py     looping denoise / diffusion on a manifold (XDATA-2): iterating a dense-Hopfield
+                                    step settles a noisy point onto a curved manifold (idempotent) and beats
+                                    interpolation (which leaves it); from-noise annealed diffusion generates
+                                    novel-but-valid samples where the bare codebook is degenerate (manifold_denoise / _generate)
+    test_holographic_sharpen.py     looping negative-lobe sharpening (XDATA-3): a Van Cittert correction recovers
+                                    detail an over-smoothed signal lost (0.22 -> ~0), converging where naive
+                                    unsharp diverges; a discrepancy-principle guard stops near the optimum and
+                                    beats over-sharpening under noise; over-large steps ring (sharpen_loop)
+    test_holographic_twolayer.py    smooth/sharp two-layer codec (CACHE-2): split a signal into a low-frequency
+                                    smooth layer + a sparse-sample sharp layer; at a budget covering both it beats
+                                    single-FFT (~40 vs ~28 dB) and single-sparse, the sharp layer carrying spikes
+                                    the low-freq basis can't hold; too small a budget loses (smooth_sharp_split / _reconstruct)
+    test_holographic_phasemorph.py  FHRR phase-domain morph (PHASE-1): interpolating a feature's phase (phase shift
+                                    = motion) moves it at constant velocity and stays a valid unit phasor, where the
+                                    amplitude blend eases non-uniformly and collapses in magnitude; kept negative --
+                                    the shortest arc wraps past per-component phase diff pi (phase_morph)
+    test_holographic_adaptive_resonator.py
+                                    resonator early-stop (ADAPT-2): stopping the moment the picks VERIFY matches
+                                    fixed-count accuracy at lower average iteration cost (easily-solved
+                                    factorizations ~62% fewer iters, identical answers); a no-op on hard/unsolved
+                                    problems that never verify (decompose_structure early_stop=True)
+    test_holographic_adaptive_cache.py
+                                    adaptive anchor placement (CACHE-3): placing cache/codebook anchors denser where
+                                    the field bends (density ~ |curvature|^1/2) matches uniform quality at ~7x fewer
+                                    anchors on a non-uniformly-smooth field; honest control -- ~tied on a uniformly-
+                                    smooth field (adaptive_anchors / reconstruct_from_anchors)
+    test_holographic_backwardwarp.py
+                                    backward warp is hole-free (PHASE-2): a forward scatter under a non-uniform warp
+                                    leaves holes + overlaps, where a backward gather (what unbind already is) fills
+                                    every target exactly -- the validated note behind preferring unbind-based
+                                    recovery over forward splatting (forward_scatter / backward_gather)
+    test_holographic_multires.py    multi-resolution pyramid / mipmap (SCALE-1): a coarse query from the anti-aliased
+                                    pyramid matches the true low-frequency band ~11x better than a naive subsample
+                                    (which folds high frequency into the low band), levels halve in size for cheap
+                                    LOD reads, the full level is exact (multires_pyramid / pyramid_reconstruct)
+    test_holographic_reanchor.py    re-anchoring is load-bearing (RAY-2 audit): on a directed linked list, gated_traverse
+                                    with a re-anchored step recovers all 12 hops, where the same traversal with a raw
+                                    (no-cleanup) step collapses to ~1 hop as noise compounds -- the contrast behind
+                                    "a shared kernel is not a shared manifold" (directed_linked_list / make_steps)
+    test_holographic_jittersplat.py
+                                    jittered sub-pixel splat accumulation, a KEPT NEGATIVE (ACCUM-1): jittering the
+                                    fit at sub-pixel offsets and accumulating beats the base refit only by
+                                    supersampling, and a finer-grid refit given the same samples is strictly better --
+                                    jittering does not sharpen past the refit; the lever is sampling resolution
     test_creature_gauntlet.py     the maze gauntlet: gamified debugging, system lessons in mazes
     test_app_creature.py          the app's creature endpoint round-trip
 

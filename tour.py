@@ -1719,9 +1719,223 @@ for _ in range(4):
     _T += _a * np.exp(-((_ys - _cy) ** 2 + (_xs - _cx) ** 2) / (2 * _s * _s))
 _T /= _T.max()
 _sp, _rend = um.splat_field(_T, k=40)
+_, _rend_greedy = um.splat_field(_T, k=40, refit=False)              # the 'looping' off, for contrast
 print(f"  generate a vector (B10 diffusion)   : nearest-pattern cosine="
       f"{max(cosine(_gv, _cb[i]) for i in range(8)):.3f}; splat a field -> {len(_sp)} Gaussians at "
       f"{_psnr(_T, _rend):.0f} dB (a splat scene is a bundle)")
+print(f"  splat joint refit (the 'looping')   : greedy matching pursuit {_psnr(_T, _rend_greedy):.1f} dB -> "
+      f"joint amplitude re-solve {_psnr(_T, _rend):.1f} dB (gradient-free, removes overlap double-counting)")
+
+# adaptive splat count: spend splats where the field is busy (V-Ray's adaptive sampler), not a fixed budget
+_yn, _xn = _ys / _G, _xs / _G
+def _bmp(cy, cx, s): return np.exp(-((_xn - cx) ** 2 + (_yn - cy) ** 2) / (2 * s * s))
+_simple = _bmp(.5, .5, .18); _simple /= _simple.max()
+_busy = sum(_bmp(*p) for p in [(.25, .25, .07), (.3, .7, .06), (.7, .3, .06), (.72, .72, .05),
+                               (.5, .5, .05), (.2, .55, .05), (.6, .15, .05)]); _busy /= _busy.max()
+_sps_s, _ = um.splat_field(_simple, noise_thresh=0.03)
+_sps_b, _ = um.splat_field(_busy, noise_thresh=0.03)
+print(f"  adaptive splat count (noise floor)  : simple field -> {len(_sps_s)} splats, busy field -> "
+      f"{len(_sps_b)} splats at the SAME quality (a fixed k would over- or under-spend)")
+
+# low-discrepancy sampling: even coverage (vs random's clumps) for seeds / placement / jitter (low_discrepancy_sample)
+from holographic_lowdiscrepancy import dispersion as _ldisp
+_lds = um.low_discrepancy_sample(64, d=2)
+_rnd_disp = np.mean([_ldisp(np.random.default_rng(_s).random((64, 2))) for _s in range(20)])
+print(f"  low-discrepancy coverage (64 pts)   : R-sequence dispersion {_ldisp(_lds):.3f} vs random {_rnd_disp:.3f} "
+      f"({(1 - _ldisp(_lds) / _rnd_disp) * 100:.0f}% tighter; deterministic, progressive)")
+
+# throughput-gated traversal: follow a directed chain in superposition, stop (Russian roulette) when it goes dark
+from holographic_traverse import gated_traverse as _gtrav
+from holographic_ai import bind as _tbind, involution as _tinvf
+_trng = np.random.default_rng(0); _Dt, _Lt = 8192, 8
+def _tu(): _v = _trng.standard_normal(_Dt); return _v / np.linalg.norm(_v)
+_tperm = _trng.permutation(_Dt); _tinv = np.argsort(_tperm)
+_tchain = [_tu() for _ in range(_Lt + 1)]; _tcb = np.array(_tchain + [_tu() for _ in range(8)])
+_tcbn = _tcb / np.linalg.norm(_tcb, axis=1, keepdims=True)
+_tM = np.zeros(_Dt)
+for _i in range(_Lt): _tM = _tM + _tbind(_tchain[_i], _tchain[_i + 1][_tperm])
+def _tstep(_c):
+    _p = _tbind(_tM, _tinvf(_c))[_tinv]; _cs = _tcbn @ (_p / (np.linalg.norm(_p) + 1e-12)); _j = int(_cs.argmax())
+    return (_tcb[_j], _cs[_j], _j)
+_tr = _gtrav(_tstep, _tchain[0], floor=0.2, max_steps=30)
+print(f"  throughput-gated traversal (RR)     : recovered {_tr.steps}/{_Lt} chain hops {_tr.payloads}, then "
+      f"abstained (throughput {_tr.final_throughput:.2f} < floor) at {_tr.steps} steps vs fixed depth 30")
+
+# directed structure: a permutation direction role so a chain/graph is traversable FORWARD (no predecessor leak)
+_dsx = um.directed_structure(8)
+_dsucc = um.directed_successor(_dsx, 3)[0]
+_dpred = dict(um.directed_successor(_dsx, 3, topk=8))[2]    # cosine of the predecessor (node 2)
+_dwalk = um.directed_traverse(_dsx, 0, floor=0.2, max_steps=20)
+print(f"  directed structure (direction role) : node 3 -> successor {_dsucc[0]} (cos {_dsucc[1]:.2f}), "
+      f"predecessor suppressed (cos {_dpred:+.2f}); forward walk {_dwalk.payloads}")
+
+# multiple importance sampling: combine hard 1-NN + soft Hopfield per-query (balance heuristic beats naive avg)
+from holographic_encoders import ScalarEncoder as _SE
+_me = _SE(512, lo=0.0, hi=1.0, seed=1, kernel="rbf", bandwidth=6.0)
+_mg = np.linspace(0, 1, 8); _MCB = np.stack([_me.encode(_g) for _g in _mg])
+_MCBn = _MCB / np.linalg.norm(_MCB, axis=1, keepdims=True)
+def _mcos(_a, _b): return float(_a @ _b / ((np.linalg.norm(_a) * np.linalg.norm(_b)) + 1e-12))
+_mr = np.random.default_rng(0); _eh = _es = _ea = _em = 0.0
+for _ in range(300):
+    _v = float(_mr.choice(_mg)) if _mr.random() < 0.5 else float(_mr.uniform(0.03, 0.97))
+    _t = _me.encode(_v); _q = _t + 0.5 * _mr.standard_normal(512) / np.sqrt(512)
+    _cs = _MCBn @ (_q / np.linalg.norm(_q)); _xh = _MCB[int(_cs.argmax())]
+    _w = np.exp(10 * (_cs - _cs.max())); _w /= _w.sum(); _xs = (_w[:, None] * _MCB).sum(0)
+    _xm = um.mis_recover(_q, _MCB)
+    _eh += 1 - _mcos(_xh, _t); _es += 1 - _mcos(_xs, _t)
+    _ea += 1 - _mcos(0.5 * _xh + 0.5 * _xs, _t); _em += 1 - _mcos(_xm, _t)
+_eh, _es, _ea, _em = [_x / 300 for _x in (_eh, _es, _ea, _em)]
+print(f"  MIS balance heuristic (recover err) : hard {_eh:.4f}, soft {_es:.4f}, naive-avg {_ea:.4f} (worse!), "
+      f"MIS {_em:.4f} (per-query reliability beats all)")
+
+# gradient-cached decode (Ward irradiance gradients): value+gradient at sparse anchors, interpolate first-order
+_cr = np.random.default_rng(2); _cK = 5
+_ccx = _cr.uniform(0, 1, _cK); _ccy = _cr.uniform(0, 1, _cK)
+_camp = _cr.uniform(0.5, 1.5, _cK); _csig = _cr.uniform(0.2, 0.32, _cK)
+def _cf(_u, _v): return float(np.sum(_camp * np.exp(-(((_u - _ccx) ** 2 + (_v - _ccy) ** 2) / (2 * _csig ** 2)))))
+def _cg(_u, _v):
+    _e = _camp * np.exp(-(((_u - _ccx) ** 2 + (_v - _ccy) ** 2) / (2 * _csig ** 2)))
+    return np.array([np.sum(_e * (-(_u - _ccx) / _csig ** 2)), np.sum(_e * (-(_v - _ccy) / _csig ** 2))])
+_cgr = np.linspace(0, 1, 5); _cA = np.array([[_u, _v] for _u in _cgr for _v in _cgr])
+_cV = np.array([_cf(_u, _v) for _u, _v in _cA]); _cJ = np.array([_cg(_u, _v) for _u, _v in _cA])
+_ccache = um.gradient_cache(_cA, _cV, _cJ); _cR = 1.7 / 4
+_cQ = [[_u, _v] for _u in np.linspace(0.1, 0.9, 12) for _v in np.linspace(0.1, 0.9, 12)]
+_cfo = np.mean([abs(float(um.cache_interp(_ccache, _q, _cR)) - _cf(*_q)) for _q in _cQ])
+_cnn = np.mean([abs(float(_cV[np.argmin(np.linalg.norm(_cA - _q, axis=1))]) - _cf(*_q)) for _q in _cQ])
+_cglob = np.mean([abs(float(um.cache_interp(_ccache, _q, _cR, global_weights=True)) - _cf(*_q)) for _q in _cQ])
+print(f"  gradient cache (Ward, 25 anchors)   : nearest-neighbor err {_cnn:.3f}, first-order(grad) {_cfo:.3f} "
+      f"(gradients ~halve anchors); GLOBAL weights {_cglob:.3f} (no validity radius -> fails)")
+
+# robust accumulation: harmonic (1/n) weights converge where a fixed-alpha EMA plateaus; firefly clamping resists outliers
+_ar = np.random.default_rng(5); _aD = 128
+_amu = _ar.standard_normal(_aD); _amu /= np.linalg.norm(_amu)
+def _acos(_a, _b): return float(_a @ _b / ((np.linalg.norm(_a) * np.linalg.norm(_b)) + 1e-12))
+_astream = [_amu + 0.8 * _ar.standard_normal(_aD) / np.sqrt(_aD) for _ in range(400)]
+_aharm = 1 - _acos(um.robust_accumulate(_astream, schedule="harmonic"), _amu)
+_aema = 1 - _acos(um.robust_accumulate(_astream, schedule="ema", alpha=0.2), _amu)
+_aclean = [_amu + 0.3 * _ar.standard_normal(_aD) / np.sqrt(_aD) for _ in range(40)]
+_atruth = np.mean(_aclean, 0); _afire = _aclean + [8.0 * _ar.standard_normal(_aD) / np.sqrt(_aD) for _ in range(5)]
+_aplain = 1 - _acos(um.robust_accumulate(_afire, schedule="mean"), _atruth)
+_aclamp = 1 - _acos(um.robust_accumulate(_afire, schedule="mean", clamp_k=2.5), _atruth)
+print(f"  robust accumulation (err)           : harmonic {_aharm:.4f} vs EMA {_aema:.4f} (1/n converges); "
+      f"firefly: plain {_aplain:.4f} vs clamped {_aclamp:.4f}")
+
+# denoise-by-downscale: a pattern invisible per-sample, recovered by pooling samples (consolidation/SVD downscale)
+_xr = np.random.default_rng(0); _xD, _xr3 = 256, 3
+_xB, _ = np.linalg.qr(_xr.standard_normal((_xD, _xr3)))
+_xC = _xr.standard_normal((800, _xr3)); _xX = _xC @ _xB.T; _xX /= np.linalg.norm(_xX, axis=1, keepdims=True)
+_xXn = _xX + 0.4 * _xr.standard_normal((800, _xD))
+_xpers = np.mean([np.linalg.norm(_xB.T @ v) ** 2 / np.linalg.norm(v) ** 2 for v in _xXn[:50]])
+_xres = um.find_pattern_by_downscale(_xXn, kind="vectors", k=_xr3, n_null=40, seed=1)
+_xov = float(np.sum((_xres.pattern.T @ _xB) ** 2) / _xr3)
+_xnoise = um.find_pattern_by_downscale(_xr.standard_normal((800, _xD)), kind="vectors", k=_xr3, n_null=40, seed=1)
+print(f"  denoise-by-downscale (rank-3)       : per-sample energy {_xpers:.3f} (invisible) -> pooled overlap "
+      f"{_xov:.3f}, found={_xres.found}; pure noise found={_xnoise.found} (fail-safe)")
+
+# looping denoise as diffusion on a curved manifold (a ring): settle onto it, beat interpolation, generate novel-but-valid
+_dr = np.random.default_rng(0); _dD, _dN = 64, 48
+_dU, _ = np.linalg.qr(_dr.standard_normal((_dD, 2))); _du, _dv = _dU[:, 0], _dU[:, 1]
+_dth = np.linspace(0, 2 * np.pi, _dN, endpoint=False)
+_dS = np.stack([np.cos(_t) * _du + np.sin(_t) * _dv for _t in _dth])
+def _drd(_x):
+    _a, _b = _du @ _x, _dv @ _x
+    return float(np.hypot(np.linalg.norm(_x - (_a * _du + _b * _dv)), abs(np.hypot(_a, _b) - 1)))
+_dnoisy = _dS[10] + 0.6 * _dr.standard_normal(_dD) / np.sqrt(_dD)
+_dset = _drd(um.manifold_denoise(_dnoisy, _dS))
+_dmid = 0.5 * (_dS[5] + _dS[25]); _dmids = _drd(um.manifold_denoise(_dmid, _dS))
+_dgen = um.manifold_generate(_dS, seed=3); _dgd = _drd(_dgen)
+_dnov = min(float(np.linalg.norm(_dgen - _si)) for _si in _dS)
+print(f"  manifold diffusion (ring)           : noisy {_drd(_dnoisy):.2f}->settled {_dset:.3f}; interp midpoint "
+      f"{_drd(_dmid):.2f}->{_dmids:.3f}; generated dist {_dgd:.3f} (valid), novelty {_dnov:.3f} (between samples)")
+
+# looping negative-lobe sharpening (Van Cittert): recover detail an over-smoothed signal lost, with a stability guard
+from holographic_sharpen import _gauss_blur as _sgb
+_st = np.arange(256)
+_struth = np.sin(2 * np.pi * 3 * _st / 256) + 0.6 * np.sin(2 * np.pi * 30 * _st / 256) * np.exp(-((_st - 128) ** 2) / (2 * 25 ** 2))
+def _serr(_z): return float(np.linalg.norm(_z - _struth) / np.linalg.norm(_struth))
+_sblur = _sgb(_struth, 3.0)
+_srec = um.sharpen_loop(_sblur, sigma=3.0, lam=1.0, iters=80, noise_level=0.0)
+_snoisy = _sblur + 0.005 * np.random.default_rng(0).standard_normal(256)
+_sg = um.sharpen_loop(_snoisy, sigma=3.0, lam=1.0, iters=80, noise_level=0.005)
+_su = um.sharpen_loop(_snoisy, sigma=3.0, lam=1.0, iters=80, noise_level=0.0)
+print(f"  looping sharpen (Van Cittert)       : blurred err {_serr(_sblur):.3f} -> recovered {_serr(_srec):.3f}; "
+      f"with noise guarded {_serr(_sg):.3f} vs unguarded {_serr(_su):.3f} (over-sharpens)")
+
+# smooth/sharp two-layer codec (irradiance caching's architecture): split beats any single basis at fixed budget
+from holographic_twolayer import _fft_topk as _f2, _sparse_topk as _s2
+_c2t = np.arange(256)
+_c2x = np.sin(2 * np.pi * 2 * _c2t / 256) + 0.6 * np.cos(2 * np.pi * 5 * _c2t / 256)
+_c2rng = np.random.default_rng(0)
+_c2pos = _c2rng.choice(256, 6, replace=False); _c2x[_c2pos] += _c2rng.uniform(-3, 3, 6)
+def _c2psnr(_r): _m = np.mean((_r - _c2x) ** 2); return float(10 * np.log10((_c2x.max() - _c2x.min()) ** 2 / (_m + 1e-12)))
+_c2code = um.smooth_sharp_split(_c2x, 6, 6); _c2rec = um.smooth_sharp_reconstruct(_c2code)
+print(f"  smooth/sharp split (budget 12)      : split {_c2psnr(_c2rec):.1f} dB vs single-FFT {_c2psnr(_f2(_c2x, 12)):.1f} "
+      f"vs single-sparse {_c2psnr(_s2(_c2x, 12)):.1f} (no single basis is cheap across smooth+sharp)")
+
+# FHRR phase-domain morph (phase shift = motion): uniform feature motion + valid phasors vs the amplitude blend
+from holographic_fhrr import phasor_atom as _pmatom, fhrr_sim as _pmsim
+from holographic_phasemorph import amplitude_morph as _pmamorph
+_pmphi = np.angle(_pmatom(2048, np.random.default_rng(0)))
+def _pmenc(_x): return np.exp(1j * _x * _pmphi)
+def _pmdec(_q):
+    _g = np.linspace(-0.1, 1.1, 241); _s = np.array([_pmsim(_q, _pmenc(_x)) for _x in _g]); return float(_g[np.argmax(_s)])
+_pma, _pmb = _pmenc(0.1), _pmenc(0.9)
+_pmts = np.linspace(0.1, 0.9, 9)
+_pmdevp = max(abs(_pmdec(um.phase_morph(_pma, _pmb, _t)) - (0.1 + 0.8 * _t)) for _t in _pmts)
+_pmdeva = max(abs(_pmdec(_pmamorph(_pma, _pmb, _t)) - (0.1 + 0.8 * _t)) for _t in _pmts)
+print(f"  FHRR phase-domain morph             : uniform-motion deviation phase {_pmdevp:.3f} vs amplitude {_pmdeva:.3f}; "
+      f"midpoint energy phase {np.mean(np.abs(um.phase_morph(_pma, _pmb, 0.5))):.2f} vs amplitude {np.mean(np.abs(_pmamorph(_pma, _pmb, 0.5))):.2f}")
+
+# adaptive iteration count (ADAPT-2): stop the resonator the moment its picks verify -- same answer, fewer iters
+from holographic_sbc import sbc_codebook as _a2cb, sbc_reconstruct as _a2rec
+_a2cbs = [_a2cb(24, 7, 10, seed=300 + _f) for _f in range(3)]
+_a2rng = np.random.default_rng(11)
+_a2true = tuple(int(_a2rng.integers(0, 10)) for _ in range(3))
+_a2prod = _a2rec(_a2true, _a2cbs, 7)
+_a2sf, _a2se = {}, {}
+_a2rf = um.decompose_structure(_a2prod, _a2cbs, 7, seed=0, stats=_a2sf)
+_a2re = um.decompose_structure(_a2prod, _a2cbs, 7, seed=0, early_stop=True, stats=_a2se)
+print(f"  resonator early-stop (ADAPT-2)      : fixed {_a2sf['iters']} iters vs early-stop {_a2se['iters']}; "
+      f"same verified factors {tuple(_a2rf['picks']) == tuple(_a2re['picks']) and _a2re['verified']}")
+
+# adaptive cache anchor placement (CACHE-3): crowd anchors where the field bends -- ~7x fewer for the same quality
+_c3x = np.linspace(0, 1, 4001)
+_c3f = 0.3 * _c3x + np.exp(-((_c3x - 0.7) / 0.015) ** 2)
+def _c3rmse(_ax): return float(np.sqrt(np.mean((um.reconstruct_from_anchors(_c3x, _ax, _c3f) - _c3f) ** 2)))
+_c3uni = _c3rmse(np.linspace(0, 1, 32)); _c3ada = _c3rmse(um.adaptive_anchors(_c3x, _c3f, 32))
+_c3need = next(_N for _N in range(32, 800) if _c3rmse(np.linspace(0, 1, _N)) <= _c3ada)
+print(f"  adaptive cache placement (CACHE-3)  : 32 anchors RMSE uniform {_c3uni:.4f} vs adaptive {_c3ada:.4f}; "
+      f"uniform needs {_c3need} ({_c3need / 32:.1f}x) to match adaptive-32")
+
+# backward warp is hole-free (PHASE-2): forward scatter leaves holes/overlaps; the unbind-form backward gather none
+from holographic_backwardwarp import forward_scatter as _bwfs, backward_gather as _bwbg
+_bwn = 256; _bwpos = np.arange(_bwn) / _bwn
+_bwsig = np.sin(2 * np.pi * 3 * _bwpos) + 0.5 * _bwpos
+_bwwarp = lambda _s: _s + 0.12 * np.sin(2 * np.pi * _s)
+_, _bwholes_f, _bwover_f = _bwfs(_bwsig, _bwpos, _bwwarp, _bwn)
+_bwgrid = np.linspace(0, 1, 4000); _bwinv = np.interp(_bwpos, _bwwarp(_bwgrid), _bwgrid)
+_bwbwd = _bwbg(_bwsig, _bwpos, _bwinv)
+print(f"  backward warp hole-free (PHASE-2)   : forward scatter {_bwholes_f} holes + {_bwover_f} overlaps vs "
+      f"backward gather {int(np.isnan(_bwbwd).sum())} holes (unbind is the backward map)")
+
+# multi-resolution pyramid / mipmap (SCALE-1): anti-aliased coarse query, cheap LOD, exact at full
+_s1x = np.arange(1024) / 1024
+_s1sig = np.sin(2 * np.pi * 2 * _s1x) + 0.6 * np.sin(2 * np.pi * 150 * _s1x)
+_s1low = np.sin(2 * np.pi * 2 * _s1x)
+_s1pyr = um.multires_pyramid(_s1sig, n_levels=5)
+def _s1rmse(_a, _b): return float(np.sqrt(np.mean((_a - _b) ** 2)))
+_s1mip = _s1rmse(um.pyramid_reconstruct(_s1pyr[3], 1024), _s1low)
+_s1naive = _s1rmse(um.pyramid_reconstruct(_s1sig[::8], 1024), _s1low)
+print(f"  multi-res pyramid (SCALE-1)         : 1/8 coarse query mipmap RMSE {_s1mip:.4f} vs naive subsample "
+      f"{_s1naive:.4f} (anti-aliased); levels {[len(_l) for _l in _s1pyr]}")
+
+# re-anchoring is load-bearing (RAY-2 audit): re-anchored traversal reaches depth; raw collapses as noise compounds
+from holographic_reanchor import directed_linked_list as _r2ll, make_steps as _r2steps
+_r2 = _r2ll(12, dim=1024, seed=0); _r2re, _r2raw = _r2steps(_r2)
+_r2g_re = um.gated_traverse(_r2re, _r2["chain"][0], floor=0.20, max_steps=17)
+_r2g_raw = um.gated_traverse(_r2raw, _r2["chain"][0], floor=0.20, max_steps=17)
+print(f"  re-anchoring load-bearing (RAY-2)   : re-anchored reaches {len(_r2g_re.payloads)}/12 hops vs raw "
+      f"{len(_r2g_raw.payloads)}/12 (no cleanup -> noise compounds, gate stops the dark ray)")
 
 # axial perception: an orientation (theta == theta+pi) on the Mobius base, wired as the "axial" modality
 import math as _math
@@ -2598,6 +2812,37 @@ for _t in _kb.tensions():
     print(f"  {_t['type'].upper():11s} tension: {_t['subject']}->{_t['object']}  conditions={_t['conditions']}")
 print("  CONDITIONED = reconcilable (effect depends on the differing dimension); FLAT = one must be wrong")
 print("  retrieval is holographic (cosine over the bound claim); the verdict is exact (polarity + condition)")
+# the log persists: save (claims only, no vectors) and reload -- the conditioned tension survives the round-trip
+import os as _os, tempfile as _tf
+_kb_path = _os.path.join(_tf.gettempdir(), "_tour_findings.json")
+_kb.save(_kb_path)
+_kb_reloaded = __import__("holographic_knowledge").FindingRegistry.load(_kb_path)
+_kb_bytes = _os.path.getsize(_kb_path); _os.remove(_kb_path)
+_kb_rt = _kb_reloaded.tensions()
+print(f"  saved {len(_kb.findings)} findings as {_kb_bytes} bytes of claims (no vectors), reloaded -> "
+      f"{len(_kb_rt)} tension(s) survive, classified {[_t['type'] for _t in _kb_rt]}")
+print("  vectors are rebuilt from the seed on load, so a reloaded log is the same object, not an approximation")
+
+title("Vector graphics on the substrate: generate / encode / morph scenes, render crisp SVG (no splat blur) (svg_canvas)")
+_svgm = __import__("holographic_unified").UnifiedMind(dim=4096, seed=0)
+_svg = _svgm.svg_canvas()
+# GENERATE a novel scene via the composed-manifold diffusion, then render it as resolution-independent SVG
+_sc = _svg.generate(k=4, seed=1)
+_svg_text = _svg.to_svg(_sc)
+_typenames = [_svg.types[p[0]] for p in _sc]
+print(f"  generated a {len(_sc)}-primitive scene {_typenames} -> SVG ({len(_svg_text)} chars, crisp at any zoom)")
+# ENCODE the scene into ONE hypervector and decode it back -- a content-addressable picture
+_dec = _svg.decode(_svg.encode(_sc), len(_sc))
+_perr = sum(abs(a[1]-b[1])+abs(a[2]-b[2]) for a,b in zip(_sc,_dec))/(2*len(_sc))
+_texact = sum(a[0]==b[0] and a[4]==b[4] for a,b in zip(_sc,_dec))
+print(f"  encoded into one hypervector, decoded back: {_texact}/{len(_sc)} type+colour exact, "
+      f"position error {_perr:.3f} on [0,1]")
+# MORPH two scenes by interpolating their VECTORS -- the picture interpolates by arithmetic
+_A = [(1,0.25,0.30,0.13,1),(0,0.72,0.68,0.11,3)]; _B = [(1,0.70,0.30,0.09,2),(0,0.28,0.66,0.13,0)]
+_mid = _svg.morph(_A, _B, steps=5)[2]
+print(f"  morph A->B (vector interpolation): midpoint circle x = {_mid[0][1]:.2f} "
+      f"(between {_A[0][1]:.2f} and {_B[0][1]:.2f}) -- arithmetic on vectors interpolates the picture")
+print("  an SVG <rect>/<circle> has exact edges at any zoom -- the sharp, resolution-independent cousin of splats")
 
 print("\n" + "-" * 66)
 print("  Every subsystem -- through gradient-free learning -- ran on the same vector substrate. Wired up.")

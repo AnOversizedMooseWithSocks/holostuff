@@ -92,7 +92,8 @@ def _bound_others(est, f, B, L):
     return b
 
 
-def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=12.0, seed=0, readout="softmax", k=8):
+def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=12.0, seed=0, readout="softmax", k=8,
+                  early_stop=False, min_iters=5, stats=None):
     """Factor `product` (an SBC) into one atom per codebook by annealed alternating projection.
 
     Returns (picks, validated): `picks` is the chosen index per factor; `validated` is True iff the picks
@@ -122,6 +123,14 @@ def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=
     Po = sbc_onehot(product, L)
     rng = np.random.default_rng(seed)
     picks = tuple(0 for _ in range(F))
+    used = 0                                                  # inner iterations actually run (for the adaptive-cost measurement)
+    def _readout_picks():                                     # the argmax readout, shared by the post-loop and early-stop paths
+        return tuple(int(np.einsum('ibl,bl->i', CB[f], _bcorr(Po, _bound_others(est, f, B, L))).argmax())
+                     for f in range(F))
+    def _done(pk, ok):
+        if stats is not None:
+            stats['iters'] = used                            # report the cost so a caller can measure the adaptive saving
+        return pk, ok
     for _ in range(restarts):
         est = [rng.random((B, L)) + 0.1 for _ in range(F)]    # random init breaks the symmetric trap
         for f in range(F):
@@ -138,11 +147,18 @@ def sbc_resonator(product, codebooks, L, restarts=6, iters=50, beta0=0.5, beta1=
                 else:
                     w = np.exp(beta * (sims - sims.max())); w /= w.sum()
                 est[f] = np.einsum('i,ibl->bl', w, CB[f])
-        picks = tuple(int(np.einsum('ibl,bl->i', CB[f], _bcorr(Po, _bound_others(est, f, B, L))).argmax())
-                      for f in range(F))
+            used += 1
+            # ADAPT-2 (opt-in): stop the moment the picks VERIFY. An EXACT reconstruction cannot be improved by more
+            # iterations, so this returns the same verified answer fixed-count would, only sooner -- matched quality
+            # at lower average cost on easily-solved problems; a no-op on hard ones (they never verify, so run full).
+            if early_stop and it >= min_iters:
+                picks = _readout_picks()
+                if np.array_equal(sbc_reconstruct(picks, codebooks, L), product):
+                    return _done(picks, True)
+        picks = _readout_picks()
         if np.array_equal(sbc_reconstruct(picks, codebooks, L), product):
-            return picks, True                                # verified: the factors rebuild the product
-    return picks, False                                       # unverified -> abstain / low confidence
+            return _done(picks, True)                         # verified: the factors rebuild the product
+    return _done(picks, False)                                # unverified -> abstain / low confidence
 
 
 # ---- the calibrated SOFT confidence: the resonator network's graded answer on APPROXIMATE inputs ----
@@ -208,7 +224,8 @@ def sbc_identity(B):
     return np.zeros(B, dtype=int)
 
 
-def decompose_structure(composed, codebooks, L, restarts=6, iters=50, seed=0, confidence=False, readout="softmax", k=8):
+def decompose_structure(composed, codebooks, L, restarts=6, iters=50, seed=0, confidence=False, readout="softmax", k=8,
+                        early_stop=False, stats=None):
     """Recover the generating recipe of a COMPOSED structure (a bound product of factors) via the verified
     resonator -- the structural inverse of build-1's recipe-store, and the deconfounded superposition-search
     the blend discussion pointed at.
@@ -225,7 +242,8 @@ def decompose_structure(composed, codebooks, L, restarts=6, iters=50, seed=0, co
     of blocks rebuilt, `pvalue` the chance the resonator manufactures that on structureless input (small ->
     trust the factorization, large -> abstain).
     """
-    picks, verified = sbc_resonator(composed, codebooks, L, restarts=restarts, iters=iters, seed=seed, readout=readout, k=k)
+    picks, verified = sbc_resonator(composed, codebooks, L, restarts=restarts, iters=iters, seed=seed, readout=readout, k=k,
+                                    early_stop=early_stop, stats=stats)
     B = len(composed)
     ident = sbc_identity(B)
     factors = [np.asarray(codebooks[f][picks[f]]) for f in range(len(codebooks))]
@@ -237,3 +255,38 @@ def decompose_structure(composed, codebooks, L, restarts=6, iters=50, seed=0, co
         out["agreement"] = agreement
         out["pvalue"] = float((1 + int((null >= agreement).sum())) / (len(null) + 1))
     return out
+
+
+def _adapt2_selftest():
+    """ADAPT-2: the opt-in early_stop on the resonator matches fixed-count accuracy at lower AVERAGE iteration cost
+    on easily-solved factorizations, and is a no-op (identical result, no harm) on hard / mostly-unsolved ones --
+    because stopping the moment the picks VERIFY cannot change a verified answer, only reach it sooner."""
+    B, L, F = 24, 7, 3
+    def workload(N, n, seed0):
+        fix_it = es_it = fix_ok = es_ok = 0
+        for i in range(n):
+            cbs = [sbc_codebook(B, L, N, seed=seed0 + i * 11 + f) for f in range(F)]
+            rt = np.random.default_rng(seed0 + 7777 + i)
+            true = tuple(int(rt.integers(0, N)) for _ in range(F))
+            prod = sbc_reconstruct(true, cbs, L)
+            sf, se = {}, {}
+            rf = decompose_structure(prod, cbs, L, seed=i, stats=sf)                     # fixed count
+            re = decompose_structure(prod, cbs, L, seed=i, early_stop=True, stats=se)    # adaptive (early-stop)
+            fix_it += sf["iters"]; es_it += se["iters"]
+            fix_ok += int(rf["verified"] and tuple(rf["picks"]) == true)
+            es_ok += int(re["verified"] and tuple(re["picks"]) == true)
+        return fix_it / n, es_it / n, fix_ok, es_ok
+
+    # easily-solvable workload: a large iteration saving at matched accuracy
+    fi, ei, fok, eok = workload(10, 12, 2000)
+    assert eok >= fok and fok >= 10, (fok, eok)               # accuracy matched (never worse), workload mostly solved
+    assert ei < fi * 0.6, (fi, ei)                            # adaptive uses far fewer iterations
+
+    # hard / mostly-unsolved workload: a no-op -- early_stop changes nothing where nothing verifies
+    _, _, fok2, eok2 = workload(50, 8, 3000)
+    assert eok2 == fok2, (fok2, eok2)
+
+
+if __name__ == "__main__":
+    _adapt2_selftest()
+    print("holographic_sbc ADAPT-2 selftest passed")

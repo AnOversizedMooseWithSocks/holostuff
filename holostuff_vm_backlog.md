@@ -106,3 +106,46 @@ Three shipped capabilities (data-analysis pipeline as a VSA program + recursive 
 operand prediction), two measured negatives that redirected to the real fix (meet-in-the-middle -> the algebra
 collapses so canonicalize instead; forest recall -> premature, vectorize the scan instead), and the VM
 completion (matmul-in-loop, counted REPEAT, worked programs).
+
+
+---
+
+## Generation & vector graphics (follow-ons from the SVG modality + the learned-energy generation probe)
+
+### VG-1 — richer SVG primitives (anisotropic / rotated shapes, gradients, bezier paths)   [MED]
+**What.** Extend `holographic_svg.HolographicSVG` past the isotropic baseline: separate width/height (so
+rect->box, circle->ellipse), a rotation attribute, an optional stroke/gradient, and eventually bezier
+`<path>` primitives. Each new attribute is one more role-bound scalar/atom in the per-primitive bundle, decoded
+the same way (cleanup for discrete, ScalarEncoder grid-decode for continuous).
+**Why.** The current primitives are isotropic (one size, a flat palette colour) -- fine for abstract
+compositions, but anisotropy + rotation + paths is what takes this from "coloured shapes on a grid" toward real
+icon/logo/diagram territory. Paths are where vector graphics get genuinely expressive.
+**How.** Add roles RW/RH/RROT (+ encoders) to the per-primitive encode/decode; extend `to_svg` to emit the
+new geometry (ellipse, rotate transform, path d=...). Keep the isotropic path as the default so old scenes are
+unchanged. A path's control points are several more continuous scalars -- the honest capacity question (more
+bindings per primitive -> wants more dimension) gets measured here.
+**Scope/risk.** More attributes per primitive = more crosstalk in the single scene hypervector; fidelity will
+need more dimension (the bundle's measured capacity limit). Keep each addition behind a measured round-trip bar.
+**Bar.** Round-trip a scene with anisotropic + rotated primitives at acceptable position/size/angle error, and
+render a recognisable rotated/elliptical SVG -- the same earns-its-place gate the isotropic baseline cleared.
+
+### VG-2 — a multi-noise-level diffusion denoiser for LEARNED generative manifolds   [MED, research]
+**What.** The thing the learned-EquilibriumNet probe showed is NEEDED. `LearnedEnergyMemory` is a single-noise
+DENOISER, and the probe measured (and a figure showed) that it does NOT generate: descending its energy from
+noise, or even cleaning an already-clean point on a low-dim smooth manifold, COLLAPSES and distorts (its
+free-state attractors are not reliably on the manifold). A real learned generative manifold needs a denoiser
+trained ACROSS a SCHEDULE of noise levels, so descending from high noise to low (a proper diffusion) lands on
+the manifold.
+**Why.** It would let generation use a manifold LEARNED from data instead of the hand-built grid codebook the
+composed-manifold diffusion (`generate_structure`) uses -- the original motivation. (Note the measured
+consolation: on a locally-convex low-dim manifold, simple INTERPOLATION in the composed/parameter space already
+generates novel valid points -- the SVG morph already does this -- so the learned energy is only needed for
+manifolds where interpolation does NOT stay on-manifold.)
+**How.** Train the EP (or a small gradient-free energy) on (sample + noise_sigma -> sample) pairs across a RANGE
+of sigma (not one), conditioning the denoiser on the level; generate by annealed descent high-sigma -> low-sigma
+from noise. Keep it NumPy + EP (no autodiff).
+**Scope/risk.** This is the research-heavy one -- gradient-free multi-level denoiser training is unproven here,
+and the honest fallback (interpolation / the composed-manifold diffusion) already covers the easy cases. Only
+worth it for genuinely non-convex learned manifolds.
+**Bar.** Generate NOVEL on-manifold samples (covering the manifold, not memorising) from pure noise, on a
+manifold where simple interpolation provably leaves the manifold -- beating both the codebook and interpolation.
