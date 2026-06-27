@@ -9061,3 +9061,112 @@ the permute-stack LIFO primitive, reverse-via-stack through the machine (the bar
 negative; plus a mind-level integration test (reverse-via-stack + frame-local registers through the mind's
 machine). Files: holographic_machine.py, ISA.md, test_isa_callstack.py, test_integration.py, tour.py, README,
 holostuff_crosscutting_backlog.md.
+
+
+THE MACRO LAYER (ISA-6 -- Tier 3, the first layer above assembly): parameterized recipe TEMPLATES, in
+holographic_template.py. A template is a StructureRecipe with named HOLES filled at instantiation -- "tag a value
+under a role" (pair), "a two-field record" (record), "an order-bearing pair" (ordered_pair) -- written once and
+instantiated with different arguments. Because a StructureRecipe replays BIT-EXACT (atoms are regenerated from
+the seed by name), instantiating with different arguments produces the correct DISTINCT structures
+deterministically (the recipe's exactness carries -- the bar). A starter library (STARTER_LIBRARY) ships three;
+the mind exposes `instantiate_template(name, **args)` and `template_names()`.
+
+THE KEPT NEGATIVE -- MACRO HYGIENE, designed out: atoms are derived from NAMES, so two atoms with the same name
+(and kind) are the SAME vector. A template that creates an internal role atom named "role" would COLLIDE with a
+caller who fills a hole with an atom also named "role" -- role and value become one vector (capture) and the
+binding degenerates. The fresh-atom discipline: template-INTERNAL atoms are namespaced under a reserved prefix
+("@tmpl:<name>:") that a caller's bare names cannot hit -- a gensym keyed by template name (so the same template
+stays deterministic across instantiations). The witness of capture is cosine(internal_role, caller_value) at
+matched kind: ~0 (-0.04 measured) with the discipline, 1.0 without it. `RecipeTemplate` is hygienic by
+construction; `_UnhygienicTemplate` (tests only) exhibits the capture the discipline prevents. (Roles are unitary
+so the single-binding `pair` recovers its value EXACTLY on unbind; the 2-field `record` recovers each field
+approximately -- a 2-item bundle -- but cleanly separable, the right value winning by a wide margin.) SEATS:
+Puckette (Pd/Max -- a composition language of parameterized patches over real-time primitives) + the
+recipe/procedure thread.
+
+NEXT in the spine (Tier 3, research-heavy): ISA-7 (a small higher-level language that lowers to the recipe IR --
+the DCC material-node-graph-as-recipe and the typed-structure unification are already early forms) and ISA-8
+(reversible/quantum bind, the frontier).
+
+Tests: +9 (1123 -> 1132). test_holographic_template.py (8): bit-exact determinism, distinct structures from
+distinct args, exact recovery for a single-binding template, separable record fields, order-sensitivity of
+ordered_pair, the starter library, the hygiene/capture kept negative, and the reserved-namespace convention;
+plus a mind-level integration test (instantiate_template -> distinct bit-exact + exact pair recovery through the
+mind). Files: holographic_template.py, holographic_unified.py, test_holographic_template.py, test_integration.py,
+tour.py, README, holostuff_crosscutting_backlog.md.
+
+
+THE STRUCTURE LANGUAGE (ISA-7 -- the top of the assembly tower; the last buildable spine item before the
+frontier): a small declarative language that LOWERS to the recipe IR, in holographic_lang.py. The surface is
+S-expressions: a bare symbol is an atom; (bind a b) / (bundle ...) / (permute a n) lower to the matching recipe
+ops; and the ISA-6 templates appear as language forms -- (record name moose), (pair x) -- so the macro layer
+becomes language constructs. parse/unparse round-trip the surface (parse o unparse == identity); compile_spec
+lowers an AST to a StructureRecipe; realize_spec materialises the vector. The mind exposes compile_structure and
+realize_structure. The whole framing: the typed unification (program = tree = scene = record = one
+StructureRecipe) IS the IR this language targets -- assembly (the kernel) -> macros (templates) -> language, one
+tower over one substrate.
+
+THE BAR met: a declarative spec compiles to a CORRECT recipe and realizes BIT-EXACT -- (bind a b) realizes
+exactly to bind(atom a, atom b); a (record ...) form is bit-identical to the ISA-6 template instantiated
+directly (the layers agree); same spec -> same vector. And it round-trips on the surface.
+
+THE KEPT NEGATIVE / SCOPE BOUNDARY (heeded, not discovered): a general-purpose language is large and easy to
+over-scope, so ISA-7 is SCOPED TO ONE DOMAIN -- structure description. There are NO variables, NO control flow,
+NO user-defined functions: just atoms, the base binds, and the fixed template library. The scope is enforced, not
+aspirational: an unknown form (while ...) is a ValueError, not a silent no-op, and template/base arities are
+checked. This is the "do not build a general language up front" discipline made into test_scope_boundary. SEATS:
+Puckette (a declarative DSP language over primitives -- Pd is exactly "a surface that lowers to a small set of
+real-time ops") + Eno (language-as-generative-system) + Plate (the IR).
+
+NEXT in the spine -- the frontier (Tier 4, research): ISA-8 (the reversible-computing / error-correction model --
+cleanup AS error correction, unbind as the exact inverse of bind). That is the last spine item, and the most
+speculative.
+
+Tests: +9 (1132 -> 1141). test_holographic_lang.py (8): surface round-trip, correct lowering of the base forms,
+bit-exact determinism, template-forms-agree-with-ISA-6, nested composition recovery, compile-returns-a-replayable
+-recipe, the scope-boundary kept negative (unknown form / bad arity are errors), and parser rejection of
+malformed input; plus a mind-level integration test (realize_structure + compile_structure + agreement with
+instantiate_template through the mind). Files: holographic_lang.py, holographic_unified.py,
+test_holographic_lang.py, test_integration.py, tour.py, README, holostuff_crosscutting_backlog.md.
+
+
+THE REVERSIBLE / ERROR-CORRECTION MODEL (ISA-8 -- the frontier, the LAST item of the VSA ISA spine): names what
+the engine has been all along and ships one measured payoff. In holographic_reversible.py + ISA_REVERSIBLE.md.
+THREE parts, honestly labelled by what they are. (a) THE REVERSIBILITY AUDIT (framing, but testable):
+bind/unbind/permute/involution are REVERSIBLE (exact inverse -- verified: unbind o bind == identity for a unitary
+key, permute by -shift, involution self-inverse); bundle/superpose/cleanup are INFORMATION-DESTROYING (sum or
+projection -- no exact inverse). The organizing read: the lossy ops are where the coherence budget is spent, and
+CLEANUP IS ERROR CORRECTION (snap to the codebook manifold, discard the accumulated error). (b) THE AUTO-CLEANUP
+SCHEDULER (THE PRACTICAL CORE, measured): a long program accumulates crosstalk and drifts toward a cliff where
+cleanup would snap to the WRONG atom; the scheduler inserts cleanup BEFORE the cliff using an ORACLE-FREE health
+signal -- cosine of the running vector to its nearest atom (1.0 on a clean atom, falling as it drifts; the
+capacity diagnostic's SNR proxy). 'adaptive' cleans only when health < floor; 'fixed' cleans every k. This
+generalizes the shipped coherence-gate from store-MAINTENANCE to program-EXECUTION. MEASURED (bursty damage):
+adaptive holds the output above a 0.9 fidelity threshold (frac-below 0.000) at 5 CLEANUPS; the best fixed cadence
+that matches that fidelity (k=3) needs 16 -- ~1/3, echoing the coherence-gate's "matched accuracy at ~1/3 the
+passes." Fixed cadences using fewer (k=4->12, k=6->8) drop below threshold. (c) THE QUANTUM-GATE CONNECTION
+(framing only): FHRR's bind is a diagonal unitary (per-frequency phase rotation), structurally gate-like, which is
+why unitarity makes bind exactly invertible -- useful for capacity-as-coherence-budget reasoning, nothing more.
+
+THE LOUD NEGATIVE (the most important honesty note on the spine): this is an ANALOGY, NOT physics. VSA is NOT a
+quantum computer -- no exponential superposition, no entanglement, no quantum speedup. We borrow the DISCIPLINE
+(error budget + correct-before-the-cliff + reversibility bookkeeping); we do not overclaim the physics. The
+practical do-able core is the scheduler (b); (a) and (c) are scaffolding. KEPT honest within (b): under CONSTANT
+damage a fixed cadence is already near-optimal, so the adaptive win is specific to VARIABLE damage rates (when
+the right fixed k cannot be known in advance); and the health floor must trigger early enough that the nearest
+atom is still the true one when cleanup fires. SEATS: Stoudenmire (quantum-inspired/tensor networks; the
+FHRR-as-diagonal-unitary framing) + the FHRR/honesty/coherence threads.
+
+*** THE VSA ISA SPINE IS COMPLETE: ISA-1 (determinism contract) -> ISA-2 (conformance suite) -> ISA-3 (extension
+discipline) -> ISA-4 (register file) -> ISA-5 (calling convention + permute-stack) -> ISA-6 (macros) -> ISA-7
+(structure language) -> ISA-8 (reversible/error-correction model). Eight items, each with its kept negative on
+record; the recurring lesson across the whole spine -- superposition buys composability and pays in a crosstalk
+cliff, so measure the budget and keep an exact path -- appeared as the bundled disk, the bundled register file,
+the permute-stack depth cliff, and finally as the coherence budget the auto-cleanup scheduler manages. ***
+
+Tests: +7 (1141 -> 1148). test_holographic_reversible.py (6): the audit classification (+ unknown-op error),
+reversible ops actually round-trip, lossy ops destroy information (bundle mixes, cleanup is idempotent), the
+health signal tracks drift, the adaptive-beats-fixed scheduler bar (~5 vs ~16 cleanups at matched fidelity), and
+the no-cleanup degradation control; plus a mind-level integration test (reversibility_audit + run_with_auto_cleanup
+through the mind). Files: holographic_reversible.py, ISA_REVERSIBLE.md, holographic_unified.py,
+test_holographic_reversible.py, test_integration.py, tour.py, README, holostuff_crosscutting_backlog.md.

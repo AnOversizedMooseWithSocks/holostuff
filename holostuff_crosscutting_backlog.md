@@ -572,7 +572,14 @@ pass). test_isa_callstack.py (5) + 1 integration. 1117 -> 1123. Tiers 0-2 of the
 
 ## Tier 3 — The layers above assembly
 
-### ISA-6 — a macro layer: parameterized recipe/procedure templates   [BUILD]
+### ISA-6 — a macro layer: parameterized recipe/procedure templates   [BUILD]   ✓ SHIPPED
+*Shipped: holographic_template.py -- a RecipeTemplate is a StructureRecipe with named HOLES filled at
+instantiation; different args give DISTINCT, BIT-EXACT structures (the recipe's exactness carries). Starter
+library (pair / record / ordered_pair); mind faculties instantiate_template + template_names. Kept negative --
+macro HYGIENE: atoms derive from names, so an un-namespaced internal atom would collide with a same-named caller
+atom (capture). Fix: internal atoms namespaced under a reserved "@tmpl:<name>:" prefix; witness cosine
+internal-vs-caller ~0 (-0.04) with the discipline, 1.0 without. test_holographic_template.py (8) + 1 integration.
+1123 -> 1132.*
 - **Seat/basis.** Puckette (Pd/Max -- he built a composition language over real-time primitives) + the recipe/
   procedure thread. **Order.** SIXTH -- assembly before macros; builds on the recipe IR + procedure scaffolding.
 - **Grounded.** `procedure_to_recipe`, `learn_recipe_grammar`, `generate_procedure`, `recall_procedure` exist --
@@ -584,7 +591,16 @@ pass). test_isa_callstack.py (5) + 1 integration. 1117 -> 1123. Tiers 0-2 of the
 - **Anticipated negative.** Macro HYGIENE -- a template that captures/rebinds atoms collides with the caller's
   atoms. Needs a fresh-atom discipline for template holes.
 
-### ISA-7 — a higher-level language compiling to the recipe IR   [RESEARCH]
+### ISA-7 — a higher-level language compiling to the recipe IR   [RESEARCH]   ✓ SHIPPED
+*Shipped: holographic_lang.py -- a small declarative STRUCTURE-DESCRIPTION language (S-expressions) that lowers
+to StructureRecipe. Surface: a symbol is an atom; (bind a b)/(bundle ...)/(permute a n) lower to recipe ops; the
+ISA-6 templates appear as forms ((record name moose)). parse/unparse round-trip; compile_spec -> recipe;
+realize_spec -> vector. Mind faculties compile_structure + realize_structure. Bar met: compiles correct + realizes
+BIT-EXACT ((bind a b) == bind(atom a, atom b); a (record ...) form == the ISA-6 template directly); surface
+round-trips. Kept scope boundary ENFORCED: one domain only -- no variables/control/functions; an unknown form is
+a ValueError, not a no-op (test_scope_boundary). test_holographic_lang.py (8) + 1 integration. 1132 -> 1141.
+The assembly tower (kernel -> macros -> language) is complete; only ISA-8 (the reversible/quantum frontier)
+remains.*
 - **Seat/basis.** Puckette (a declarative DSP language over primitives) + Eno (language-as-generative-system) +
   Plate. **Order.** SEVENTH -- top of the tower; depends on ISA-6 + the IR. Research-heavy, so late.
 - **Grounded.** The DCC material-node-graph-as-StructureRecipe and the typed-structure unification (program =
@@ -598,7 +614,21 @@ pass). test_isa_callstack.py (5) + 1 integration. 1117 -> 1123. Tiers 0-2 of the
 
 ## Tier 4 — The reversible/quantum discipline (the frontier)
 
-### ISA-8 — adopt the reversible-computing / error-correction model (cleanup = error correction)   [RESEARCH]
+### ISA-8 — adopt the reversible-computing / error-correction model (cleanup = error correction)   [RESEARCH]   ✓ SHIPPED
+*Shipped: holographic_reversible.py + ISA_REVERSIBLE.md. (a) REVERSIBILITY AUDIT (verified): bind/unbind/permute/
+involution reversible, bundle/superpose/cleanup lossy -- cleanup IS error correction. (b) AUTO-CLEANUP SCHEDULER
+(the measured core): an oracle-free health signal (cosine to nearest atom) triggers cleanup before the cliff;
+generalizes the coherence-gate from store-maintenance to program-execution. MEASURED (bursty damage): adaptive
+holds fidelity (frac-below-0.9 = 0.000) at 5 cleanups vs the matching fixed cadence's 16 (~1/3). (c) FHRR-as-
+diagonal-unitary framing. LOUD NEGATIVE on record: this is an ANALOGY, not physics -- VSA is NOT a quantum
+computer; borrow the discipline, not the physics. Mind faculties reversibility_audit + run_with_auto_cleanup.
+test_holographic_reversible.py (6) + 1 integration. 1141 -> 1148.*
+
+**THE VSA ISA SPINE IS COMPLETE (ISA-1 .. ISA-8).** Determinism contract -> conformance suite -> extension
+discipline -> register file -> calling convention + permute-stack -> macros -> structure language -> reversible/
+error-correction model. Eight items, each with its kept negative; the recurring lesson -- superposition buys
+composability and pays in a crosstalk cliff -- recurred as the bundled disk, the bundled register file, the
+permute-stack depth cliff, and the coherence budget the auto-cleanup scheduler manages.
 - **Seat/basis.** Stoudenmire (quantum-inspired/tensor networks; flagged FHRR as "a stop on the road from
   quantum amplitudes to classical hypervectors") + the FHRR/honesty/coherence threads. **Order.** LAST --
   longest-horizon, most conceptual. Its one practical sub-part (the auto-cleanup scheduler) could pull earlier.

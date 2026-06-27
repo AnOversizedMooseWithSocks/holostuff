@@ -1274,6 +1274,69 @@ try:
 except Exception as _eCS:
     print(f"  calling-convention: (skipped: {_eCS})")
 
+# THE MACRO LAYER (ISA-6): parameterized recipe TEMPLATES -- a structure with named HOLES filled at
+# instantiation. Different arguments give distinct, BIT-EXACT structures (the recipe's exactness carries), and
+# template-internal atoms are namespaced (HYGIENE) so they cannot collide with the caller's atoms. See
+# holographic_template.py.
+try:
+    import numpy as _npTP
+    from holographic_template import STARTER_LIBRARY as _LIB
+    from holographic_ai import unbind as _ubTP, cosine as _csTP, derived_atom as _daTP
+    _rec = _LIB["record"]
+    _m1 = _rec.build_vector(1024, 7, key="name", val="moose")
+    _m1b = _rec.build_vector(1024, 7, key="name", val="moose")
+    _m2 = _rec.build_vector(1024, 7, key="name", val="socks")
+    _bitexact = _npTP.array_equal(_m1, _m1b)
+    _pair = _LIB["pair"]
+    _role = _pair.role_atom(1024, 7, "role")
+    _exact = _csTP(_ubTP(_pair.build_vector(1024, 7, x="alpha"), _role), _daTP(7, "alpha", 1024))
+    _hyg = _csTP(_pair.role_atom(1024, 7, "role"), _daTP(7, "role", 1024, unitary=True))  # ~0: no capture
+    print(f"  MACRO LAYER (ISA-6): templates {sorted(_LIB)}; instantiate twice -> bit-exact ({_bitexact}); "
+          f"distinct args -> distinct (record cos {_csTP(_m1,_m2):.2f}); pair recovers value exact ({_exact:.2f}); "
+          f"hygiene -- internal role vs caller atom cos {_hyg:.2f} (namespaced, no capture)")
+except Exception as _eTP:
+    print(f"  macro-layer: (skipped: {_eTP})")
+
+# THE STRUCTURE LANGUAGE (ISA-7, top of the tower): a small declarative surface (S-expressions) that LOWERS to
+# the recipe IR -- atoms, the base binds, and the ISA-6 templates as language forms. Scoped to ONE domain
+# (structure description), not a general language. See holographic_lang.py.
+try:
+    import numpy as _npLG
+    from holographic_lang import realize_spec as _rsLG, compile_spec as _csLG, parse as _pLG, unparse as _uLG
+    from holographic_template import STARTER_LIBRARY as _LIBLG
+    _spec = "(bundle (record name moose) (pair socks))"
+    _v = _rsLG(_spec, 1024, 7)
+    _roundtrip = (_uLG(_pLG(_spec)) == _spec)                          # surface round-trips
+    _bitexact = _npLG.array_equal(_v, _rsLG(_spec, 1024, 7))
+    _agree = _npLG.array_equal(_rsLG("(record name moose)", 1024, 7),
+                               _LIBLG["record"].build_vector(1024, 7, key="name", val="moose"))
+    print(f"  STRUCTURE LANGUAGE (ISA-7): '{_spec}' -> recipe -> vector; surface round-trips ({_roundtrip}); "
+          f"realizes bit-exact ({_bitexact}); template forms agree with ISA-6 ({_agree})")
+except Exception as _eLG:
+    print(f"  structure-language: (skipped: {_eLG})")
+
+# THE REVERSIBLE / ERROR-CORRECTION MODEL (ISA-8, the frontier): VSA assembly is a noisy, partly-REVERSIBLE ISA
+# -- bind/unbind/permute reversible, bundle/cleanup information-destroying, cleanup = error correction. The
+# practical payoff is an auto-cleanup SCHEDULER that corrects before the crosstalk cliff. (Loud negative: this is
+# an analogy, NOT a claim that VSA is a quantum computer.) See ISA_REVERSIBLE.md.
+try:
+    import numpy as _npRV
+    from holographic_reversible import reversibility_audit as _audRV, auto_cleanup_run as _acrRV, _bursty_program as _bpRV
+    from holographic_ai import random_vector as _rvRV, cosine as _csRV
+    _aud = _audRV(); _rev = sum(1 for _,(c,_) in _aud.items() if c=="reversible"); _los = sum(1 for _,(c,_) in _aud.items() if c=="lossy")
+    _cb = [_rvRV(1024, _npRV.random.default_rng(100+i)) for i in range(16)]; _tg = 3
+    def _meas(sched, **kw):
+        _cl=[]; _bl=[]
+        for _s in range(30):
+            _st=_bpRV(_cb,_tg,dim=1024,seed=_s); _v,_c=_acrRV(_cb[_tg],_st,_cb,schedule=sched,**kw)
+            _cl.append(_c); _bl.append(_csRV(_v,_cb[_tg])<0.9)
+        return _npRV.mean(_cl), _npRV.mean(_bl)
+    _ac,_ab=_meas("adaptive",floor=0.9); _fc,_fb=_meas("fixed",k=3)
+    print(f"  REVERSIBLE MODEL (ISA-8): audit -- {_rev} reversible ops, {_los} lossy (cleanup = error correction); "
+          f"auto-cleanup scheduler holds fidelity at {_ac:.0f} cleanups vs a fixed cadence's {_fc:.0f} (~1/3, bursty damage)")
+except Exception as _eRV:
+    print(f"  reversible-model: (skipped: {_eRV})")
+
 # UPSTREAM FROM A SIBLING PROJECT (TuneFM): improvements that help every application,
 # each verified on this substrate before adoption.
 try:

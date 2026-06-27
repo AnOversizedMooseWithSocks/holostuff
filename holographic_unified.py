@@ -2084,6 +2084,49 @@ class UnifiedMind:
         outs = recipe.outputs()
         return outs[0] if len(outs) == 1 else outs
 
+    def template_names(self):
+        """The names of the available parameterized recipe templates (ISA-6, the macro layer)."""
+        from holographic_template import STARTER_LIBRARY
+        return sorted(STARTER_LIBRARY)
+
+    def instantiate_template(self, name, **args):
+        """Instantiate a named parameterized template (ISA-6) at this mind's dim/seed, filling its HOLES with
+        `args` (a string is a named atom; an array is a literal vector). Returns the built structure vector --
+        different arguments give distinct, BIT-EXACT structures, and the templates are hygienic (internal atoms
+        are namespaced under a reserved prefix and cannot collide with the caller's atoms)."""
+        from holographic_template import STARTER_LIBRARY
+        if name not in STARTER_LIBRARY:
+            raise ValueError(f"unknown template {name!r}; available: {sorted(STARTER_LIBRARY)}")
+        return STARTER_LIBRARY[name].build_vector(self.dim, self.seed, **args)
+
+    def compile_structure(self, spec):
+        """Compile a structure-description spec (ISA-7) to a StructureRecipe at this mind's dim/seed. The spec is
+        S-expression text or a parsed AST -- a declarative surface (atoms, bind/bundle/permute, ISA-6 templates)
+        that lowers to the recipe IR. Scoped to structure description, not a general language."""
+        from holographic_lang import compile_spec
+        return compile_spec(spec, self.dim, self.seed)
+
+    def realize_structure(self, spec):
+        """Compile a structure-description spec (ISA-7) and materialize its vector -- bit-exact for a given
+        spec/dim/seed. The high-level surface for the same structures realize/compose build by hand."""
+        from holographic_lang import realize_spec
+        return realize_spec(spec, self.dim, self.seed)
+
+    def reversibility_audit(self):
+        """Classify each base instruction as reversible (bind/unbind/permute/involution) or information-
+        destroying (bundle/superpose/cleanup) -- the ISA-8 reversibility model. cleanup is error correction;
+        capacity is the coherence budget. (Framing; the practical payoff is run_with_auto_cleanup.)"""
+        from holographic_reversible import reversibility_audit
+        return reversibility_audit()
+
+    def run_with_auto_cleanup(self, initial, steps, codebook, floor=0.9, schedule="adaptive", k=3):
+        """Run a vector 'program' (a list of vector->vector steps) under an error-correction policy (ISA-8),
+        inserting a cleanup before the crosstalk cliff. 'adaptive' cleans only when the nearest-atom health drops
+        below `floor`; it holds fidelity at far fewer cleanups than a fixed cadence under variable damage.
+        Returns (final_vector, n_cleanups)."""
+        from holographic_reversible import auto_cleanup_run
+        return auto_cleanup_run(initial, steps, codebook, floor=floor, schedule=schedule, k=k)
+
     def tree_structure(self, tree):
         """Encode an expression tree as a typed structure at this mind's dim/seed. A leaf is a str symbol;
         an internal node is (op, *children). The EML-tree's holographic encoding, generalised."""

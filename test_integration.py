@@ -2877,3 +2877,70 @@ def test_permute_stack_and_frame_local_registers_through_the_mind():
     prog2 = [("LOAD", "a"), ("STORE", "R0"), ("CALL", "clob"), ("RECALL", "R0"), ("HALT", "a")]
     acc2, _ = M.run(M.assemble(prog2))
     assert cosine(acc2, M.data_atoms["a"]) > 0.99999
+
+
+# ---- parameterized recipe templates through the mind (ISA-6) --------------------------------------
+
+def test_instantiate_template_through_the_mind():
+    from holographic_ai import unbind, cosine, derived_atom
+    from holographic_template import STARTER_LIBRARY
+    import numpy as np
+    m = UnifiedMind(dim=1024, seed=7)
+    assert {"pair", "record", "ordered_pair"} <= set(m.template_names())
+    # distinct args -> distinct, bit-exact structures
+    r1 = m.instantiate_template("record", key="name", val="moose")
+    r1b = m.instantiate_template("record", key="name", val="moose")
+    r2 = m.instantiate_template("record", key="name", val="socks")
+    assert np.array_equal(r1, r1b)                            # bit-exact replay through the mind
+    assert cosine(r1, r2) < 0.9                               # different val -> different record
+    # a single-binding pair recovers its value exactly via the (unitary) role
+    p = m.instantiate_template("pair", x="alpha")
+    role = STARTER_LIBRARY["pair"].role_atom(1024, 7, "role")
+    assert cosine(unbind(p, role), derived_atom(7, "alpha", 1024)) > 0.99
+
+
+# ---- the structure-description language through the mind (ISA-7) -----------------------------------
+
+def test_realize_structure_through_the_mind():
+    from holographic_ai import cosine, unbind, derived_atom
+    from holographic_template import STARTER_LIBRARY
+    import numpy as np
+    m = UnifiedMind(dim=1024, seed=7)
+    spec = "(bundle (record name moose) (pair socks))"
+    v = m.realize_structure(spec)
+    assert np.array_equal(v, m.realize_structure(spec))      # bit-exact through the mind
+    # compile_structure returns a recipe that realizes to the same vector (the IR is the target)
+    r = m.compile_structure(spec)
+    assert np.array_equal(m.realize(r), v)
+    # the language's record form agrees with instantiate_template (the layers are consistent)
+    assert np.array_equal(m.realize_structure("(record name moose)"),
+                          m.instantiate_template("record", key="name", val="moose"))
+
+
+# ---- the reversibility audit + auto-cleanup scheduler through the mind (ISA-8) ---------------------
+
+def test_auto_cleanup_scheduler_through_the_mind():
+    from holographic_ai import random_vector, cosine
+    from holographic_reversible import _bursty_program
+    import numpy as np
+    m = UnifiedMind(dim=1024, seed=7)
+    # the audit is a mind faculty
+    aud = m.reversibility_audit()
+    assert aud["bind"][0] == "reversible" and aud["cleanup"][0] == "lossy"
+    # the scheduler through the mind: adaptive holds fidelity at fewer cleanups than fixed under bursty damage
+    cb = [random_vector(1024, np.random.default_rng(100 + i)) for i in range(16)]
+    tgt = 3
+
+    def measure(sched, **kw):
+        cl, below = [], []
+        for s in range(20):
+            steps = _bursty_program(cb, tgt, dim=1024, seed=s)
+            v, c = m.run_with_auto_cleanup(cb[tgt], steps, cb, schedule=sched, **kw)
+            cl.append(c)
+            below.append(cosine(v, cb[tgt]) < 0.9)
+        return np.mean(cl), np.mean(below)
+
+    ad_cl, ad_below = measure("adaptive", floor=0.9)
+    fx_cl, fx_below = measure("fixed", k=3)
+    assert ad_below < 0.1 and fx_below < 0.1
+    assert ad_cl < fx_cl                                      # fewer cleanups, matched fidelity
