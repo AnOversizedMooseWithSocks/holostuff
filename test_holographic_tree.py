@@ -156,3 +156,86 @@ def test_structured_index_rejects_mismatched_payloads():
         assert False, "expected ValueError for payload/key length mismatch"
     except ValueError:
         pass
+
+
+# --- pluggable keying: the consolidation of the chunkers/stores onto one routing fabric ---------
+# (projection above is unchanged; these cover the new hash/spatial regimes and the shared TiledStore)
+from holographic_tree import TiledStore, _tile_bucket
+
+
+def test_hash_keying_is_zero_comparison_exact_lookup():
+    """The RAM / page-table regime: a stable hash IS the address, so a hit costs ~O(1) comparisons and is
+    exact -- never a wrong neighbour, the way a projection route can be."""
+    idx = StructuredIndex(256, keying="hash").build([f"k{i}" for i in range(2000)])
+    # every label is located exactly, and routing touches only its tiny bucket
+    assert all(idx.locate(f"k{i}")[0] == i for i in range(2000))
+    comps = [idx.locate(f"k{i}")[1] for i in range(200)]
+    assert max(comps) <= 4                                  # ~1 item/bucket -> a handful at worst
+    # an absent key returns None (a computed address is either right or simply absent)
+    payload, _ = idx.locate("not-a-key")
+    assert payload is None
+
+
+def test_hash_keying_is_deterministic_across_processes():
+    """blake2b, not Python's salted hash(): the same label must land in the same bucket every run."""
+    a = StructuredIndex._hash_bucket("widget:42", 1000)
+    b = StructuredIndex._hash_bucket("widget:42", 1000)
+    assert a == b and 0 <= a < 1000
+
+
+def test_hash_keying_carries_payloads():
+    labels = [f"sku{i}" for i in range(50)]
+    idx = StructuredIndex(256, keying="hash").build(labels, payloads=[f"/aisle/{i}" for i in range(50)])
+    assert idx.locate("sku7")[0] == "/aisle/7"
+
+
+def test_spatial_keying_routes_by_floor_divide_and_is_exact():
+    """The splat-tiler regime: a cell's address is its floor-divided tile; lookup is exact and ~O(1)."""
+    rng = np.random.default_rng(0)
+    coords = list({(int(rng.integers(0, 64)), int(rng.integers(0, 64))) for _ in range(400)})
+    idx = StructuredIndex(256, keying="spatial", tile=8).build(coords)
+    assert all(idx.locate(c)[0] == i for i, c in enumerate(coords))
+    assert idx.locate((999, 999))[0] is None               # outside any stored tile
+    # routing matches the shared helper exactly
+    assert idx._spatial_bucket((17, 9)) == _tile_bucket((17, 9), 8) == (2, 1)
+
+
+def test_locate_exact_agrees_with_routed_locate_for_computed_keyings():
+    """For hash/spatial the routed locate is already exact, so locate_exact (a full scan) must agree."""
+    idx = StructuredIndex(256, keying="hash").build([f"k{i}" for i in range(300)])
+    assert idx.locate("k123")[0] == idx.locate_exact("k123")[0] == 123
+
+
+def test_locate_k_is_projection_only():
+    """k-NN is a content query; hash/spatial are exact-address and must refuse it loudly."""
+    idx = StructuredIndex(256, keying="spatial", tile=8).build([(0, 0), (1, 1)])
+    try:
+        idx.locate_k((0, 0))
+        assert False, "expected ValueError: locate_k undefined for non-projection keying"
+    except ValueError:
+        pass
+
+
+def test_tiledstore_routes_and_groups_with_bounded_load():
+    """TiledStore shares the floor-divide route and groups vectors per tile with a bounded count."""
+    rng = np.random.default_rng(0)
+    store = TiledStore(tile=4, dim=128)
+    cells = [(gy, gx) for gy in range(16) for gx in range(16)]   # 16x16 grid, tile 4 -> 4x4 = 16 tiles
+    for c in cells:
+        store.add(c, rng.standard_normal(128))
+    assert len(store.groups()) == 16                            # exactly (16/4)^2 tiles
+    assert all(len(v) <= 16 for v in store.groups().values())   # each tile holds <= tile*tile cells
+    assert store.bucket_of((9, 5)) == _tile_bucket((9, 5), 4) == (2, 1)
+
+
+def test_normalize_false_is_byte_identical_to_a_bare_holoforest():
+    """The unlock for the forest-wrapping de-dups: with normalize=False the index keeps keys RAW, so the tree
+    splits and the ranking match a bare HoloForest exactly -- a site wrapping a raw forest can delegate here
+    with zero behaviour change."""
+    rng = np.random.default_rng(1)
+    items = rng.standard_normal((800, 256)) * rng.uniform(0.5, 2.0, (800, 1))   # deliberately NOT unit-norm
+    forest = HoloForest(256, n_trees=4, leaf_size=64, seed=0).build(items)
+    idx = StructuredIndex(256, keying="projection", normalize=False, n_trees=4, leaf_size=64, seed=0).build(items)
+    for _ in range(300):
+        q = rng.standard_normal(256)
+        assert forest.recall(q) == idx.locate(q)[0]                              # same index, every query

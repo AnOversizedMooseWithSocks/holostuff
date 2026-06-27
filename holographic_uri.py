@@ -116,15 +116,20 @@ class FacetStore:
         deterministic), and inside a *hot* bucket a geometric forest keeps content
         search capacity-bounded instead of a linear scan.  Small buckets stay
         plain lists."""
-        from holographic_tree import HoloForest
+        from holographic_tree import StructuredIndex
         self._idx = {}
         for key, recs in self.flat.items():
             vrecs = [r for r in recs if r["vec"] is not None]
             if len(vrecs) >= threshold:
                 D = dim or len(vrecs[0]["vec"])
-                forest = HoloForest(D, n_trees=n_trees, leaf_size=leaf_size).build(
-                    np.stack([r["vec"] for r in vrecs]))
-                self._idx[key] = (forest, vrecs)
+                # The at-scale operating point of the shared StructuredIndex: file each record under its OWN
+                # content vector and carry the record itself as the payload. normalize=False keeps it BYTE-
+                # IDENTICAL to the bare HoloForest this used to build (record vectors are not unit-norm), so the
+                # content store now delegates to the one index instead of growing a near-copy -- which is what
+                # StructuredIndex's own docstring already claimed this bucket was.
+                self._idx[key] = StructuredIndex(D, keying="projection", normalize=False,
+                                                 n_trees=n_trees, leaf_size=leaf_size).build(
+                    np.stack([r["vec"] for r in vrecs]), payloads=vrecs)
         return self
 
     def nearest(self, prefix, query, beam=4):
@@ -133,9 +138,8 @@ class FacetStore:
         (sub-linear); otherwise scan the (small) candidate set.  `last_comparisons`
         records the work done."""
         if getattr(self, "_idx", None) and prefix in self._idx:
-            forest, recs = self._idx[prefix]
-            rec = recs[forest.recall(query, beam=beam)]
-            self.last_comparisons = forest.last_comparisons
+            # route through the shared index (sub-linear); it returns the record payload and the cost directly
+            rec, self.last_comparisons = self._idx[prefix].locate(query, beam=beam)
             return rec
         best, rec, c = -2.0, None, 0
         for r in self.list(prefix):

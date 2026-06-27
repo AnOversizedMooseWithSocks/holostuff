@@ -87,3 +87,27 @@ def test_bilevel_hot_bucket_is_sublinear():
     assert key in s._idx
     i = 7; got = s.nearest(key, vecs[i], beam=6)
     assert got["id"] == i and s.last_comparisons < 800     # correct AND sub-linear
+
+
+def test_facetstore_inner_index_migration_is_byte_identical():
+    """PARITY: FacetStore's hot-bucket content search now delegates to StructuredIndex (normalize=False)
+    instead of a bespoke HoloForest. This proves nearest() returns the SAME record the bare forest would --
+    the content store is now literally 'this index at its at-scale operating point', not just by claim."""
+    from holographic_tree import HoloForest
+    rng = np.random.default_rng(0)
+    tag = {"colour": "red", "shape": "circle", "texture": "busy"}
+    s = uri.FacetStore()
+    vecs = {}
+    for i in range(200):                                   # all land in ONE hot bucket
+        v = htree_random(256, rng) * float(rng.uniform(0.5, 2.0))   # deliberately NOT unit-norm
+        vecs[i] = v
+        s.put(i, tag, vector=v)
+    key = uri.make_key(tag)
+    s.build_indexes(threshold=128, n_trees=4, leaf_size=64, dim=256)
+    assert key in s._idx
+
+    # the bare forest the migration replaced, built identically over the same (insertion-ordered) stack
+    bare = HoloForest(256, n_trees=4, leaf_size=64, seed=0).build(np.stack([vecs[i] for i in range(200)]))
+    for _ in range(100):
+        q = rng.standard_normal(256)
+        assert s.nearest(key, q)["id"] == int(bare.recall(q))   # same record as the raw forest, every query

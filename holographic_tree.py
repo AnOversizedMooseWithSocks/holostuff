@@ -32,6 +32,7 @@ HolographicMemory (bind/unbind) and random_vector.
 
 import itertools
 import heapq
+import hashlib
 import numpy as np
 
 from holographic_ai import HolographicMemory, random_vector
@@ -252,6 +253,14 @@ class HoloForest:
 # ======================================================================
 # the shared structured index
 # ======================================================================
+def _tile_bucket(coord, tile):
+    """The bounded-load bucket a coordinate falls in: floor-divide each axis by `tile`. The cell's address
+    IS its tile -- routing by COMPUTATION (the RAM / page-table regime), shared so the floor-divide tiling
+    lives in exactly ONE place: StructuredIndex(keying='spatial'), TiledStore, and the splat tiler all call
+    this, instead of each re-deriving `gy // tile, gx // tile` on its own."""
+    return tuple(int(c // tile) for c in coord)
+
+
 class StructuredIndex:
     """One content-addressable structured index that the chunkers and the content store can all draw from.
 
@@ -289,67 +298,243 @@ class StructuredIndex:
 
     For INTEGRITY of a stored set instead of lookup -- "has anything changed, and which item" -- that is a
     different job: use verify_store (holographic_verify), the holographic Merkle tree, not this.
+
+    PLUGGABLE KEYING (the pivot fits the query -- the RAM / page-table lesson).  How a key routes to its
+    bounded-load bucket is the ONLY thing that varied across the chunkers and stores this replaces, so it is a
+    parameter, not a fork:
+      * keying='projection' (default) -- file each key under its OWN content vector in the RP-tree forest and
+        rank the routed candidates.  Sub-linear, approximate, with the agreement signal.  The content-recall
+        regime; this is the original behaviour, byte-for-byte.
+      * keying='hash' -- the page-table / LBA / DHT regime: bucket = stable_hash(label) % nbuckets.  Routing is
+        ADDRESS COMPUTATION (zero cosine comparisons), exact by construction.  Keys are hashable LABELS.  This
+        is "RAM": you compute where it is, you do not search for it.
+      * keying='spatial', tile=T -- the splat-tiler regime: bucket = floor(coord / T) via _tile_bucket.  Keys
+        are integer COORDINATE tuples; a bucket holds at most T**ndim items regardless of the total grid.
+      * keying='sequential' -- the route-chunker regime: keys are a SEQUENCE of chunks (each a (chunk_size,
+        dim) array).  Route two-level by exact scan -- nearest chunk SUMMARY (a bundle of the chunk's tiles),
+        then nearest raw tile within that chunk -- returning the (chunk, position) coordinate.  This is the
+        sub-linear random-access RouteIndex grew; RouteIndex now delegates its routing here.
+    All keyings carry payloads and share locate / locate_exact; only the routing differs.  (The decode-a-bundle
+    store -- the splat tiler's own shape -- is TiledStore below, not a keying: it shares this routing but keeps
+    its own storage, because bundling is forbidden in an INDEX yet correct in a bounded-load tile.)
     """
 
-    def __init__(self, dim, n_trees=4, leaf_size=64, seed=0):
+    def __init__(self, dim, n_trees=4, leaf_size=64, seed=0, keying="projection", nbuckets=None, tile=1,
+                 normalize=True):
         self.dim = dim
         self.seed = seed
-        self._forest = HoloForest(dim, n_trees=n_trees, leaf_size=leaf_size, seed=seed)
-        self._keys = None
-        self._payloads = None
+        self.keying = keying
         self.last_comparisons = 0          # set by every lookup, for honest cost stats
+        self._payloads = None
+        if keying == "projection":
+            # content recall -- the original behaviour, unchanged byte-for-byte
+            self._forest = HoloForest(dim, n_trees=n_trees, leaf_size=leaf_size, seed=seed)
+            self._keys = None
+            # normalize=True (default) files keys as unit vectors, so routing/exact-scan rank by cosine. Set
+            # False to keep keys RAW -- then the tree splits on raw vectors and locate ranks by raw dot product,
+            # which makes this index BYTE-IDENTICAL to a bare HoloForest over the same items (so a site that
+            # already wraps a raw forest can delegate here without a behaviour change).
+            self._normalize = normalize
+        elif keying == "hash":
+            # page-table / LBA / DHT regime: a stable hash of the label IS the address (zero-comparison route)
+            self._nbuckets = nbuckets       # default chosen at build = len(keys) (~1 item/bucket)
+            self._buckets = {}              # bucket id -> [(label, item_index), ...]
+        elif keying == "spatial":
+            # splat-tiler regime: floor-divide the coordinate -- the cell's address IS its tile
+            self._tile = tile
+            self._buckets = {}              # bucket id -> [(coord, item_index), ...]
+        elif keying == "sequential":
+            # route-chunker regime: a SEQUENCE of chunks; route by nearest chunk-summary (level 1), then by
+            # nearest tile within that chunk (level 2). This is the two-level summary routing RouteIndex grew,
+            # shared here so the chunkers route through one fabric instead of a bespoke copy.
+            self._chunks = None
+            self._summaries = None
+        else:
+            raise ValueError(f"keying must be 'projection' | 'hash' | 'spatial' | 'sequential', got {keying!r}")
+
+    # -- computed-address routers (the RAM regime: route by COMPUTATION, not by comparison) --------
+    @staticmethod
+    def _hash_bucket(label, nbuckets):
+        # blake2b, NOT Python's salted hash(): the route must be identical run-to-run (the determinism rule).
+        # Python's hash() is randomised per process, which would reshuffle every bucket and break reproducibility.
+        return int(hashlib.blake2b(repr(label).encode(), digest_size=8).hexdigest(), 16) % nbuckets
+
+    def _spatial_bucket(self, coord):
+        return _tile_bucket(coord, self._tile)
 
     def build(self, keys, payloads=None):
-        """keys: (N, dim) -- the vectors to file each item under (the items THEMSELVES, per rule 1).
-        payloads: one label per key, returned by locate -- (chunk, step) for a route, a URI for the store, a
-        step index for a sequence, ... .  Defaults to the integer position, so a bare build is a plain index."""
-        K = np.asarray(keys, float)
-        if K.ndim != 2:
-            raise ValueError("keys must be a 2-D array of shape (N, dim)")
-        # unit keys -> cosine == dot, so routing and the exact scan agree and stay numerically stable
-        K = K / (np.linalg.norm(K, axis=1, keepdims=True) + 1e-12)
-        self._keys = K
-        self._payloads = list(payloads) if payloads is not None else list(range(len(K)))
-        if len(self._payloads) != len(K):
+        """keys -- what each item is filed under, per the active keying:
+             projection : an (N, dim) array of CONTENT vectors (file each item under ITSELF, rule 1).
+             hash       : a list of hashable LABELS (the address is computed from the label).
+             spatial    : a list of integer COORDINATE tuples (the address is the floor-divided cell).
+        payloads -- one label per key, returned by locate ((chunk, step) for a route, a URI for the store, ...);
+        defaults to the integer position, so a bare build is a plain index."""
+        n = len(keys)
+        self._payloads = list(payloads) if payloads is not None else list(range(n))
+        if len(self._payloads) != n:
             raise ValueError("payloads must have exactly one entry per key")
-        self._forest.build(K)
+        if self.keying == "projection":
+            K = np.asarray(keys, float)
+            if K.ndim != 2:
+                raise ValueError("projection keys must be a 2-D array of shape (N, dim)")
+            # unit keys -> cosine == dot, so routing and the exact scan agree and stay numerically stable.
+            # normalize=False keeps them raw -> identical to a bare HoloForest over the same items.
+            if self._normalize:
+                K = K / (np.linalg.norm(K, axis=1, keepdims=True) + 1e-12)
+            self._keys = K
+            self._forest.build(K)
+        elif self.keying == "hash":
+            nb = self._nbuckets if self._nbuckets else max(1, n)
+            self._nbuckets = nb
+            for i, label in enumerate(keys):
+                self._buckets.setdefault(self._hash_bucket(label, nb), []).append((label, i))
+        elif self.keying == "spatial":
+            for i, coord in enumerate(keys):
+                self._buckets.setdefault(self._spatial_bucket(coord), []).append((tuple(coord), i))
+        elif self.keying == "sequential":
+            # keys are the chunks (each an (chunk_size, dim) array of tile vectors). Build one normalised
+            # SUMMARY per chunk -- the same normalising bundle RouteIndex used, replicated byte-for-byte -- and
+            # keep the tiles RAW (level-2 ranks raw tiles against the query, exactly as RouteIndex does, so no
+            # normalisation drift creeps in). Payloads are unused here: a sequential lookup returns a (chunk,
+            # position) coordinate, which IS the answer, not a stored label.
+            from holographic_ai import bundle
+            self._chunks = [np.asarray(ch, float) for ch in keys]
+            summaries = []
+            for ch in self._chunks:
+                s = bundle(list(ch))                                       # one summary vector per chunk
+                nrm = np.linalg.norm(s)
+                summaries.append(s / nrm if nrm > 0 else s)
+            self._summaries = np.array(summaries) if summaries else np.zeros((0,))
         return self
 
     def locate(self, query, beam=4, with_agreement=False):
-        """Sub-linear lookup: route `query` through the forest and return the payload of the nearest key.
-        Sets last_comparisons (the honest cost -- the routed candidate count, not N).  with_agreement=True also
-        returns the forest's agreement in [0, 1]: the fraction of independently seeded trees that picked the
-        same item -- a free "am I sure?" signal (act when high, hold back as it falls toward 1/n_trees)."""
+        """Find the item `query` points at and return its payload; sets last_comparisons (the honest cost).
+
+        projection : route `query` through the forest, rank the routed candidates -- sub-linear, approximate;
+                     with_agreement returns the trees' agreement in [0, 1] (a free "am I sure?" signal).
+        hash/spatial : COMPUTE the bucket, then exact-match within it -- the RAM regime, ~O(1), and the answer
+                     cannot be a wrong neighbour (a computed address is exact); with_agreement returns 1.0 on a
+                     hit and 0.0 on a miss (a computed address is either right or simply absent)."""
         if not self._payloads:
             return (None, 0, 0.0) if with_agreement else (None, 0)
-        if with_agreement:
-            i, agree = self._forest.recall(query, beam=beam, with_agreement=True)
+        if self.keying == "projection":
+            if with_agreement:
+                i, agree = self._forest.recall(query, beam=beam, with_agreement=True)
+                self.last_comparisons = self._forest.last_comparisons
+                return self._payloads[i], self.last_comparisons, agree
+            i = self._forest.recall(query, beam=beam)
             self.last_comparisons = self._forest.last_comparisons
-            return self._payloads[i], self.last_comparisons, agree
-        i = self._forest.recall(query, beam=beam)
-        self.last_comparisons = self._forest.last_comparisons
-        return self._payloads[i], self.last_comparisons
+            return self._payloads[i], self.last_comparisons
+        if self.keying == "sequential":
+            # two-level: nearest chunk SUMMARY (level 1), then nearest tile within that chunk (level 2). Both
+            # exact argmax scans -- a tile is only weakly correlated with its summary (rule 1), so an argmax
+            # resolves it where a greedy tree descent would not. Returns the (chunk, position) coordinate the
+            # query routes to; with_agreement returns 1.0 (an exact scan is certain) / handles the empty route.
+            if self._summaries is None or len(self._summaries) == 0:
+                return ((-1, -1), 0, 0.0) if with_agreement else ((-1, -1), 0)
+            q = np.asarray(query, float)
+            nq = np.linalg.norm(q)
+            q = q / nq if nq > 0 else q
+            c = int(np.argmax(self._summaries @ q))                        # level 1: nearest chunk summary
+            ch = self._chunks[c]
+            pos = int(np.argmax(ch @ q))                                   # level 2: nearest raw tile within it
+            self.last_comparisons = len(self._summaries) + len(ch)
+            if with_agreement:
+                return (c, pos), self.last_comparisons, 1.0
+            return (c, pos), self.last_comparisons
+        # hash / spatial: compute the address, then scan only that (tiny, bounded) bucket for the exact key
+        if self.keying == "hash":
+            bucket, target = self._hash_bucket(query, self._nbuckets), query
+        else:
+            bucket, target = self._spatial_bucket(query), tuple(query)
+        comps = 0
+        for (k, i) in self._buckets.get(bucket, []):
+            comps += 1
+            if k == target:
+                self.last_comparisons = comps
+                return (self._payloads[i], comps, 1.0) if with_agreement else (self._payloads[i], comps)
+        self.last_comparisons = comps
+        return (None, comps, 0.0) if with_agreement else (None, comps)
 
     def locate_k(self, query, k=8, beam=4):
         """The k nearest items as a list of (payload, cosine), still sub-linear (it ranks only the routed
-        candidates, not every item).  The "find the ones that look like this" step -- neighbour search for a
-        denoiser, or several plausible matches when a single best is not enough."""
+        candidates, not every item).  CONTENT search -- defined only for keying='projection' (hash and spatial
+        are exact-address, not nearest-neighbour, so a k-NN query is undefined for them)."""
+        if self.keying != "projection":
+            raise ValueError("locate_k is a nearest-neighbour query; only keying='projection' supports it")
         idxs, sims = self._forest.recall_k(query, k=k, beam=beam)
         self.last_comparisons = self._forest.last_comparisons
         return [(self._payloads[int(i)], float(s)) for i, s in zip(idxs, sims)]
 
     def locate_exact(self, query):
-        """Flat O(n) argmax -- the guaranteed nearest, no routing.  The right call when the set is small (a
-        full scan is cheap and the forest's fixed constant is not worth paying), when you need EXACTNESS, or
-        when the keys are weak enough that routing is unreliable.  This is what RouteIndex's flat scan does."""
-        if self._keys is None or len(self._keys) == 0:
+        """Guaranteed-correct lookup with no routing.
+        projection : flat O(n) argmax -- the right call below the forest's crossover, when you need EXACTNESS,
+                     or for weak keys.  This is what RouteIndex's flat scan does.
+        hash/spatial : a full linear scan for the exact key -- the reference the computed-address locate is
+                     checked against (locate is already exact for these, so this is verification / fallback)."""
+        if not self._payloads:
             return None, 0
-        q = np.asarray(query, float)
-        self.last_comparisons = len(self._keys)
-        return self._payloads[int((self._keys @ q).argmax())], self.last_comparisons
+        if self.keying == "sequential":
+            return self.locate(query)          # the sequential locate is already an exact two-level scan
+        if self.keying == "projection":
+            if self._keys is None or len(self._keys) == 0:
+                return None, 0
+            q = np.asarray(query, float)
+            self.last_comparisons = len(self._keys)
+            return self._payloads[int((self._keys @ q).argmax())], self.last_comparisons
+        # hash / spatial: scan every bucket for the exact key (guaranteed correct, O(n))
+        target = query if self.keying == "hash" else tuple(query)
+        n = 0
+        for members in self._buckets.values():
+            for (k, i) in members:
+                n += 1
+                if k == target:
+                    self.last_comparisons = n
+                    return self._payloads[i], n
+        self.last_comparisons = n
+        return None, n
 
     def __len__(self):
         return len(self._payloads) if self._payloads else 0
+
+
+class TiledStore:
+    """A spatially-tiled accumulator of vectors -- the splat-tiler's core, generalised and shared.
+
+    Where StructuredIndex FINDS an item (explicit keys; its rule 2 forbids bundling the index), this STORES a
+    field as bounded per-tile BUNDLES and reads a region back by DECODE. Bundling is legitimate HERE -- and
+    only here -- because floor-divide routing caps each tile at <= tile**ndim cells no matter how fine the
+    TOTAL grid, so the decode-via-cleanup capacity cliff never bites at any resolution. That is exactly the
+    lesson splat_bundle_tiled measured ("per-bundle load fixed, recall ~100% at any resolution"); it now lives
+    once, here, and the splat tiler delegates to it.
+
+    This owns the ROUTING (the same _tile_bucket as the spatial index) and the bounded GROUPING -- nothing
+    about the encode/decode. The caller bundles a tile's group with its OWN `bundle` and decodes with its OWN
+    codebook, so the store stays representation-agnostic (splat occupancy today; any per-cell vector tomorrow).
+    Two axes meet cleanly: routing is shared with StructuredIndex; storage (find-by-key vs decode-a-bundle) is
+    the one thing that differs, which is why this is a sibling class, not a flag on the index."""
+
+    def __init__(self, tile, dim):
+        self.tile = tile
+        self.dim = dim
+        self._groups = {}                   # bucket id -> [vector, ...]  (a LIST, so the caller bundles it)
+
+    def bucket_of(self, cell):
+        """The tile a cell routes to -- COMPUTATION, no search (the RAM regime)."""
+        return _tile_bucket(cell, self.tile)
+
+    def add(self, cell, vector):
+        """Group `vector` under cell's tile (bounded load by construction). Returns self for chaining."""
+        self._groups.setdefault(self.bucket_of(cell), []).append(vector)
+        return self
+
+    def group(self, cell):
+        """The list of vectors in cell's tile (empty if none) -- the caller bundles this and decodes it."""
+        return self._groups.get(self.bucket_of(cell), [])
+
+    def groups(self):
+        """All tiles as {bucket id -> [vectors]} -- for building the per-tile bundles once, at the end."""
+        return self._groups
 
 
 # ======================================================================

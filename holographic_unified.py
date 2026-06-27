@@ -1861,24 +1861,30 @@ class UnifiedMind:
         from holographic_verify import CompositionTree
         return CompositionTree(items, seed=self.seed if seed is None else seed)
 
-    def structured_index(self, keys, payloads=None, n_trees=4, leaf_size=64):
-        """A content-addressable structured index over a list of key vectors (holographic_tree.StructuredIndex)
+    def structured_index(self, keys, payloads=None, n_trees=4, leaf_size=64, keying="projection",
+                         nbuckets=None, tile=1, normalize=True):
+        """A content-addressable structured index over a list of keys (holographic_tree.StructuredIndex)
         -- the one shared lookup the route/sequence chunkers and the content store all draw from: file each
-        item under its OWN vector, find the nearest in SUB-LINEAR comparisons, and get back a meaningful label
+        item under its OWN key, find it in SUB-LINEAR (or zero) comparisons, and get back a meaningful label
         (the `payloads`), not a row number. Returns a StructuredIndex.
 
         It exists so the next caller that needs "find the item this query points at, at scale" reaches for one
         primitive instead of re-growing a fourth near-copy and rediscovering the same two limits. Both rules
         are enforced and explained in the class: KEY ON THE ITEMS THEMSELVES (a hyperplane tree only routes
         when query ~= key; a bundle-summary the query is weakly correlated with mis-routes -- measured), and
-        NEVER STORE THE INDEX AS A BUNDLE (a superposed index caps with set size -- measured). locate() is the
-        sub-linear path with a free agreement/abstention signal; locate_exact() is the flat guaranteed-nearest
-        for small sets (what RouteIndex's flat scan already is). For INTEGRITY of a stored set instead of
-        lookup -- has anything changed, which item -- use verify_store, the holographic Merkle tree: a
-        different job, and comparing whole composites by cosine is an evaluation that does NOT cap."""
+        NEVER STORE THE INDEX AS A BUNDLE (a superposed index caps with set size -- measured).
+
+        `keying` picks the routing regime -- the pivot that fits the query (the RAM / page-table lesson):
+          'projection' (default) routes a CONTENT vector through the RP-tree forest (sub-linear, approximate,
+        with the agreement/abstention signal); 'hash' makes a stable hash of a LABEL the address (the page-
+        table / RAM regime -- zero-comparison, exact); 'spatial' floor-divides a COORDINATE into a tile (the
+        splat-tiler regime). locate_exact() is the flat guaranteed answer for small sets (what RouteIndex's
+        flat scan already is). For INTEGRITY instead of lookup -- has anything changed, which item -- use
+        verify_store (the holographic Merkle tree): a different job, and comparing whole composites by cosine
+        is an evaluation that does NOT cap."""
         from holographic_tree import StructuredIndex
-        return StructuredIndex(self.dim, n_trees=n_trees, leaf_size=leaf_size,
-                               seed=self.seed).build(keys, payloads)
+        return StructuredIndex(self.dim, n_trees=n_trees, leaf_size=leaf_size, seed=self.seed,
+                               keying=keying, nbuckets=nbuckets, tile=tile, normalize=normalize).build(keys, payloads)
 
     def vector_function_encoder(self, n_dims, bounds=None, kernel="rbf", bandwidth=3.0):
         """An N-dimensional Fractional Power Encoder (holographic_fpe) on this mind's dim and seed: encode a
@@ -2713,6 +2719,63 @@ class UnifiedMind:
         model = HolographicKAN(X.shape[1], dim=min(self.dim, 512), n_grid=n_grid,
                                bandwidth=bandwidth, seed=self.seed, ridge=ridge)
         return model.fit(X, np.asarray(y, float))
+
+    # ---- the EXPLICIT 3-D GEOMETRY faculties (forward DCC backlog, FWD-1 / FWD-2) ----------------
+    # The first explicit-mesh layer on the mind: a polygon mesh kernel (half-edge adjacency, Euler
+    # invariants, normals, OBJ/buffer export) and the glTF (.glb) boundary that hands a scene to a
+    # three.js front end. These are explicit-geometry I/O, NOT VSA hypervector ops -- a mesh is integer
+    # connectivity over float positions, not a hypervector, and this layer does not pretend otherwise.
+    # The bridge to the native VSA reps (mesh <-> SDF <-> splat, a mesh AS a StructureRecipe) is a later
+    # item (FWD-11 / ARCH); this is the honest explicit substrate those bridges will connect to.
+
+    def mesh_box(self, width=1.0, height=1.0, depth=1.0, center=(0.0, 0.0, 0.0)):
+        """An axis-aligned box as a quad Mesh (holographic_mesh, FWD-1): the canonical first explicit mesh
+        -- 8 vertices, 6 quad faces, V - E + F = 2 (a genus-0 closed surface). The returned Mesh carries
+        the half-edge adjacency, Euler/manifold checks, normals, triangulation and OBJ/buffer export."""
+        from holographic_mesh import box
+        return box(width, height, depth, center)
+
+    def mesh_tetrahedron(self, scale=1.0, center=(0.0, 0.0, 0.0)):
+        """A regular tetrahedron as 4 triangles (holographic_mesh, FWD-1) -- the smallest closed manifold,
+        a second primitive proving the Euler machinery is not box-specific."""
+        from holographic_mesh import tetrahedron
+        return tetrahedron(scale, center)
+
+    def mesh_grid(self, nx=4, ny=4, width=1.0, height=1.0, center=(0.0, 0.0, 0.0)):
+        """A flat subdivided plane as an (nx by ny) quad grid (holographic_mesh, FWD-1): an OPEN mesh
+        (chi = 1, has a boundary) -- the test surface for boundary handling and bigger builds."""
+        from holographic_mesh import grid
+        return grid(nx, ny, width, height, center)
+
+    def mesh_euler(self, mesh):
+        """The combinatorial well-formedness signature of a Mesh (holographic_mesh, FWD-1): vertices,
+        edges, faces, the Euler characteristic chi = V - E + F, whether the surface is closed and manifold,
+        and -- for a closed surface -- the genus from chi = 2 - 2g. The exact-integer health check the
+        explicit-geometry edit operators (FWD-7) will be required to preserve."""
+        return {
+            "vertices": mesh.n_vertices,
+            "edges": mesh.n_edges,
+            "faces": mesh.n_faces,
+            "characteristic": mesh.euler_characteristic(),
+            "closed": mesh.is_closed(),
+            "manifold": mesh.is_manifold(),
+            "genus": mesh.genus(),
+        }
+
+    def mesh_to_gltf(self, mesh, base_colour=(0.8, 0.8, 0.8, 1.0)):
+        """Serialise a Mesh to single-file binary glTF (.glb) bytes (holographic_gltf, FWD-2): the boundary
+        a three.js GLTFLoader consumes. POSITION/NORMAL/TEXCOORD_0/COLOR_0 attributes plus a triangle index
+        buffer, with the glTF-required position bounds and a default PBR material. Deterministic -- the same
+        mesh yields byte-identical output."""
+        from holographic_gltf import mesh_to_glb
+        return mesh_to_glb(mesh, base_colour=base_colour)
+
+    def mesh_from_gltf(self, data):
+        """Parse binary glTF (.glb) bytes back into a Mesh (holographic_gltf, FWD-2): the inverse of
+        `mesh_to_gltf`. Faces return as triangles (glTF's buffer form); positions, normals and uvs are
+        recovered. The offline round-trip that proves the boundary is lossless before three.js ever sees it."""
+        from holographic_gltf import glb_to_mesh
+        return glb_to_mesh(data)
 
     # ---- the SEARCH & DYNAMICS faculties (integration plan, Tier 3) -----------------------------
     # Min-cost search on a graph or a trellis (a maze; a fragment assembly) and learned linear
