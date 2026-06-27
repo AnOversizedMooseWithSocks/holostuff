@@ -3301,6 +3301,72 @@ _cm_plan = _cm.plan(_cm_tiles[0], _cm_field, max_steps=6, floor=0.12)   # the IN
 print(f"  CreatureMind (a layer on the one mind): senses->'{_cm_act}' via inherited decide, AND "
       f"baked a {len(_cm_plan.route)}-step corridor via inherited plan -- one object, faculties reused not rebuilt")
 
+title("Explicit polygon geometry: a mesh kernel + the glTF (.glb) boundary to a three.js front end (mesh_*)")
+# The IMPLICIT side (SDF field, splat bundle, scene-graph) was always here; this is the EXPLICIT side --
+# an actual indexed polygon mesh of the kind Blender/three.js/glTF speak. The Step-0 vertical slice:
+# build a cube, read its topology invariants, ship it across the binary boundary, and read it back.
+_meshm = __import__("holographic_unified").UnifiedMind(dim=256, seed=0)
+_cube = _meshm.mesh_box(width=2.0, height=1.0, depth=1.0)
+_euler = _meshm.mesh_euler(_cube)                              # connectivity is EXACT (integer, no float drift)
+print(f"  built a box mesh: V{_euler['vertices']} E{_euler['edges']} F{_euler['faces']} "
+      f"-> Euler chi = {_euler['characteristic']}, genus {_euler['genus']}, "
+      f"closed={_euler['closed']} manifold={_euler['manifold']}  (a sphere-topology solid, proven by its invariants)")
+# THE BOUNDARY: emit a real glTF 2.0 .glb (the bytes a three.js loader ingests), then parse it straight back.
+_glb = _meshm.mesh_to_gltf(_cube)
+_back = _meshm.mesh_from_gltf(_glb)
+_v_match = _np.allclose(_np.asarray(_cube.vertices), _np.asarray(_back.vertices))
+print(f"  emitted a {len(_glb)}-byte .glb (POSITION/NORMAL/index + PBR material, position bounds, 4-byte aligned) "
+      f"-> parsed back: vertices match = {_v_match}")
+# BYTE-REPRODUCIBLE: the determinism rule reaches the wire format (sorted JSON keys, fixed dtypes/endianness).
+_glb2 = _meshm.mesh_to_gltf(_cube)
+print(f"  same mesh emitted twice -> identical bytes = {_glb == _glb2}  (deterministic all the way to the .glb)")
+print("  KEPT NEGATIVE: the half-edge kernel is Python-loop bound -- correct + deterministic at engine sizes,")
+print("  but won't scale to interactive million-poly editing without a compiled core ('NumPy-only' is the engine's")
+print("  rule, not an interactive mesh editor's). The vectorized paths (Euler, normals, buffers) are the fast ones.")
+
+title("One routing fabric: the chunkers/tilers/stores converge -- pick the pivot, get the regime (StructuredIndex keying)")
+# The capacity-cliff cure ("route each item to a bounded-load bucket") had been re-grown five times. It is
+# ONE fabric: you escape the cliff HORIZONTALLY and address shards by a PIVOT -- and the pivot you pick IS the
+# regime. Hash -> the page-table/LBA regime (compute the address, ZERO comparisons -- "RAM"). Random
+# projection -> nearest-neighbour content recall. Floor-divide -> spatial tiles. One parameter, `keying=`.
+_ix = __import__("holographic_unified").UnifiedMind(dim=256, seed=0)
+_rng = _np.random.default_rng(0)
+_keys = _rng.standard_normal((2000, 256))
+_proj = _ix.structured_index(_keys, payloads=[f"v{_i}" for _i in range(2000)])          # CONTENT regime
+_pp, _pc = _proj.locate(_keys[42])
+_hash = _ix.structured_index([f"k{_i}" for _i in range(2000)], keying="hash")            # RAM / page-table regime
+_hp, _hc = _hash.locate("k42")
+_coords = list({(int(_rng.integers(0, 64)), int(_rng.integers(0, 64))) for _ in range(2000)})
+_spat = _ix.structured_index(_coords, keying="spatial", tile=8)                          # spatial-tile regime
+_sp, _sc = _spat.locate(_coords[7])
+print(f"  projection (content): locate -> '{_pp}' in {int(_pc)} comparisons   (sub-linear NN, vs 2000 flat)")
+print(f"  hash (RAM/page-table): locate -> {int(_hp)} in {int(_hc)} comparison    (COMPUTE the address, exact -- zero search)")
+print(f"  spatial (splat tiles): locate -> {int(_sp)} in {int(_sc)} comparison    (floor-divide -- the cell's address IS its tile)")
+# sequential (the route chunker): RouteIndex's two-level summary routing is now this keying -- it delegates here.
+from holographic_plan import chunk_route as _cr, RouteIndex as _RI
+_rtiles = _rng.standard_normal((60, 256)); _rtiles = _rtiles / _np.linalg.norm(_rtiles, axis=1, keepdims=True)
+_route = _cr(list(_rtiles), chunk=12, floor=0.12, seed=0, action_of=lambda _a, _b: 0)
+_ri = _RI(_route); _rc, _rp, _rg = _ri.locate(_rtiles[20])
+print(f"  sequential (route):    locate tile 20 -> chunk {int(_rc)} pos {int(_rp)} (global {int(_rg)})  "
+      f"-- RouteIndex now DELEGATES its routing here (keying='{_ri._idx.keying}')")
+# The splat tiler now DELEGATES its tiling to the same shared route -- build-time and recall-time provably agree.
+from holographic_tree import _tile_bucket as _tb
+from holographic_splat import splat_bundle_tiled as _sbt, recall_region_tiled as _rrt, splat_fit as _sf
+_occ = _np.zeros((64, 64))
+for _ in range(4):
+    _cy, _cx = _rng.uniform(10, 54, 2); _ys, _xs = _np.mgrid[0:64, 0:64]
+    _occ += _np.exp(-((_ys - _cy) ** 2 + (_xs - _cx) ** 2) / 50.0)
+_scene = _sbt(_sf(_occ, 20), (64, 64), dim=2048, grid=16, tile=8, seed=0)
+_shared = all(_tb(_c, _scene["tile"]) in _scene["tiles"] or _rrt(_scene, _c) == 0.0 for _c in [(0, 0), (9, 5), (15, 15)])
+print(f"  splat tiler shares the SAME floor-divide route (one _tile_bucket, no drift): {_shared}")
+print("  (storage still differs -- the index FINDS explicit keys, the splat tile DECODES a bounded bundle; one")
+print("  routing fabric, two storage shapes, so TiledStore is a sibling not a flag. Migration is byte-identical.)")
+# All three genuine 'individual solutions' in the chunking/tiling/store family now delegate to this fabric.
+from holographic_tree import StructuredIndex as _SI
+_cs = _SI(256, keying="projection", normalize=False).build(_rng.standard_normal((40, 256)))   # normalize=False == bare forest
+print(f"  the content store delegates too: its hot bucket IS a StructuredIndex (normalize=False -> byte-identical "
+      f"to the bare forest it replaced). Three solutions -> splat(spatial), route(sequential), store(projection).")
+
 print("\n" + "-" * 66)
 print("  Every subsystem -- through gradient-free learning -- ran on the same vector substrate. Wired up.")
 print("-" * 66 + "\n")

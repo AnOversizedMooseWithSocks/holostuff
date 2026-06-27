@@ -261,14 +261,13 @@ class RouteIndex:
     search. The same bundle-crosstalk that caps a single structure is what makes the summary a usable index."""
 
     def __init__(self, route):
-        self.chunks = [np.asarray(c.nodes, float) for c in route.corridors]   # each chunk's tile vectors
-        self._summaries = []
-        for ch in self.chunks:
-            s = bundle(list(ch))                                              # one summary vector per chunk
-            n = np.linalg.norm(s)
-            self._summaries.append(s / n if n > 0 else s)
-        self._summaries = np.array(self._summaries) if self._summaries else np.zeros((0,))
-        # global step at which each chunk STARTS (chunks overlap by one tile, so subtract the shared boundary)
+        self.chunks = [np.asarray(c.nodes, float) for c in route.corridors]   # public: callers/tests read .chunks
+        # The two-level summary routing now lives in the shared StructuredIndex (keying='sequential') -- one
+        # routing fabric for the chunkers, not a bespoke fourth copy. This class keeps only the route-specific
+        # global-step bookkeeping (chunks overlap by one tile) layered on top of that shared route.
+        from holographic_tree import StructuredIndex
+        dim = self.chunks[0].shape[1] if self.chunks else 0
+        self._idx = StructuredIndex(dim, keying="sequential").build(self.chunks)
         self._starts, acc = [], 0
         for ch in self.chunks:
             self._starts.append(acc)
@@ -276,20 +275,22 @@ class RouteIndex:
 
     def locate(self, query):
         """Return (chunk_index, position_in_chunk, global_step) of the route tile nearest `query` -- two-level,
-        sub-linear. global_step is the approximate index along the whole route (chunks overlap by one tile)."""
+        sub-linear. The routing delegates to StructuredIndex(keying='sequential'); global_step is the approximate
+        index along the whole route (chunks overlap by one tile, so it subtracts the shared boundary)."""
         if not self.chunks:
             return (-1, -1, -1)
-        q = np.asarray(query, float)
-        nq = np.linalg.norm(q)
-        q = q / nq if nq > 0 else q
-        c = int(np.argmax(self._summaries @ q))                              # level 1: nearest chunk summary
-        ch = self.chunks[c]
-        pos = int(np.argmax(ch @ q))                                         # level 2: nearest tile within it
+        (c, pos), _ = self._idx.locate(query)
         return (c, pos, self._starts[c] + pos)
 
     @property
     def n_chunks(self):
         return len(self.chunks)
+
+    @property
+    def _summaries(self):
+        # The chunk summaries now live in the shared StructuredIndex; exposed here so existing callers/tests
+        # that inspect routing summaries (e.g. the determinism audit) keep working after the delegation.
+        return self._idx._summaries
 
 
 def _selftest():

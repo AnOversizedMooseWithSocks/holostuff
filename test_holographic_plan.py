@@ -139,3 +139,36 @@ def test_dedup_chunks_saves_nothing_without_repetition():
     chunks = [rng.standard_normal(dim) for _ in range(8)]    # all distinct
     unique, refs = dedup_chunks(chunks)
     assert len(unique) == 8 and refs == list(range(8))       # honest bound: no repeats -> no saving
+
+
+def test_routeindex_migration_is_byte_identical_to_the_old_inline_two_level_routing():
+    """PARITY: RouteIndex now delegates its two-level routing to StructuredIndex(keying='sequential'). This
+    proves the delegation changed NOTHING -- locate() returns the exact same (chunk, pos, global_step) the old
+    inline summary-scan produced, for every tile on a real route. Reuse in place of the bespoke index, byte-
+    identical."""
+    from holographic_ai import bundle
+    tiles, field_step, action_of = _line(80, 512)
+    route = chunk_route(list(tiles), chunk=14, floor=0.12, seed=0, action_of=action_of)
+
+    # the ORIGINAL RouteIndex computation, inline and independent
+    chunks = [np.asarray(c.nodes, float) for c in route.corridors]
+    summaries = []
+    for ch in chunks:
+        s = bundle(list(ch)); n = np.linalg.norm(s); summaries.append(s / n if n > 0 else s)
+    summaries = np.array(summaries) if summaries else np.zeros((0,))
+    starts, acc = [], 0
+    for ch in chunks:
+        starts.append(acc); acc += max(1, len(ch) - 1)
+
+    def old_locate(query):
+        if not chunks:
+            return (-1, -1, -1)
+        q = np.asarray(query, float); nq = np.linalg.norm(q); q = q / nq if nq > 0 else q
+        c = int(np.argmax(summaries @ q)); ch = chunks[c]; pos = int(np.argmax(ch @ q))
+        return (c, pos, starts[c] + pos)
+
+    idx = RouteIndex(route)
+    for t in range(80):
+        assert idx.locate(tiles[t]) == old_locate(tiles[t]), f"tile {t} routed differently under migration"
+    # summaries bit-identical too (they moved into the shared index)
+    assert np.array_equal(idx._summaries, summaries)

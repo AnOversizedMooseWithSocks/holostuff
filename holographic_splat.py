@@ -201,14 +201,19 @@ def splat_bundle_tiled(splats, shape, dim=4096, grid=16, levels=5, tile=8, seed=
     chunked SequenceMemory make). Cells keep their GLOBAL roles, so recall_region_tiled needs no remapping.
 
     Returns a ctx dict that IS the tiled scene: ctx['tiles'] maps (ty, tx) -> the tile's bundle hypervector,
-    and ctx carries the shared role/level codebooks + geometry. Read a cell back with recall_region_tiled."""
+    and ctx carries the shared role/level codebooks + geometry. Read a cell back with recall_region_tiled.
+
+    The tiling/routing now DELEGATES to TiledStore + _tile_bucket in holographic_tree (shared with the spatial
+    StructuredIndex) -- this function owns only the splat encode (role-bound occupancy) and the per-tile bundle;
+    the floor-divide routing and bounded grouping live once, in the shared store."""
     from holographic_ai import bind, bundle, Vocabulary
+    from holographic_tree import TiledStore                # the shared tiling primitive
     H, W = shape[0], shape[1]
     rendered = splat_render(splats, (H, W))
     roles = Vocabulary(dim, seed=seed)
     lvl = Vocabulary(dim, seed=seed + 1)                  # `levels` near-orthogonal occupancy atoms
     peak = float(np.abs(rendered).max()) + 1e-12
-    tile_parts, desc = {}, {}
+    store, desc = TiledStore(tile, dim), {}
     for gy in range(grid):
         for gx in range(grid):
             ys, ye = gy * H // grid, (gy + 1) * H // grid
@@ -216,9 +221,9 @@ def splat_bundle_tiled(splats, shape, dim=4096, grid=16, levels=5, tile=8, seed=
             energy = float(np.clip(np.abs(rendered[ys:ye, xs:xe]).max() / peak, 0.0, 1.0))
             q = int(round(energy * (levels - 1)))
             desc[(gy, gx)] = q / (levels - 1)
-            ty, tx = gy // tile, gx // tile              # which tile bundle this cell lands in
-            tile_parts.setdefault((ty, tx), []).append(bind(roles.get(f"cell:{gy}:{gx}"), lvl.get(f"lvl:{q}")))
-    tiles = {k: (bundle(v) if v else np.zeros(dim)) for k, v in tile_parts.items()}
+            # the store routes (gy, gx) -> its tile by floor-divide and groups the binding there
+            store.add((gy, gx), bind(roles.get(f"cell:{gy}:{gx}"), lvl.get(f"lvl:{q}")))
+    tiles = {k: bundle(v) for k, v in store.groups().items()}   # one bounded bundle per tile (all non-empty)
     return {"roles": roles, "lvl": lvl, "levels": levels, "grid": grid, "tile": tile,
             "tiles": tiles, "desc": desc, "dim": dim, "shape": (H, W)}
 
@@ -227,9 +232,10 @@ def recall_region_tiled(scene, cell):
     """Read a global cell back from a TILED splat scene (from splat_bundle_tiled): route the cell to its tile
     bundle -- which holds at most tile*tile bindings, so crosstalk stays low and recall stays accurate at fine
     TOTAL resolution -- then decode it with the same unbind+cleanup as recall_region. `cell` is (gy, gx) in the
-    full grid; returns the recovered occupancy in [0, 1] (0.0 for an empty tile)."""
-    gy, gx = cell
-    hv = scene["tiles"].get((gy // scene["tile"], gx // scene["tile"]))
+    full grid; returns the recovered occupancy in [0, 1] (0.0 for an empty tile). Routing uses the shared
+    _tile_bucket, so build-time and recall-time tiling are guaranteed identical."""
+    from holographic_tree import _tile_bucket
+    hv = scene["tiles"].get(_tile_bucket(cell, scene["tile"]))
     return 0.0 if hv is None else recall_region(hv, cell, scene)
 
 

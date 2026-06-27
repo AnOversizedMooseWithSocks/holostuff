@@ -1,0 +1,145 @@
+"""Tests for the explicit polygon mesh kernel (FWD-1): the half-edge adjacency, the Euler well-formedness
+invariants, normals, the OBJ/buffer round-trips, and the guards (non-manifold rejection, deterministic
+integer buffers). The kept negative (Python-loop-bound build) is a docstring statement, not a test -- speed
+is not asserted, only correctness and determinism."""
+
+import numpy as np
+
+from holographic_mesh import Mesh, box, tetrahedron, grid
+
+
+# ---- counts & Euler invariants ----------------------------------------------------------------------
+def test_box_counts_and_euler():
+    m = box(2.0, 2.0, 2.0)
+    assert m.n_vertices == 8
+    assert m.n_faces == 6
+    assert m.n_edges == 12
+    assert m.euler_characteristic() == 2          # genus-0 closed surface: V - E + F = 2
+    assert m.is_closed()
+    assert m.is_manifold()
+    assert m.genus() == 0
+
+
+def test_tetrahedron_invariant():
+    t = tetrahedron()
+    assert (t.n_vertices, t.n_edges, t.n_faces) == (4, 6, 4)
+    assert t.euler_characteristic() == 2
+    assert t.is_closed()
+    assert t.genus() == 0
+
+
+def test_grid_is_open_with_boundary():
+    # an open (boundary-having) surface: chi = 1, not closed, genus undefined
+    g = grid(4, 4)
+    assert not g.is_closed()
+    assert g.euler_characteristic() == 1
+    assert g.genus() is None
+
+
+# ---- half-edge adjacency ----------------------------------------------------------------------------
+def test_half_edge_twins_are_reciprocal():
+    he = box(1, 1, 1).half_edges()
+    H = len(he["origin"])
+    assert H == 24                                # 6 quads * 4 corners
+    for h in range(H):
+        t = int(he["twin"][h])
+        assert t >= 0                             # the box is closed: every half-edge has a twin
+        assert int(he["twin"][t]) == h            # and the relationship is symmetric
+
+
+def test_half_edge_next_cycles_close_on_the_face():
+    m = box(1, 1, 1)
+    he = m.half_edges()
+    for h in range(len(he["origin"])):
+        cur, steps = h, 0
+        while True:
+            cur = int(he["nxt"][cur]); steps += 1
+            if cur == h:
+                break
+            assert steps < 8
+        assert steps == 4                         # a quad face: 4 corners, cycle length 4
+
+
+def test_vertex_neighbours_and_faces():
+    m = box(1, 1, 1)
+    # every corner of a box touches exactly 3 faces and 3 edge-neighbours
+    for v in range(m.n_vertices):
+        assert len(m.vertex_faces(v)) == 3
+        assert len(m.vertex_neighbours(v)) == 3
+
+
+# ---- normals ----------------------------------------------------------------------------------------
+def test_vertex_normals_point_outward_on_a_centred_box():
+    m = box(2, 2, 2)
+    nrm = m.vertex_normals()
+    pos_dir = m.vertices / np.linalg.norm(m.vertices, axis=1, keepdims=True)
+    dots = np.sum(nrm * pos_dir, axis=1)
+    assert np.all(dots > 0.5)                     # each vertex normal roughly along its outward position
+
+
+def test_normals_are_unit_length():
+    m = box(1, 1, 1)
+    nrm = m.vertex_normals()
+    assert np.allclose(np.linalg.norm(nrm, axis=1), 1.0, atol=1e-6)
+
+
+# ---- round-trips ------------------------------------------------------------------------------------
+def test_buffer_round_trip_positions_exact():
+    m = box(2, 2, 2)
+    buf = m.to_buffers()
+    assert buf["indices"].size == 36             # 6 quads -> 12 tris -> 36 indices
+    m2 = Mesh.from_buffers(buf["position"], buf["indices"], normal=buf["normal"])
+    assert np.allclose(m2.vertices, m.vertices)
+    assert m2.triangulate().shape == (12, 3)
+
+
+def test_obj_round_trip_preserves_quad_topology():
+    m = box(2, 2, 2)
+    m2 = Mesh.from_obj(m.to_obj())
+    assert m2.n_vertices == 8 and m2.n_faces == 6
+    assert all(len(f) == 4 for f in m2.faces)    # OBJ keeps quads as quads (buffers would not)
+    # vertex sets match (order is preserved by OBJ, but compare robustly)
+    assert np.allclose(np.sort(m2.vertices, axis=0), np.sort(m.vertices, axis=0))
+
+
+def test_obj_parses_slash_face_form():
+    # f a/vt/vn form: take the vertex index before the first slash
+    text = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1/1/1 2/2/1 3/3/1\n"
+    m = Mesh.from_obj(text)
+    assert m.n_vertices == 3 and m.faces == [(0, 1, 2)]
+
+
+# ---- guards ----------------------------------------------------------------------------------------
+def test_non_manifold_orientation_is_rejected():
+    # two faces both traversing the directed edge (0 -> 1): inconsistent orientation / non-manifold
+    verts = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]]
+    bad = Mesh(verts, [(0, 1, 2), (0, 1, 3)])
+    assert not bad.is_manifold()
+    try:
+        bad.half_edges()
+        assert False, "should raise on a directed edge appearing twice"
+    except ValueError:
+        pass
+
+
+def test_degenerate_face_rejected():
+    try:
+        Mesh([[0, 0, 0], [1, 0, 0]], [(0, 1)])   # a 2-vertex "face"
+        assert False, "a face with < 3 vertices should be rejected"
+    except ValueError:
+        pass
+
+
+def test_index_buffer_is_deterministic():
+    # the integer index buffer is the EXACT class: bit-reproducible run to run (ISA contract)
+    a = box(2, 2, 2).to_buffers()["indices"]
+    b = box(2, 2, 2).to_buffers()["indices"]
+    assert np.array_equal(a, b)
+
+
+def test_edges_listing_is_sorted_and_deterministic():
+    m = box(1, 1, 1)
+    e1 = m.edges()
+    e2 = box(1, 1, 1).edges()
+    assert e1 == e2                              # same mesh -> same edge list, same order
+    assert e1 == sorted(e1)                      # returned in sorted order

@@ -151,3 +151,34 @@ def test_tiled_splat_bundle_is_deterministic_and_empty_safe():
     b = splat_bundle_tiled(splats, (96, 96), dim=2048, grid=16, tile=8, seed=0)
     assert all(np.array_equal(a["tiles"][k], b["tiles"][k]) for k in a["tiles"])      # bit-identical run-to-run
     assert recall_region_tiled({"tiles": {}, "tile": 8, "roles": None, "lvl": None, "levels": 5}, (0, 0)) == 0.0
+
+
+def test_tiled_splat_migration_is_byte_identical_to_the_old_inline_tiling():
+    """PARITY: splat_bundle_tiled now delegates its tiling to the shared TiledStore + _tile_bucket. This
+    proves the delegation changed NOTHING -- the per-tile bundle vectors are bit-for-bit what the old
+    inline (gy//tile, gx//tile) grouping produced. Reuse in place of the bespoke tiler, byte-identical."""
+    from holographic_splat import splat_bundle_tiled, splat_fit, splat_render
+    from holographic_ai import bind, bundle, Vocabulary
+    splats = splat_fit(_occupancy_target(), 30)
+    shape, dim, grid, levels, tile, seed = (96, 96), 2048, 16, 5, 8, 0
+    scene = splat_bundle_tiled(splats, shape, dim=dim, grid=grid, levels=levels, tile=tile, seed=seed)
+
+    # recompute the tiles with the ORIGINAL inline logic, independently
+    H, W = shape
+    rendered = splat_render(splats, (H, W))
+    roles, lvl = Vocabulary(dim, seed=seed), Vocabulary(dim, seed=seed + 1)
+    peak = float(np.abs(rendered).max()) + 1e-12
+    tile_parts = {}
+    for gy in range(grid):
+        for gx in range(grid):
+            ys, ye = gy * H // grid, (gy + 1) * H // grid
+            xs, xe = gx * W // grid, (gx + 1) * W // grid
+            energy = float(np.clip(np.abs(rendered[ys:ye, xs:xe]).max() / peak, 0.0, 1.0))
+            q = int(round(energy * (levels - 1)))
+            tile_parts.setdefault((gy // tile, gx // tile), []).append(
+                bind(roles.get(f"cell:{gy}:{gx}"), lvl.get(f"lvl:{q}")))
+    expected = {k: bundle(v) for k, v in tile_parts.items()}
+
+    assert set(scene["tiles"].keys()) == set(expected.keys())
+    for k in expected:
+        assert np.array_equal(scene["tiles"][k], expected[k]), f"tile {k} changed under migration"

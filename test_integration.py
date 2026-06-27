@@ -2997,3 +2997,137 @@ def test_propagator_spectral_jump_through_the_mind():
     # the spectrum reads a regime without running
     prof = m.propagator_spectrum(traj)
     assert prof["regime"] in ("contractive", "marginal", "divergent")
+
+
+# ============================================================================================
+# FORWARD DCC backlog -- the explicit 3-D geometry vertical slice (FWD-1 mesh + FWD-2 glTF).
+# The boundary to three.js, proven end to end THROUGH the mind: build a mesh, read its Euler
+# invariant, serialise to a .glb, parse it back. This is the slice the backlog says to land
+# first, to de-risk the single most important new plumbing before any modeling features.
+# ============================================================================================
+def test_unified_exposes_the_mesh_faculties():
+    m = UnifiedMind(dim=256, seed=0)
+    for name in ("mesh_box", "mesh_tetrahedron", "mesh_grid", "mesh_euler",
+                 "mesh_to_gltf", "mesh_from_gltf"):
+        assert callable(getattr(m, name)), f"UnifiedMind is missing faculty {name!r}"
+
+
+def test_mesh_euler_invariant_through_the_mind():
+    m = UnifiedMind(dim=256, seed=0)
+    info = m.mesh_euler(m.mesh_box(2, 2, 2))
+    assert info["vertices"] == 8 and info["edges"] == 12 and info["faces"] == 6
+    assert info["characteristic"] == 2          # V - E + F = 2 for a genus-0 closed surface
+    assert info["closed"] and info["manifold"] and info["genus"] == 0
+    # an open mesh: chi = 1, genus undefined
+    g = m.mesh_euler(m.mesh_grid(4, 4))
+    assert g["characteristic"] == 1 and not g["closed"] and g["genus"] is None
+
+
+def test_mesh_to_gltf_boundary_round_trips_through_the_mind():
+    # THE VERTICAL SLICE: a cube goes back-end -> .glb -> back, entirely via mind faculties.
+    m = UnifiedMind(dim=256, seed=0)
+    cube = m.mesh_box(2.0, 2.0, 2.0)
+    glb = m.mesh_to_gltf(cube)
+    # a real GLTFLoader requires a 4-aligned .glb beginning with the glTF magic -- the boundary contract
+    assert isinstance(glb, (bytes, bytearray)) and len(glb) % 4 == 0
+    assert glb[:4] == b"glTF"
+    back = m.mesh_from_gltf(glb)
+    assert back.n_vertices == 8                  # the cube's 8 corners survive
+    assert back.n_faces == 12                    # 6 quads -> 12 triangles across the glTF boundary
+    assert np.allclose(back.vertices.astype(np.float32), cube.vertices.astype(np.float32))
+
+
+def test_mesh_gltf_is_byte_reproducible_through_the_mind():
+    # a serialised artifact is the EXACT class: identical bytes run to run (ISA determinism)
+    m1 = UnifiedMind(dim=256, seed=0)
+    m2 = UnifiedMind(dim=256, seed=0)
+    assert m1.mesh_to_gltf(m1.mesh_box(2, 2, 2)) == m2.mesh_to_gltf(m2.mesh_box(2, 2, 2))
+
+
+def test_structured_index_keying_regimes_through_the_mind():
+    """The consolidated routing fabric is reachable as a mind faculty in all three regimes: projection
+    (content), hash (the RAM / page-table regime -- zero-comparison exact), and spatial (the splat tiler)."""
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    um = UnifiedMind(dim=256, seed=0)
+    rng = np.random.default_rng(0)
+
+    # projection: content recall (the default, unchanged)
+    keys = rng.standard_normal((300, 256))
+    proj = um.structured_index(keys, payloads=[f"v{i}" for i in range(300)])
+    assert proj.locate(keys[10])[0] == "v10"
+
+    # hash: the RAM regime -- compute the address, ~O(1), exact
+    h = um.structured_index([f"k{i}" for i in range(300)], keying="hash")
+    payload, comps = h.locate("k10")
+    assert payload == 10 and comps <= 4
+    assert h.locate("absent")[0] is None
+
+    # spatial: floor-divide tiles (the splat-tiler regime)
+    coords = list({(int(rng.integers(0, 32)), int(rng.integers(0, 32))) for _ in range(200)})
+    sp = um.structured_index(coords, keying="spatial", tile=8)
+    assert sp.locate(coords[5])[0] == 5
+
+
+def test_splat_tiler_and_spatial_index_share_one_route_through_the_mind():
+    """The splat tiler's tiling and StructuredIndex(keying='spatial') now route through the SAME _tile_bucket
+    -- the de-siloing is real, not nominal: the same cell maps to the same tile in both."""
+    from holographic_tree import _tile_bucket, StructuredIndex
+    from holographic_splat import splat_bundle_tiled, recall_region_tiled, splat_fit
+    import numpy as np
+    rng = np.random.default_rng(0)
+    occ = np.zeros((64, 64))
+    for _ in range(4):
+        cy, cx = rng.uniform(10, 54, 2)
+        ys, xs = np.mgrid[0:64, 0:64]
+        occ += np.exp(-((ys - cy) ** 2 + (xs - cx) ** 2) / 50.0)
+    scene = splat_bundle_tiled(splat_fit(occ, 20), (64, 64), dim=2048, grid=16, tile=8, seed=0)
+    # the tile a cell lands in (splat scene) is exactly the spatial index's bucket for the same cell+tile
+    for cell in [(0, 0), (9, 5), (15, 15)]:
+        assert _tile_bucket(cell, scene["tile"]) in scene["tiles"] or recall_region_tiled(scene, cell) == 0.0
+        si = StructuredIndex(2048, keying="spatial", tile=scene["tile"]).build([cell])
+        assert si._spatial_bucket(cell) == _tile_bucket(cell, scene["tile"])
+
+
+def test_routeindex_delegates_to_the_shared_sequential_keying():
+    """The RouteIndex consolidation is real, not nominal: its routing IS StructuredIndex(keying='sequential'),
+    and a sequential index built from the same chunks routes a tile to the same (chunk, position)."""
+    import numpy as np
+    from holographic_plan import chunk_route, RouteIndex
+    from holographic_tree import StructuredIndex
+
+    rng = np.random.default_rng(0)
+    tiles = rng.standard_normal((60, 256))
+    tiles = tiles / np.linalg.norm(tiles, axis=1, keepdims=True)
+    route = chunk_route(list(tiles), chunk=12, floor=0.12, seed=0, action_of=lambda a, b: 0)
+    idx = RouteIndex(route)
+
+    # the routing fabric underneath is the shared sequential-keyed StructuredIndex
+    assert isinstance(idx._idx, StructuredIndex) and idx._idx.keying == "sequential"
+
+    # an independent sequential index over the same chunks routes a tile identically (chunk, pos)
+    chunks = [c.nodes for c in route.corridors]
+    si = StructuredIndex(256, keying="sequential").build(chunks)
+    c, pos, _ = idx.locate(tiles[20])
+    (c2, pos2), _ = si.locate(tiles[20])
+    assert (c, pos) == (c2, pos2)
+
+
+def test_facetstore_hot_bucket_is_the_shared_structured_index():
+    """The content-store consolidation is real, not nominal: a hot bucket's content search IS a
+    StructuredIndex (keying='projection', normalize=False) -- fulfilling the claim baked into its docstring."""
+    import numpy as np
+    import holographic_uri as uri
+    from holographic_scene import SceneCoder
+    from holographic_tree import StructuredIndex
+
+    coder = SceneCoder(dim=512, seed=0)
+    tag = {"colour": "red", "shape": "circle", "texture": "busy"}
+    s = uri.FacetStore()
+    rng = np.random.default_rng(0)
+    for i in range(300):
+        s.put(i, tag, vector=coder.encode(tag))   # all into one hot bucket
+    s.build_indexes(threshold=128)
+    key = uri.make_key(tag)
+    assert key in s._idx and isinstance(s._idx[key], StructuredIndex)
+    assert s._idx[key].keying == "projection"
