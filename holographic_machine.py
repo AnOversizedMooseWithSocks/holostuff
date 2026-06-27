@@ -237,6 +237,54 @@ class HoloMachine:
             pc += 1
         return acc, trace
 
+    # ---- running a program too long for one structure (the chunk_route lesson, applied to instructions) ----
+    # Control ops that GATE or CONSUME the instruction after them -- splitting a chunk between them and their
+    # target would break the construct, so a chunk is never allowed to END on one of these.
+    _SPANS_NEXT = ("IFMATCH", "REPEAT")
+
+    def run_chunked(self, program, chunk=14, init_acc=None, handlers=None,
+                    stop=None, max_loop=64, converge_tol=0.999, branch_tol=0.5):
+        """Run a program TOO LONG for one structure, by splitting it into <=chunk-instruction pieces -- each
+        its OWN clean program vector -- and THREADING the accumulator across them. This is the way past the
+        single-program capacity cap (~20-32 instructions at dim 1024), and it is the chunk_route lesson applied
+        to instructions: don't overstuff one structure, keep each piece inside its capacity and carry the state
+        across the seam.
+
+        Why not just CALL sub-programs: CALL pulls each function out of a BUNDLED library, and bundling several
+        function-vectors into one library re-introduces the very cliff we're escaping (measured: 60 BIND ops via
+        CALL collapse to cosine 0.06, but host-threaded chunks run them at cosine 1.000). So the chunks are
+        independent program vectors, not library entries -- the accumulator is the only thing that crosses a
+        boundary, exactly as a re-anchored route carries only its last clean tile.
+
+        Scope (kept honest): this threads the ACCUMULATOR -- the data-flow of LOAD/BIND/BUNDLE/PERMUTE and the
+        per-chunk effects of APPLY/CALL. A control construct that gates or consumes its next instruction
+        (`IFMATCH x; <gated>`, `REPEAT n; <CALL>`) is kept INTACT within a chunk (a chunk never ends on one),
+        but a single construct must not be relied on to span a boundary beyond that. Put HALT at the end (a
+        trailing HALT is stripped; per-chunk HALTs are added); a HALT in the MIDDLE stops the whole run, like
+        the flat interpreter. `chunk` must stay WELL UNDER the dim's reliable program length, with margin: at
+        dim 1024 the decode is solid through ~18 instructions but turns OPERAND-DEPENDENT right at the ~20 edge
+        (measured: a 20-instruction chunk decodes for some operand sequences and fails for others), so the
+        default 14 leaves a deliberate margin. The reliable length grows with dimension, so raise `chunk` at
+        higher dim (a chunk of 20 is solid at dim 2048+). Returns (accumulator, trace) just like run(), with
+        trace the chunks' traces concatenated."""
+        instrs = list(program)
+        if instrs and instrs[-1][0] == "HALT":               # we add per-chunk HALTs; drop a trailing one
+            instrs = instrs[:-1]
+        acc, full_trace = init_acc, []
+        i, n = 0, len(instrs)
+        while i < n:
+            end = min(i + chunk, n)
+            while end < n and instrs[end - 1][0] in self._SPANS_NEXT:
+                end += 1                                     # never split a gate/repeat from the instruction it targets
+            seg = instrs[i:end] + [("HALT", "")]             # one clean, independent program vector per chunk
+            acc, tr = self.run(self.assemble(seg), init_acc=acc, handlers=handlers, stop=stop,
+                               max_loop=max_loop, converge_tol=converge_tol, branch_tol=branch_tol)
+            full_trace += tr
+            if len(tr) < len(seg) - 1:                       # a HALT (or stop) fired mid-chunk -> stop the whole run
+                break
+            i = end
+        return acc, full_trace
+
     # ---- nesting (the inception layer): a program is just another value to store --------------
     def as_file(self, content_vec):
         """Wrap a vector as a 'file' under the SLOT role, ready to drop onto a disk."""

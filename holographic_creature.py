@@ -526,6 +526,35 @@ class HolographicMind:
         from holographic_plan import replan_needed as _replan
         return _replan(p, executed, tile_ok=tile_ok, floor=floor)
 
+    def plan_route(self, start, field_step, max_total=200, corridor=14, floor=0.15,
+                   action_of=None, is_branch=None):
+        """Bake a WHOLE arbitrarily-long route in one call, chaining cap-sized corridors and re-anchoring
+        internally at each leg's reliably-decoded end -- the way past the per-structure ~15 cap delivered as
+        a single result. `corridor` is the per-leg length and must stay at/under the dim's reliable decode
+        depth (default 14, safe at dim 512-1024); `max_total` caps the whole route. Use this to get a full
+        route in hand (display / validate / pre-plan); a real-time courier reacting to traffic still wants
+        plan() + replan_needed. Returns a Route. Same capability as UnifiedMind.plan_route()."""
+        from holographic_plan import plan_route as _plan_route
+        return _plan_route(start, field_step, max_total=max_total, corridor=corridor, floor=floor,
+                           seed=self._seed, action_of=action_of, is_branch=is_branch)
+
+    def chunk_route(self, items, chunk=14, floor=0.15, action_of=None):
+        """Store/replay an EXPLICIT ordered sequence you ALREADY HAVE (a GPS route, a fixed protocol, any known
+        list) past the per-structure cap, by splitting it into <=chunk-element clean pieces. The explicit-list
+        twin of plan_route: the sequence is given, so it skips the rollout and just chunks, bakes, and replays
+        it exactly. Effective length is unbounded at linear cost (~N/chunk pieces); each chunk is one compact
+        vector. `chunk` must stay at/under the dim's reliable decode depth (default 14). Returns a Route. Same
+        capability as UnifiedMind.chunk_route()."""
+        from holographic_plan import chunk_route as _chunk_route
+        return _chunk_route(items, chunk=chunk, floor=floor, seed=self._seed, action_of=action_of)
+
+    def index_route(self, route):
+        """Build a sub-linear RANDOM-ACCESS index over a chunked route (from plan_route / chunk_route): a BVH
+        over the chunks, so "where am I?" is a jump not a replay. Build once, query many via .locate(query) ->
+        (chunk, position, global_step). Same capability as UnifiedMind.index_route()."""
+        from holographic_plan import RouteIndex
+        return RouteIndex(route)
+
     def penalize_recent(self, amount=0.5, n=4):
         """Online 'stuck' signal: nudge DOWN the value of the last `n` (state, action)
         pairs the brain acted on, without waiting for the episode to finish. Learning

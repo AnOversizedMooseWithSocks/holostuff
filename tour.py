@@ -1307,6 +1307,16 @@ try:
     from holographic_ai import permute as _pm
     print(f"  embedded functions: CALL tag_b; CALL shift (both inside one library vector) -> "
           f"permute(bind(a,b)) cosine={_coM(_ac, _pm(_bM(_mc.data_atoms['a'], _mc.data_atoms['b']), 1)):.2f}")
+    # run_chunked: a program TOO LONG for one structure, run by threading the accumulator across clean chunks
+    _mc1 = _HM(dim=1024, seed=7)
+    _lnames = [chr(ord('a') + (_i % 6)) for _i in range(60)]
+    _long = [("LOAD", _lnames[0])] + [("BIND", _lnames[_i]) for _i in range(1, 60)] + [("HALT", "")]
+    _expL = _mc1.data_atoms[_lnames[0]]
+    for _lnm in _lnames[1:60]: _expL = _bM(_expL, _mc1.data_atoms[_lnm])
+    _flatL, _ = _mc1.run(_mc1.assemble(_long))
+    _chL, _ = _mc1.run_chunked(_long)
+    print(f"  run_chunked (past the program cap)  : a 60-instruction program -- one structure decodes "
+          f"cosine={_coM(_flatL, _expL):.2f} (the cliff); host-threaded <=14-instr chunks -> cosine={_coM(_chL, _expL):.2f}")
 except Exception as _eHM:
     print(f"  machine: (skipped: {_eHM})")
 
@@ -1389,6 +1399,26 @@ okset = {key(t) for t in true} == {key(g) for g in got}
 print(f"  3 objects bound into ONE scene vector, factored back: "
       f"{'all 3 recovered' if okset else 'partial'}  {[(g['colour'], g['shape']) for g in got]}")
 print("  (a single holistic tag could name only one of them -- composition keeps the parts)")
+
+# decompose_scene_tiled: a scene PAST the resonator's ~5-object cap -- tile the objects (<=cap each), factor
+# every sub-scene, merge. The scene twin of chunk_route: beat a fixed structure's capacity by composition.
+import numpy as _npTS
+_rngTS = _npTS.random.default_rng(200)
+_COL, _SHP, _TEX = sc.COLOURS, sc.SHAPES, sc.TEXTURES
+_seenTS, _objsTS = set(), []
+while len(_objsTS) < 15:
+    _tTS = (_COL[_rngTS.integers(len(_COL))], _SHP[_rngTS.integers(len(_SHP))], _TEX[_rngTS.integers(len(_TEX))])
+    if _tTS not in _seenTS:
+        _seenTS.add(_tTS); _objsTS.append({"colour": _tTS[0], "shape": _tTS[1], "texture": _tTS[2]})
+_coderTS = sc.SceneCoder(dim=1024, seed=0)
+_keyTS = lambda os: {(o["colour"], o["shape"], o["texture"]) for o in os}
+_grpsTS = [_objsTS[_i:_i + 5] for _i in range(0, 15, 5)]
+_tiledTS = _coderTS.factor_scene_tiled([_coderTS.encode_scene(_g) for _g in _grpsTS],
+                                       [len(_g) for _g in _grpsTS], sweeps=3)
+_wholeTS = _coderTS.factor_scene(_coderTS.encode_scene(_objsTS), 15, sweeps=3)
+print(f"  decompose_scene_tiled (past cap)    : 15 objects -- whole scene "
+      f"{len(_keyTS(_wholeTS) & _keyTS(_objsTS))}/15 (capped), tiled into 3 tiles "
+      f"{len(_keyTS(_tiledTS) & _keyTS(_objsTS))}/15 (tile size plays the chunk's role)")
 
 # 11. Scaling: recursive tree + forest -------------------------------------
 title("11. Scaling  (one flat memory collapses; a deterministic tree holds)")
@@ -1725,6 +1755,16 @@ print(f"  generate a vector (B10 diffusion)   : nearest-pattern cosine="
       f"{_psnr(_T, _rend):.0f} dB (a splat scene is a bundle)")
 print(f"  splat joint refit (the 'looping')   : greedy matching pursuit {_psnr(_T, _rend_greedy):.1f} dB -> "
       f"joint amplitude re-solve {_psnr(_T, _rend):.1f} dB (gradient-free, removes overlap double-counting)")
+# content-addressable splat SCENE: region recall is decode-via-cleanup, so a single bundle caps at fine grid;
+# tiling routes each cell to a small tile bundle and holds recall ~100% at any resolution (the chunking lesson, image side)
+from holographic_splat import splat_bundle as _sb, recall_region as _rr
+_ssp = _sf(_T, 30)
+_shv, _sctx = _sb(_ssp, (_G, _G), dim=4096, grid=32, levels=5, seed=0)
+_sing = sum(abs(_rr(_shv, (_gy, _gx), _sctx) - _sctx["desc"][(_gy, _gx)]) < 1e-9 for _gy in range(32) for _gx in range(32)) / 1024
+_scene = um.splat_scene(_T, grid=32, tile=8, k=30)
+_tld = sum(abs(um.splat_region(_scene, (_gy, _gx)) - _scene["desc"][(_gy, _gx)]) < 1e-9 for _gy in range(32) for _gx in range(32)) / 1024
+print(f"  splat scene region recall (grid 32) : single bundle {_sing:.0%} correct -> tiled {_tld:.0%} "
+      f"over 1024 cells in {len(_scene['tiles'])} tiles (decode-via-cleanup caps; the tile is the chunk)")
 
 # adaptive splat count: spend splats where the field is busy (V-Ray's adaptive sampler), not a fixed budget
 _yn, _xn = _ys / _G, _xs / _G
@@ -1779,6 +1819,61 @@ def _pfield(_cur):
 _plan = um.plan(_ptiles[0], _pfield, max_steps=10, floor=0.12)
 print(f"  corridor plan (re-anchoring)        : baked {len(_plan.route)} steps in one plan() "
       f"(min throughput {min(_plan.throughputs):.2f}); replan when exhausted -> {um.replan_needed(_plan, len(_plan.route))}")
+# plan_route: a WHOLE route far past the single-structure cap, by chaining cap-sized corridors in one call
+_rtiles = _np.random.default_rng(7).standard_normal((40, um.dim))
+_rtiles = _rtiles / _np.linalg.norm(_rtiles, axis=1, keepdims=True)
+def _rfield(_cur):
+    _i = int(_np.argmax(_rtiles @ (_cur / (_np.linalg.norm(_cur) + 1e-12))))
+    return _rtiles[_i + 1] if _i + 1 < len(_rtiles) else None
+def _raction(_a, _b):
+    return int(_np.argmax(_rtiles @ (_b / (_np.linalg.norm(_b) + 1e-12))))
+_crammed = um.plan(_rtiles[0], _rfield, max_steps=40, floor=0.12, action_of=_raction)
+_route = um.plan_route(_rtiles[0], _rfield, corridor=14, floor=0.12, action_of=_raction)
+print(f"  plan_route (past the cap)           : a 40-tile route -- one plan() decodes {len(_crammed.actions)} "
+      f"(the cliff); plan_route chains {len(_route.corridors)} corridors -> {_route.steps}/39 steps, "
+      f"{_route.reanchors} re-anchors, full route {'EXACT' if _route.actions == list(range(1, 40)) else 'partial'}")
+# chunk_route: an EXPLICIT known sequence (GPS waypoints, an experiment protocol) replayed past the cap, ONE call
+_seq = _np.random.default_rng(0).standard_normal((200, um.dim))
+_seq = _seq / _np.linalg.norm(_seq, axis=1, keepdims=True)
+def _seqaction(_a, _b):
+    return int(_np.argmax(_seq @ (_b / (_np.linalg.norm(_b) + 1e-12))))
+_chunked = um.chunk_route(list(_seq), chunk=14, floor=0.12, action_of=_seqaction)
+print(f"  chunk_route (explicit, GPS-scale)   : a KNOWN 200-step sequence -> {_chunked.steps}/199 steps over "
+      f"{len(_chunked.corridors)} chunks (linear, each one compact vector), "
+      f"replay {'EXACT' if _chunked.actions == list(range(1, 200)) else 'partial'}")
+# index_route: random access into that long route -- "where am I" is a jump (two-level), not a replay
+_idx = um.index_route(_chunked)
+_lc, _lp, _lg = _idx.locate(_seq[137])
+_perq = _idx.n_chunks + max(len(_c) for _c in _idx.chunks)
+print(f"  index_route (random access)         : locate tile 137 -> chunk {_lc}, step {_lg} "
+      f"({'exact' if _lg == 137 else 'approx'}) in ~{_perq} comparisons vs {len(_seq)} for a flat scan")
+# structured_index: the SHARED form of that lookup -- one content-addressable index the chunkers AND the
+# content store draw from. Filed under the items themselves (not a weak summary), carrying any payload, and
+# never stored as a bundle (a superposed index caps) -- both rules measured. index_route is its small-n case.
+import numpy as _npSI
+_rngSI = _npSI.random.default_rng(0)
+_si_items = _rngSI.standard_normal((3000, um.dim)); _si_items /= _npSI.linalg.norm(_si_items, axis=1, keepdims=True)
+_si = um.structured_index(_si_items, payloads=[f"city:{_i}" for _i in range(3000)], n_trees=6, leaf_size=64)
+_si_hit, _si_cmps = _si.locate(_si_items[137], beam=6)
+print(f"  structured_index (one shared lookup)  : '{_si_hit}' found by content among 3000 in {_si_cmps} "
+      f"comparisons (vs 3000 flat) -- one primitive serves routes (payload=(chunk,step)) and the store (payload=URI)")
+# dedup_chunks: the STORAGE twin of that lookup -- a route revisiting corridors stores the same chunk many
+# times; content-address them so identical chunks coalesce, saving exactly the repetition ratio (nothing more).
+_rngDC = _npSI.random.default_rng(0)
+_segsDC = [_rngDC.standard_normal(um.dim) for _ in range(6)]
+_patDC = [0, 1, 2, 0, 1, 2, 3, 4, 0, 1, 2, 5, 3, 4, 0, 1, 2]      # 17 corridors, only 6 distinct
+_uDC, _rDC = um.dedup_chunks([_segsDC[_p] for _p in _patDC])
+print(f"  dedup_chunks (content-addressed)      : a 17-corridor loop -> {len(_uDC)} unique chunks stored "
+      f"({100 * (1 - len(_uDC) / len(_patDC)):.0f}% saved == repetition ratio), references rebuild it exactly")
+# chunked PLAN: the same lesson for the positional sequence memory -- a long ordered plan keeps its ORDER
+# queries (precedes) exact past the single-bundle cap, where one bundle's positional decode starts to slip
+_psteps = [f"op{_i}" for _i in range(200)]
+um.learn_plan("_seqsingle", _psteps); um.learn_plan("_seqchunked", _psteps, chunk=14)
+_ppairs = [(_i, _j) for _i in range(0, 200, 17) for _j in range(_i + 40, 200, 29)]
+_ps = sum(um.precedes("_seqsingle", f"op{_i}", f"op{_j}") for _i, _j in _ppairs)
+_pc = sum(um.precedes("_seqchunked", f"op{_i}", f"op{_j}") for _i, _j in _ppairs)
+print(f"  chunked plan (ordered, past cap)    : a 200-step plan's order queries -- single bundle "
+      f"{_ps}/{len(_ppairs)} correct, chunked(14) {_pc}/{len(_ppairs)} (precedes stays exact at length)")
 
 # multiple importance sampling: combine hard 1-NN + soft Hopfield per-query (balance heuristic beats naive avg)
 from holographic_encoders import ScalarEncoder as _SE

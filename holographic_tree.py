@@ -250,6 +250,109 @@ class HoloForest:
 
 
 # ======================================================================
+# the shared structured index
+# ======================================================================
+class StructuredIndex:
+    """One content-addressable structured index that the chunkers and the content store can all draw from.
+
+    The route index, a chunked sequence, and the content store were each growing their own version of the
+    same idea -- "given a pile of vectors, find the one this query points at, without scanning all of them,
+    and at scale." This is that idea, once: a thin, payload-carrying wrapper over the HoloForest random-
+    projection tree (above), so a lookup is sub-linear and what comes back is a meaningful LABEL, not a row
+    number. New callers reach for this instead of re-growing a fourth near-copy; the existing ones are
+    operating points of it (see the two rules and the note at the end).
+
+    TWO RULES ARE BAKED IN, because both were measured the hard way and a future caller would otherwise
+    rediscover them as "limits":
+
+      1. KEY ON THE ITEMS THEMSELVES.  A hyperplane tree only routes a query to the right leaf when the query
+         RESEMBLES the key it is filed under (query ~= key).  Filing items under a bundle-SUMMARY the query is
+         only weakly correlated with mis-routes them: a tile has cosine only ~0.27 to its chunk summary, which
+         an exhaustive argmax still resolves but a greedy tree descent does not (measured: locating by chunk
+         summary through a tree collapsed to ~1/200).  So file each item under its OWN vector and carry the
+         label as payload.
+
+      2. NEVER STORE THE INDEX AS A BUNDLE.  Superposing the keys into one vector and recovering a key by
+         unbind + cleanup is decode-via-cleanup, which caps with the number of keys (measured: 200 -> 127 -> 15
+         recovered as the set grows).  The index must be a navigable STRUCTURE (this tree) -- or, at small
+         scale, an explicit scanned list -- never a superposition.  (Comparing two whole bundles by cosine is a
+         different operation -- an evaluation, not a decode -- and does NOT cap; that is the job of the Merkle
+         tree below, not of this index.)
+
+    locate() is the sub-linear path (approximate, beam-tunable, with a free abstention signal).  locate_exact()
+    is the flat O(n) guaranteed-nearest, for small sets, for when you need exactness, or for weak keys -- it is
+    exactly what RouteIndex's flat summary scan already does, so RouteIndex is this index at its small-n
+    operating point, and the content store's per-bucket HoloForest is this index at its at-scale one.  Honest
+    crossover: the forest carries a large fixed constant (n_trees x leaf_size x beam candidates), so a flat
+    scan WINS until the set is in the thousands -- locate_exact is not a fallback, it is the right call below
+    the crossover; reach for locate() when the collection is genuinely large.
+
+    For INTEGRITY of a stored set instead of lookup -- "has anything changed, and which item" -- that is a
+    different job: use verify_store (holographic_verify), the holographic Merkle tree, not this.
+    """
+
+    def __init__(self, dim, n_trees=4, leaf_size=64, seed=0):
+        self.dim = dim
+        self.seed = seed
+        self._forest = HoloForest(dim, n_trees=n_trees, leaf_size=leaf_size, seed=seed)
+        self._keys = None
+        self._payloads = None
+        self.last_comparisons = 0          # set by every lookup, for honest cost stats
+
+    def build(self, keys, payloads=None):
+        """keys: (N, dim) -- the vectors to file each item under (the items THEMSELVES, per rule 1).
+        payloads: one label per key, returned by locate -- (chunk, step) for a route, a URI for the store, a
+        step index for a sequence, ... .  Defaults to the integer position, so a bare build is a plain index."""
+        K = np.asarray(keys, float)
+        if K.ndim != 2:
+            raise ValueError("keys must be a 2-D array of shape (N, dim)")
+        # unit keys -> cosine == dot, so routing and the exact scan agree and stay numerically stable
+        K = K / (np.linalg.norm(K, axis=1, keepdims=True) + 1e-12)
+        self._keys = K
+        self._payloads = list(payloads) if payloads is not None else list(range(len(K)))
+        if len(self._payloads) != len(K):
+            raise ValueError("payloads must have exactly one entry per key")
+        self._forest.build(K)
+        return self
+
+    def locate(self, query, beam=4, with_agreement=False):
+        """Sub-linear lookup: route `query` through the forest and return the payload of the nearest key.
+        Sets last_comparisons (the honest cost -- the routed candidate count, not N).  with_agreement=True also
+        returns the forest's agreement in [0, 1]: the fraction of independently seeded trees that picked the
+        same item -- a free "am I sure?" signal (act when high, hold back as it falls toward 1/n_trees)."""
+        if not self._payloads:
+            return (None, 0, 0.0) if with_agreement else (None, 0)
+        if with_agreement:
+            i, agree = self._forest.recall(query, beam=beam, with_agreement=True)
+            self.last_comparisons = self._forest.last_comparisons
+            return self._payloads[i], self.last_comparisons, agree
+        i = self._forest.recall(query, beam=beam)
+        self.last_comparisons = self._forest.last_comparisons
+        return self._payloads[i], self.last_comparisons
+
+    def locate_k(self, query, k=8, beam=4):
+        """The k nearest items as a list of (payload, cosine), still sub-linear (it ranks only the routed
+        candidates, not every item).  The "find the ones that look like this" step -- neighbour search for a
+        denoiser, or several plausible matches when a single best is not enough."""
+        idxs, sims = self._forest.recall_k(query, k=k, beam=beam)
+        self.last_comparisons = self._forest.last_comparisons
+        return [(self._payloads[int(i)], float(s)) for i, s in zip(idxs, sims)]
+
+    def locate_exact(self, query):
+        """Flat O(n) argmax -- the guaranteed nearest, no routing.  The right call when the set is small (a
+        full scan is cheap and the forest's fixed constant is not worth paying), when you need EXACTNESS, or
+        when the keys are weak enough that routing is unreliable.  This is what RouteIndex's flat scan does."""
+        if self._keys is None or len(self._keys) == 0:
+            return None, 0
+        q = np.asarray(query, float)
+        self.last_comparisons = len(self._keys)
+        return self._payloads[int((self._keys @ q).argmax())], self.last_comparisons
+
+    def __len__(self):
+        return len(self._payloads) if self._payloads else 0
+
+
+# ======================================================================
 # benchmarks
 # ======================================================================
 def capacity_curve(Ns, dim=2048, leaf_size=64, seed=0, probes=None):

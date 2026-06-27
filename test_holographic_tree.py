@@ -2,7 +2,7 @@
 restoration vs a flat memory, and the approximate-NN speed/recall tradeoff."""
 import numpy as np
 from holographic_ai import random_vector, HolographicMemory
-from holographic_tree import HoloTree, HoloForest, capacity_curve, nn_benchmark, forest_benchmark
+from holographic_tree import HoloTree, HoloForest, StructuredIndex, capacity_curve, nn_benchmark, forest_benchmark
 
 
 def _items(N, dim, seed=0):
@@ -94,3 +94,65 @@ def test_forest_recall_agreement_is_an_abstention_signal():
     rand_agree = _np.mean([f.recall(rng.standard_normal(256), with_agreement=True)[1]
                            for _ in range(40)])
     assert a_hit > rand_agree + 0.1                 # agreement separates known from unknown
+
+
+# ---- StructuredIndex: the shared content-address index ---------------------------------------------
+
+def test_structured_index_locates_by_content_sublinearly():
+    # filed under the items THEMSELVES (rule 1): a clean cue routes home, and at scale it costs far less
+    # than a flat scan -- the whole point of giving the index structure.
+    dim, N = 512, 3000
+    items = _items(N, dim, seed=0)
+    idx = StructuredIndex(dim, n_trees=6, leaf_size=64, seed=0).build(items)
+    probe = list(range(0, N, 9))
+    hits = sum(idx.locate(items[t], beam=6)[0] == t for t in probe)
+    assert hits == len(probe)                          # query == key -> reliable routing
+    assert idx.locate(items[0], beam=6)[1] < N         # sub-linear: fewer comparisons than a flat scan
+
+
+def test_structured_index_returns_payload_labels_not_row_numbers():
+    dim = 512
+    items = _items(40, dim, seed=1)
+    labels = [f"city:{i}" for i in range(40)]
+    idx = StructuredIndex(dim, seed=0).build(items, payloads=labels)
+    assert idx.locate_exact(items[17])[0] == "city:17"
+    # structured payloads ride along too (the route use case: (chunk, step))
+    ridx = StructuredIndex(dim, seed=0).build(items, payloads=[(i // 14, i) for i in range(40)])
+    assert ridx.locate_exact(items[30])[0] == (2, 30)
+
+
+def test_structured_index_exact_scan_is_exact_and_flat():
+    dim, N = 512, 600
+    items = _items(N, dim, seed=2)
+    idx = StructuredIndex(dim, seed=0).build(items)
+    for t in range(0, N, 5):
+        payload, comps = idx.locate_exact(items[t])
+        assert payload == t and comps == N             # guaranteed nearest, full scan
+
+
+def test_structured_index_k_nearest_ranked_by_cosine():
+    dim = 512
+    items = _items(500, dim, seed=3)
+    idx = StructuredIndex(dim, n_trees=6, leaf_size=64, seed=0).build(items)
+    res = idx.locate_k(items[12], k=4, beam=6)
+    assert res[0][0] == 12 and abs(res[0][1] - 1.0) < 1e-6     # itself first, cosine ~1
+    cosines = [s for _, s in res]
+    assert cosines == sorted(cosines, reverse=True)            # descending
+
+
+def test_structured_index_agreement_is_a_free_abstention_signal():
+    dim = 512
+    items = _items(800, dim, seed=4)
+    idx = StructuredIndex(dim, n_trees=6, leaf_size=64, seed=0).build(items)
+    payload, _, agree = idx.locate(items[5], beam=6, with_agreement=True)
+    assert payload == 5 and 0.0 <= agree <= 1.0 and agree > 0.6   # clean cue -> trees agree
+
+
+def test_structured_index_rejects_mismatched_payloads():
+    dim = 512
+    items = _items(10, dim, seed=5)
+    try:
+        StructuredIndex(dim, seed=0).build(items, payloads=["only", "three", "labels"])
+        assert False, "expected ValueError for payload/key length mismatch"
+    except ValueError:
+        pass

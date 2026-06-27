@@ -416,3 +416,31 @@ def test_repeated_step_recall_and_the_position_of_limit():
     sm.add("dough", rep)
     assert [sm.step("dough", i) for i in range(len(rep))] == rep              # every slot recalls right
     assert sm.position_of("dough", "stir") in (1, 3, 5)                       # returns ONE of them only
+
+
+def test_chunked_storage_keeps_long_sequence_queries_exact():
+    """add(..., chunk=K) stores a long sequence as positional blocks so vector-only position/order queries
+    stay EXACT past the single-bundle cap, where the unchunked positional encoding decays badly with length
+    (measured: ~36% single vs 100% chunked at length 400, dim 2048). chunk=0 (default) is unchanged."""
+    sm = SequenceMemory(dim=2048, seed=0)
+    seq = [f"op{i}" for i in range(120)]                        # past where a single bundle stays reliable
+    sm.add("plan", seq, chunk=14)
+    # step_at is exact at every position
+    assert all(sm.step("plan", i) == seq[i] for i in range(0, 120, 7))
+    # order relation exact across a long gap (single-bundle would be unreliable here)
+    assert sm.precedes("plan", "op5", "op110") is True
+    assert sm.precedes("plan", "op110", "op5") is False
+    # the kept element list is still at index 1 (backward-compatible storage shape)
+    assert sm.seqs["plan"][1] == seq
+    # chunked vs single is a no-op on a SHORT sequence (same answers)
+    short = ["a", "b", "c", "d"]
+    sm.add("s0", short); sm.add("s1", short, chunk=14)
+    assert [sm.step("s0", i) for i in range(4)] == [sm.step("s1", i) for i in range(4)] == short
+
+
+def test_chunked_storage_is_backward_compatible_default():
+    # default add (no chunk) stores a single vector and indexes elements at [1], exactly as before.
+    sm = SequenceMemory(dim=2048, seed=0)
+    sm.add("p", ["x", "y", "z"])
+    assert sm.seqs["p"][1] == ["x", "y", "z"] and sm.seqs["p"][2] == 0    # (vector, elems, chunk=0)
+    assert sm.step("p", 1) == "y"

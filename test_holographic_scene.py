@@ -248,3 +248,43 @@ def test_morph_cardinality_changes_count_per_frame():
     got = sorted((o["colour"], o["shape"], o["texture"]) for o in rec)
     want = sorted((o["colour"], o["shape"], o["texture"]) for o in B)
     assert got == want                                 # arrives exactly at B
+
+
+# ---- X1: tiled scene factorization (beat the resonator's object cap by tiling) --------------------
+
+from holographic_scene import SceneCoder, COLOURS, SHAPES, TEXTURES
+
+
+def _x1_distinct_objs(K, r):
+    seen, objs = set(), []
+    while len(objs) < K:
+        t = (COLOURS[r.integers(len(COLOURS))], SHAPES[r.integers(len(SHAPES))], TEXTURES[r.integers(len(TEXTURES))])
+        if t not in seen:
+            seen.add(t)
+            objs.append({"colour": t[0], "shape": t[1], "texture": t[2]})
+    return objs
+
+
+def _x1_keys(objs):
+    return set((o["colour"], o["shape"], o["texture"]) for o in objs)
+
+
+def test_tiled_scene_factorization_beats_whole_past_the_cap():
+    # A 15-object scene exceeds the resonator's per-scene cap at dim 1024 (whole-scene recovery collapses to
+    # ~30%); tiling into <=5-object sub-scenes and merging recovers the great majority (~93%). Averaged over
+    # seeds so the assertion is about the cap, not one lucky scene.
+    coder = SceneCoder(dim=1024, seed=0)
+    K, tile, trials = 15, 5, 5
+    whole_ok = tiled_ok = 0
+    for s in range(trials):
+        r = np.random.default_rng(200 + s)
+        objs = _x1_distinct_objs(K, r)
+        whole = coder.factor_scene(coder.encode_scene(objs), K, sweeps=3)
+        whole_ok += len(_x1_keys(whole) & _x1_keys(objs))
+        groups = [objs[i:i + tile] for i in range(0, K, tile)]
+        got = coder.factor_scene_tiled([coder.encode_scene(g) for g in groups],
+                                       [len(g) for g in groups], sweeps=3)
+        tiled_ok += len(_x1_keys(got) & _x1_keys(objs))
+    assert whole_ok < 0.6 * K * trials       # the whole scene is capped past ~5 objects
+    assert tiled_ok > 0.85 * K * trials       # tiling recovers the great majority
+    assert tiled_ok > whole_ok + K            # a large, unambiguous improvement

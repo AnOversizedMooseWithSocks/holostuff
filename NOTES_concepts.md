@@ -8345,3 +8345,382 @@ The genuine, low-value, optional leftover is only the ~2-line role/filler bind+b
 encoders; factoring it to a shared helper is cosmetic and touches the tie-sensitive path, so it is not done.
 
 Tests: +0 (docstrings/comments only; no behavior changed).
+
+---
+
+## plan_route: a whole arbitrarily-long route in one call, by chaining cap-sized corridors
+
+A delivery-game user kept hitting the ~15-tile cap and reported it "still exists." They were right about
+the surface fact and wrong about its scope, and the distinction matters: the cap bounds ONE baked structure,
+not the route you can navigate. Measured the two paths at dim 512 on a 45-tile straight route:
+
+  * cram all 45 tiles into ONE plan(max_steps=45): the directed structure is overstuffed and the decode
+    COLLAPSES -- it came back with **1** step, not a clean 15-prefix. The cliff is steeper the more you cram;
+    "~15" is the reliable depth for a corridor-SIZED structure, not a floor you get for free at any length.
+  * chain cap-sized corridors, re-anchoring at each leg's reliably-decoded end: the full **44-step** route
+    decodes EXACTLY. Re-anchoring resets the HRR accumulation each leg, so each leg stays inside its capacity.
+
+This is the same move plan() + replan_needed already enable (bake a corridor, drive it, re-anchor on the
+gate) -- but a user calling plan() ONCE and expecting the whole route hits the wall. plan_route runs that
+loop internally: it chains plan() corridors, re-anchors at `nodes[route[-1]]` (the last RELIABLY-decoded
+tile -- never past it, so a short-but-clean leg just re-anchors sooner), breaks on field_end/branch only
+when the decode actually reached the leg's last tile, and caps the whole route at `max_total`. Returns a
+Route (full action sequence, the chained corridors, stop reason, re-anchor count, step total). Wired as a
+method on UnifiedMind AND HolographicMind (delegating to the module, like plan/replan_needed); CreatureMind
+inherits it. Verified: 39/40-tile routes decode exactly through all three minds.
+
+KEPT NEGATIVE: `corridor` must stay at/under the dim's reliable decode depth (default 14, safe at dim
+512-1024). Set it too high and that leg overstuffs its OWN structure -- the same cliff, per leg: measured
+corridor=30 at dim 512 does NOT recover the full route (it skips/corrupts tiles). plan_route does not, and
+cannot, rescue an over-long leg; it only removes the cliff by keeping each leg small. The realtime courier
+still wants plan() + replan_needed (bake-as-you-go, reacts to traffic); plan_route is for getting the WHOLE
+route in hand at once (display / validate / pre-plan a leg).
+
+Tests: +4 (1031 -> 1035). test_holographic_plan.py grew the selftest (45-tile chained route exact vs a
+collapsed single plan; max_total prefix; over-long-corridor negative) and added three named API tests;
+test_integration.py added a plan_route-through-the-mind test. Files: holographic_plan.py (plan_route + Route),
+holographic_unified.py / holographic_creature.py (the wired method), test_holographic_plan.py, test_integration.py,
+tour.py.
+
+---
+
+## chunk_route: the explicit-sequence twin -- scaling to GPS/experiment size by chunking
+
+The capacity question came back as a scaling worry: would the ~15 cap make holostuff useless for GPS
+navigation or a long experiment plan? Measured the answer rather than asserting it. A 200-step route at
+dim 512: crammed into ONE structure it decodes 1 step (the cliff); chunked into <=14-element pieces with
+re-anchoring it replays all 199 steps EXACTLY in 15 chunks, in 52 ms. So the worry is unfounded -- chunking
+makes EFFECTIVE length unbounded at LINEAR cost (~N/14 pieces), and each piece is one compact vector. The
+per-piece cap is physics (a fixed-width structure can't hold unbounded order, like any bounded buffer);
+chunking is the standard, correct workaround, not a hack.
+
+The thin orchestration layer this needs already half-existed: plan_route (prior section) chunks a route you
+DISCOVER by following a goal field. The genuine gap was the EXPLICIT case -- a sequence you ALREADY HAVE (GPS
+waypoints from a planner, a scientist's fixed protocol, any known list). You had to hand-write a nearest-match
+field_step to feed plan_route. chunk_route closes that: hand it the ordered list, it splits by position into
+<=chunk pieces (overlapping by one element so each piece re-anchors exactly where the last ended -- nothing
+skipped or double-counted), bakes each as a clean directed structure, and returns the full replayable sequence
+plus the chunk vectors. It is implemented directly on build + gated_traverse (not by wrapping plan_route), so
+it does not depend on nearest-match rediscovery -- it knows the order and chunks it. Wired on UnifiedMind AND
+HolographicMind; CreatureMind inherits. Verified: a 200-element list replays exactly through all three.
+
+The relationship to the rest: this is the third chunking mechanism in the engine, one per kind of long thing.
+Routes you discover -> plan_route. Sequences you hold -> chunk_route. Programs that outgrow one structure ->
+HoloMachine define/CALL (sub-programs called from a short top-level program). All three are the same lesson --
+keep each structure inside its capacity and coordinate the pieces -- which is the project's recurring theme of
+beating a hard limit with composition rather than pretending the limit isn't there.
+
+KEPT NEGATIVE (same shape as plan_route's): `chunk` must stay at/under the dim's reliable decode depth (default
+14, safe at dim 512-1024); an over-long chunk overstuffs its own piece -- the cliff, per chunk. And the elements
+must be DISTINGUISHABLE (a codebook): a sequence that revisits the same element can confuse a chunk's cleanup,
+since two steps map to near-identical vectors. chunk_route removes the cliff by keeping pieces small; it cannot
+rescue an over-long piece or a non-distinguishable alphabet.
+
+Tests: +3 (1035 -> 1038). test_holographic_plan.py: chunk_route replays an explicit 200-step sequence exactly
+in ~15 compact chunks, and degenerate (empty / single-element / fits-in-one-chunk) inputs are safe;
+test_integration.py: a 200-step explicit sequence through the mind. Files: holographic_plan.py (chunk_route),
+holographic_unified.py / holographic_creature.py (the wired method), test_holographic_plan.py, test_integration.py,
+tour.py.
+
+---
+
+## run_chunked: VSA programs past the single-program cap (chunking transfer backlog, item P1)
+
+First build off the chunking-transfer sweep. The sweep's headline question -- does the chunk-and-re-anchor
+lesson unlock more complex VSA programs? -- measured YES, with a load-bearing negative. A 60-instruction
+HoloMachine program at dim 1024 (single-program cap ~20-32) decodes to garbage as one structure (cosine 0.08
+to the intended bind-chain). The OBVIOUS fix -- factor it into define()d functions and CALL them -- ALSO
+FAILS (cosine 0.06): CALL pulls each sub-program out of a BUNDLED library, and bundling several
+function-vectors into one library vector re-introduces the very cliff (the docstring's "busy disk"
+crosstalk). The fix that works is the true chunk_route analog: each chunk is its OWN clean program vector and
+the HOST threads the accumulator across them -- 60 instructions then run at cosine 1.000.
+
+Shipped HoloMachine.run_chunked(program, chunk=14, ...): strips a trailing HALT, splits into <=chunk pieces
+(never ending a chunk on IFMATCH/REPEAT so a gate/repeat stays with the instruction it targets), assembles
+each piece to its own vector, runs them threading the ACC, and stops the whole run if a mid-program HALT
+fires. Returns (acc, trace) like run(), trace concatenated. Verified exact on three different long programs
+(60 binds; 50 binds different phase; 40 mixed bind/bundle/permute), bit-equivalent to run() on a short
+program, control-construct-intact at a forced chunk=1 seam, and mid-HALT stops the run.
+
+KEPT NEGATIVE / the operand-dependent edge: the chunk size must be WELL UNDER the cliff, not on it. At dim
+1024 the decode is solid through ~18 instructions but turns OPERAND-DEPENDENT right at ~20 -- a 20-instruction
+chunk decoded for two operand sequences and FAILED for a third in the same program (cosine 0.448). This is
+the same lesson as plan_route's over-long-corridor negative, sharper: near the edge, success depends on the
+specific operands, so the default 14 leaves deliberate margin. The reliable length grows with dim (chunk=20
+is solid at dim 2048+), so raise chunk at higher dim. And the CALL-the-library route is kept as a test
+(test_call_library_does_NOT_chunk_a_long_program_kept_negative) so nobody reaches for it.
+
+run_chunked is a HoloMachine method, NOT a UnifiedMind faculty -- the VM stays adjacent to the mind (the
+integration plan's standing decision), so there is no UnifiedMind wiring or integration test, only the
+machine's own tests. The user guide (writing_vsa_programs.md) gained a "Running a program past the cap"
+section and the limits section was corrected (the old "factor into functions" advice was the measured
+negative).
+
+Tests: +4 (1038 -> 1042). test_holographic_machine.py: run_chunked past the cap (60 instr exact vs a
+collapsed single program), equivalence to run() on a short program, constructs-intact + mid-HALT, and the
+CALL-library kept negative. Files: holographic_machine.py (run_chunked), test_holographic_machine.py, tour.py,
+writing_vsa_programs.md, README (test-list entry + counts).
+
+---
+
+## RouteIndex: sub-linear random access into a chunked route (chunking transfer backlog, item X3)
+
+Second build off the chunking-transfer sweep, Pharr's acceleration-structure angle. A long route is now many
+chunks (plan_route / chunk_route), and "where am I on it?" should be a jump, not a replay from the start.
+RouteIndex is a BVH over the chunks: index each chunk by a SUMMARY vector (the bundle of its tiles), then
+locate a query two-level -- nearest chunk summary (level 1), then nearest tile within that chunk (level 2).
+Measured on a 200-tile route: 200/200 tiles located exactly at ~28-30 comparisons per query vs 200 for a flat
+scan (~6.9x fewer). Why the bundle summary is a usable index: a tile in a chunk has cosine ~1/sqrt(chunk_size)
+to that chunk's summary (it is one of its components) and ~0 to the others, so argmax over summaries is the
+right chunk -- the same bundle-crosstalk that CAPS a single structure is what makes the summary discriminative
+here. The global_step the locate returns accounts for the one-tile overlap between chunks, so it recovers the
+true route index exactly (verified g == t for sampled tiles).
+
+Shipped holographic_plan.RouteIndex(route): precomputes normalized chunk summaries and per-chunk start offsets
+in __init__; .locate(query) -> (chunk, position_in_chunk, global_step); .n_chunks. Built once, queried many --
+the courier asking its position every tick is the repeated-query case this amortises. Wired as m.index_route(
+route) -> RouteIndex on UnifiedMind AND HolographicMind; CreatureMind inherits. Empty route is safe (returns
+(-1,-1,-1)). Verified locating across all three minds (tile 137 -> chunk 9, pos 11, step 137, exact).
+
+Tests: +3 (1042 -> 1045). test_holographic_plan.py: RouteIndex locates every tile in the right chunk at the
+exact position with sub-linear comparisons, and the empty-route case is safe; test_integration.py: random
+access through the mind. Files: holographic_plan.py (RouteIndex + the bundle/cosine import),
+holographic_unified.py / holographic_creature.py (index_route), test_holographic_plan.py, test_integration.py,
+tour.py, README (test-list entry + counts).
+
+---
+
+## Determinism / tie-break audit of the chunking seams (chunking transfer backlog, item C2)
+
+Macklin's discipline applied to the three seams just added to the plan module (plan_route, chunk_route,
+RouteIndex): a bit-exact change must stay bit-exact, and a query must never resolve on a knife-edge tie. The
+audit came back CLEAN -- no fix needed, so the deliverable is a regression test that locks the property in.
+Measured: chunk_route and plan_route produce identical actions AND bit-identical chunk vectors run-to-run at a
+fixed seed; RouteIndex summaries are bit-identical and .locate is deterministic; a deliberately ambiguous query
+(equidistant between two tiles in different chunks) resolves the SAME chunk every call (numpy argmax breaks ties
+by lowest index); and 1e-12 perturbations of a tile query flipped the locate 0/200 times (the tiles are
+well-separated, so a query near a real tile has a clear winner -- not tie-sensitive). This is expected -- the
+seams are built on build / gated_traverse / bundle / argmax, all deterministic given the seed -- but it is the
+exact class of bug the bind_batch lesson warns about, so it is now asserted, not assumed.
+
+Tests: +1 (1045 -> 1046). test_holographic_plan.py: test_chunking_seams_are_deterministic_and_not_tie_sensitive.
+Audit-only; no faculty changed. Files: test_holographic_plan.py, README (counts).
+
+---
+
+## Chunked sequence memory: order queries exact past the single-bundle cap (chunking transfer backlog, item S3)
+
+Third build off the chunking-transfer sweep, Plate/Olshausen's positional-encoding angle. SequenceMemory stores
+order as position = rotation, bundled (element i is permute(atom, i+1), all summed into one vector), and answers
+step / position_of / precedes / validate by un-rotating a position and reading it off. That single bundle caps
+with length -- but FAR more gracefully than the directed-chain route did. Measured at dim 2048, vector-only
+positional decode accuracy: ~100% at length 50, ~96% at 100, 69% at 200, 29% at 400, 15% at 800 (the route's
+directed structure, by contrast, collapsed to one step at ~45 tiles -- iterative traversal compounds error,
+direct positional read does not, so the positional encoding is the more robust of the two). add(..., chunk=K)
+stores the sequence as positional blocks of <=K, each its own clean bundle, and routes a position query to the
+one block it lives in (divmod(i, K)); measured chunked accuracy is 100% at EVERY length tested. Gain grows from
++0% (short) to +85% at N=800 -- load-bearing for long sequences, a pure no-op on short ones.
+
+IMPORTANT, narrower than P1/X3: step (position -> element) cleans against the KEPT element list, so it is always
+exact regardless of bundle quality -- the chunking benefit is NOT visible there. The win shows in the ORDER
+queries that decode positions FROM the vector: precedes and position_of (and vector-only step against the full
+vocab). Those are exactly SequenceMemory's distinctive value -- the recipe-vs-pile-of-steps relation -- so the
+gain lands where it matters, but the framing has to be honest about which queries it helps. Same recurring
+negative as the other chunkers: K must stay at/under the dim's reliable bundle length, or each block hits the
+same cliff (default margin 14).
+
+Shipped backward-compatibly: storage went from a 2-tuple (vector, elements) to a 3-tuple (repr, elements, chunk)
+-- index 1 (the element list, read by app.py and the mind) is unchanged, chunk=0 is the original single-vector
+path, and nothing external reads index 0. add gains chunk=0; a _probe(repr, chunk, i) helper centralizes the
+block routing so step / position_of / precedes / validate each route through it. Wired through the mind as
+learn_plan(name, steps, chunk=K) -- step_at / precedes / validate_plan are automatically chunk-aware; verified a
+200-step protocol exact through the mind where a single bundle slips (tour: 200-step plan precedes 22/33 single
+-> 33/33 chunked).
+
+Tests: +3 (1046 -> 1049). test_holographic_sequence.py: chunked storage keeps long-sequence order queries exact
+and is a no-op on short ones; backward-compatible default storage shape. test_integration.py: learn_plan chunked
+keeps a long protocol exact through the mind. Files: holographic_sequence.py, holographic_unified.py,
+test_holographic_sequence.py, test_integration.py, tour.py, README (test-list entry + counts).
+
+---
+
+## Where chunking helps -- and where it doesn't: the S1 overlap-add negative (chunking transfer backlog, item S1)
+
+S1 was the most seductive item in the chunking-transfer sweep: chunk_route's one-element boundary overlap looks
+exactly like the phase vocoder's weighted overlap-add, so processing a long signal as overlapping windowed
+chunks "should" be the same chunk-and-re-anchor win. Prototyped on the FPE substrate (VectorFunctionEncoder: a
+continuous function f is the bundle f = sum_i y_i encode(x_i), read by an inner product = kernel sum). It is a
+clean MEASURED NEGATIVE -- chunking is not just a no-op, it is HARMFUL.
+
+Measured (raw inner-product readout, shape correlation vs the noise-free designed-kernel sum): a SINGLE bundle
+reconstructs the function with corr ~1.0 at every domain length tested -- N=120 (0.91), 400 (1.00), 800 (1.00),
+1500 (1.00) -- while hard-cut chunking and proper Hann overlap-add both sit at corr ~0. The reconstruction does
+NOT degrade with domain length, so there is no capacity problem for chunking to solve, and breaking the global
+kernel sum into windows only introduces boundary-incomplete neighbourhoods and per-window normalisation error.
+
+WHY the rhyme fails -- and the principle it buys. FPE codes are shift-invariant powers of ONE base, so
+<encode(q), encode(x_i)> is the SAME kernel for every pair at a given distance: the finite-dimension error is a
+DETERMINISTIC sidelobe of that kernel, not a √N pile of independent random noise. And the readout <query, sum_i
+w_i encode(x_i)> = sum_i w_i <query, encode(x_i)> distributes over the superposition EXACTLY (linearity). So
+the kernel sum is computed exactly, the kernel decay localises it, and a longer domain changes nothing about the
+local readout. Contrast the route / sequence / program: there the task is to DECODE a specific item back out of
+a superposition by cleanup, and every other item's crosstalk eats into that recovery -- which is precisely what
+caps, and precisely what chunking bounds. The sharpened rule:
+
+    Chunking helps DECODE-VIA-CLEANUP -- recover/identify a SPECIFIC item from a superposition, where the other
+    items' crosstalk caps recovery (routes, sequences, programs: plan_route, chunk_route, run_chunked, chunked
+    SequenceMemory all live here).
+    Chunking does NOT help LINEAR-FUNCTIONAL EVALUATION -- evaluate <query, superposition> (a kernel-density /
+    function query), which is exact by linearity regardless of how many terms are bundled (FPE function readout
+    lives here).
+
+This reconciles cleanly with the pre-existing FPE capacity cliff (test_capacity_cliff_is_a_kept_negative): that
+cliff measures absolute DETECTION separation (is THIS point placed vs empty, cosine-normalised), which decays as
+the bundle norm grows with K -- a detection/decode behaviour. The S1 metric is relative SHAPE fidelity, which is
+preserved. Both true; they are different behaviours of the same bundle, and the decode-vs-evaluate split is what
+separates them. The same caution likely weakens S2 (overlapping-block denoising of a long signal) -- aggregate
+block denoising is closer to evaluation than to per-item decode -- and is flagged in the backlog to be checked
+before any build.
+
+Tests: +1 (1049 -> 1050). test_holographic_fpe.py: test_function_shape_reconstruction_does_not_cap_so_overlap_
+add_chunking_is_a_no_op (pins the corr ~1.0 evidence). No faculty built -- this is a recorded negative that
+sharpens the theory of the whole chunking arc. Files: test_holographic_fpe.py, holostuff_chunking_transfer_
+backlog.md (S1 marked negative + build order updated), README (count).
+
+---
+
+## Does chunking help text / image generation? Tiled splat scenes (chunking transfer backlog, item X2)
+
+Asked whether the chunking arc transfers to generation. Settled it with the decode-vs-evaluate principle (from
+the S1 negative) plus a code audit and a measurement, and the answer splits cleanly.
+
+TEXT generation: NO. The generators (generate -> n-gram, generate_structured -> steered_generate) condition each
+step on a BOUNDED context -- the predictor's n-gram order plus the last `lookback` tokens -- so a longer
+generation never piles into a capping superposition. There is no decode-from-a-long-bundle cliff for chunking to
+fix; generating length 30 vs 300 uses the identical per-step context. (Long generations can still drift or loop,
+but that is bounded MEMORY, not a capacity cliff -- fixing it would need a hierarchical long-range summary, a
+different and speculative mechanism, not this lesson.)
+
+IMAGE: YES, in the content-addressable splat SCENE. splat_bundle encodes a scene as grid*grid bind(cell_role,
+occupancy_level) terms in ONE hypervector, and recall_region reads a cell back by unbind + cleanup -- a textbook
+decode-via-cleanup readout. So as the grid gets finer the bundle's own crosstalk grows and region recall caps:
+measured at dim 4096, accuracy is ~100% at grid 8, 98% at 16, 88% at 24, 75% at 32. This is the SAME cap chunking
+bounds for routes / sequences / programs, and the chunk here is a TILE. splat_bundle_tiled routes each cell to a
+tile bundle (floor-divide the grid index by `tile`), so a tile holds at most tile*tile bindings no matter how
+fine the TOTAL grid is -- the per-bundle load is fixed and recall holds ~100% at any resolution (measured 75% ->
+100% at grid 32). Costs one hypervector per tile (proportional storage, the price of exceeding a single vector's
+capacity -- the same trade chunk_route and chunked SequenceMemory make). This is the splat side of backlog item
+X2, and it confirms the principle predicts WHERE the lesson lands: image RECALL/representation that decodes from
+a superposition (yes), not text generation with bounded context (no), and not the FPE function readout that is
+linear-exact (S1, no).
+
+NOTE the precise complement already in the box: SplatArchive.region stores splats as an EXPLICIT list and is
+exact per-splat -- so it never had this cap. The tiled bundle is the COMPACT, content-addressable, coarse-but-
+robust path; tiling is what lets it stay accurate at fine resolution.
+
+Shipped: holographic_splat.splat_bundle_tiled / recall_region_tiled (global cell roles, so recall needs no
+remapping; routes a cell to its tile bundle and reuses recall_region's unbind+cleanup). Wired onto UnifiedMind
+as splat_scene(field, grid, tile, levels, k) -> tiled scene and splat_region(scene, cell) -> occupancy.
+Determinism-clean (tile bundles bit-identical run-to-run) and empty-tile safe.
+
+Tests: +4 (1050 -> 1054). test_holographic_splat.py: the single-bundle cap (negative, acc<0.85 at grid 32),
+the tiled fix (acc>0.99 at grid 32), determinism + empty safety. test_integration.py: splat_scene region recall
+exact at fine resolution through the mind. Files: holographic_splat.py, holographic_unified.py,
+test_holographic_splat.py, test_integration.py, tour.py, README, holostuff_chunking_transfer_backlog.md (X2).
+
+
+## StructuredIndex -- the shared content-address index (and where Merkle already lives)
+
+Three places were independently growing the same primitive: "given a pile of vectors, find the one this query
+points at, without scanning all of them." RouteIndex (a flat two-level summary scan), a chunked sequence, and
+the content store (which already grows a per-bucket HoloForest). The request was to stop duplicating it -- one
+abstraction the rest draw from, so a future caller does not re-hit the same limit by re-inventing the lookup.
+
+StructuredIndex (holographic_tree.py) is that, as a thin payload-carrying wrapper over the HoloForest RP-tree:
+build(keys, payloads); locate() is the sub-linear path with a free cross-tree agreement/abstention signal;
+locate_k() is sub-linear top-k; locate_exact() is the flat guaranteed-nearest. The payload is the point -- you
+file vectors and get back a LABEL (a URI for the store, (chunk, step) for a route, a step index for a sequence),
+not a row number. Wired as the mind faculty structured_index(keys, payloads).
+
+TWO RULES ARE BAKED INTO IT, both measured the hard way in the design probe so a future caller meets them as
+documentation rather than rediscovering them as "limits":
+  1. Key on the ITEMS THEMSELVES. A hyperplane tree only routes a query to the right leaf when query ~= key.
+     Filing items under a bundle-SUMMARY the query is weakly correlated with mis-routes them -- a tile has cosine
+     only ~0.27 to its chunk summary, which an exhaustive argmax still resolves but a greedy tree descent does
+     not (measured: locating a route by chunk-summary THROUGH a tree collapsed to ~1/200, while the same tree
+     over the tiles themselves routed home). This is the decode-vs-evaluate constraint wearing a routing hat.
+  2. Never store the index as a BUNDLE. Superposing the keys and recovering one by unbind+cleanup is decode-via-
+     cleanup and caps with set size (measured: 200 -> 127 -> 15 recovered as the set grows). The index must be a
+     navigable STRUCTURE (this tree) or, below the crossover, an explicit scanned list -- never a superposition.
+
+HONEST CROSSOVER (kept, not hidden): the forest carries a large fixed constant (n_trees x leaf_size x beam
+candidates), so a flat scan WINS until the set is in the low thousands -- measured ~30 vs ~470 comparisons for a
+few-hundred-chunk route, the forest only pulling ahead past ~6000 items. So locate_exact is not a fallback, it is
+the correct call below the crossover; RouteIndex's flat scan is therefore this index at its small-n operating
+point (exact, cheap), and the content store's HoloForest is it at its at-scale one. The abstraction unifies them
+without a regressive refactor -- the working flat path stays, and new callers reach for the one primitive.
+
+MERKLE (the question that prompted checking, and the payoff of checking): holostuff ALREADY has a holographic
+Merkle tree -- holographic_verify.CompositionTree, mind faculty verify_store. leaf = bind(pos, item), node =
+bundle(children), root = the commitment; detect by rebuilding and comparing the root, localise a changed item in
+<= log2(n) composite comparisons. Its kept negative is the right caveat: the root is LINEAR, so collisions exist
+and a key-aware adversary can cancel a change by deconvolution -- evidence of ACCIDENTAL corruption, NOT
+cryptographic tamper-proofing. The clean separation: StructuredIndex is for LOOKUP (recover an item), the Merkle
+tree is for INTEGRITY (has anything changed, which one). And they sit on opposite sides of the decode-vs-evaluate
+line -- comparing two whole composites by cosine is an EVALUATION, which does not cap, which is exactly why the
+Merkle tree's detection survives at any store size while a lookup that must DECODE an item does not.
+
+Tests: +7 (1054 -> 1061). test_holographic_tree.py: sub-linear content routing, payload labels, exact+flat scan,
+ranked top-k, the agreement signal, payload/key mismatch guard. test_integration.py: one structured_index faculty
+serving both content (payload=URI-like) and route (payload=(chunk,step)) lookups. Files: holographic_tree.py,
+holographic_unified.py, test_holographic_tree.py, test_integration.py, tour.py, README.
+
+
+CHUNKING-TRANSFER, THE LAST THREE (X1 tiled scene factorization, C1 chunk dedup, R1 re-anchored rollout):
+the sweep that asked "is the recent route lesson a general capacity primitive?" closes here with two builds and
+one kept negative, all from the same decode-vs-evaluate test -- does the operation DECODE a specific item from a
+superposition (helped by chunking/tiling/re-anchoring) or merely EVALUATE a linear form (not helped, because a
+linear map has no capacity cliff to relieve).
+
+X1 (WIN). A multi-object scene is a superposition the resonator must FACTOR -- a decode-via-cleanup, so it has the
+capacity problem tiling addresses, and unlike S1 the S1 negative does not pre-empt it. Measured: at dim 1024 the
+whole-scene factorization caps at ~5 objects and collapses past it (~30% recovery at 15 objects across 8 seeds);
+splitting the objects into spatial tiles of <= cap each, factoring every sub-scene, and merging lifts recovery to
+~93%. The tile size plays the chunk's role exactly: it must stay at/under the per-tile cap or each tile re-hits
+the same cliff (tiles of 5 at dim 1024 still leave a little within-tile crosstalk -- 10-15/15 per seed -- which a
+smaller tile or higher dim removes). This is chunk_route's move and splat_bundle_tiled's move on the resonator:
+beat a fixed structure's capacity with composition, at the honest price of keeping the tiles. SceneCoder.
+factor_scene_tiled / mind decompose_scene_tiled.
+
+C1 (WIN, with its honest bound). A long route that REVISITS the same corridor, or a program with repeated motifs,
+stores the same compact chunk vector many times. Content-address the store -- keep each unique chunk once and
+replace repeats with a reference -- and storage shrinks by EXACTLY the repetition ratio: measured 65% on a
+17-corridor loop with 6 distinct chunks, 0% on a no-repeat control (dedup can only save what actually repeats),
+references rebuilding the original sequence bit-for-bit. This is the storage twin of StructuredIndex: that finds
+an item BY content, this stores items BY content so identical ones coalesce -- and comparing whole chunk vectors
+by cosine is an EVALUATION (not a decode), so two genuinely distinct chunks never collide at high dim, no cap.
+holographic_plan.dedup_chunks / mind dedup_chunks.
+
+R1 (KEPT NEGATIVE, joining S1). Re-anchoring a learned propagator's long rollout onto the consolidation manifold
+does NOT help -- and the reason is the same line. A route's per-hop cleanup ACCUMULATES crosstalk, so re-anchoring
+rescues it; a linear propagator rollout is repeated application of one operator, an EVALUATION. Measured on a
+trajectory in the propagator's exact model class (per-frequency phase advance == circular convolution, the audio
+sweet spot): the free rollout's drift is ~0 over 50 steps -- the operator TRACKS the trajectory, there is no drift
+to fix -- and projecting the state onto the rank-r training-state manifold every few steps only makes it worse
+(mean drift 0.0001 -> 0.5+), because the manifold of training states is a SUBSET of where the true trajectory goes
+and re-projection discards valid forward signal. On a trajectory OUTSIDE the model class the prediction is wrong
+within the manifold (a phase error), which manifold projection cannot fix either. So re-anchoring helps
+decode-via-cleanup chains (routes, sequences, programs), never a linear-operator rollout. Pinned in
+test_holographic_dynamics.py so nobody "fixes" a non-problem.
+
+The whole 13-item sweep is now resolved: P1/X3/S3/C2 shipped, X2/X4 shipped (X4, the multi-terminal Tero "Tokyo
+rail" network design, was already on disk), S1/R1 kept negatives, X1/C1 shipped here. The decode-vs-evaluate line
+predicted every outcome: chunking/tiling/re-anchoring helps wherever an item must be DECODED from a superposition,
+and is inert (or harmful) wherever the query is a linear EVALUATION with no capacity cliff.
+
+Tests: +6 (1061 -> 1067). test_holographic_scene.py: tiled scene factorization beats the capped whole scene across
+seeds. test_holographic_plan.py: dedup saves at the repetition ratio + exact rebuild, and saves nothing without
+repetition. test_holographic_dynamics.py: re-anchoring a rollout does not help (R1 kept negative). test_integration
+.py: the dedup_chunks and decompose_scene_tiled faculties through the mind. Files: holographic_scene.py,
+holographic_plan.py, holographic_unified.py, test_holographic_scene.py, test_holographic_plan.py,
+test_holographic_dynamics.py, test_integration.py, tour.py, README.

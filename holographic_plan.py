@@ -39,6 +39,7 @@ from collections import namedtuple
 
 import numpy as np
 
+from holographic_ai import bundle, cosine
 from holographic_directed import build, make_step
 from holographic_traverse import gated_traverse
 
@@ -115,6 +116,182 @@ def replan_needed(p, executed, tile_ok=None, floor=0.15):
     return False
 
 
+# A whole route, assembled by chaining corridors:
+#   actions:   the full executable direction sequence -- ARBITRARILY long, past the single-structure cap
+#   corridors: the list of Plan objects it chained (each a cap-sized, individually-clean corridor)
+#   stopped:   why the whole route ended -- 'field_end' / 'branch' (goal/junction reached) / 'max_total' / 'stalled'
+#   reanchors: how many times it re-anchored (len(corridors) - 1) -- the count of "decision points"
+#   steps:     len(actions)
+Route = namedtuple("Route", "actions corridors stopped reanchors steps")
+
+
+def plan_route(start, field_step, max_total=200, corridor=14, floor=0.15,
+               seed=0, action_of=None, is_branch=None):
+    """Bake an ARBITRARILY-LONG route by chaining cap-sized corridors, RE-ANCHORING internally at each
+    corridor's reliably-decoded end. This is the way PAST the single-structure ~15 cap delivered as ONE
+    call: a 45-tile route that collapses to noise if crammed into one plan() comes back correct here as a
+    sequence of clean corridors.
+
+    The single-structure cap is real and inherent (HRR crosstalk; ~15 tiles at dim 512-1024, fewer if you
+    overstuff). It bounds ONE baked corridor -- NOT the route you can navigate. `corridor` is the per-leg
+    length and MUST stay at/under the reliable decode depth for your dim (default 14, safe at dim 512-1024):
+    a corridor longer than that overstuffs its own structure and its decode corrupts -- the very same cliff,
+    now per leg (measured: corridor=30 at dim 512 skips tiles, a KEPT NEGATIVE). `max_total` caps the whole
+    route. An early gate-trip *within* a cap-sized corridor is fine -- each leg re-anchors at its last
+    reliably-decoded tile, never past it, so a short-but-clean leg simply re-anchors sooner.
+
+    WHEN TO USE WHICH: a real-time courier still wants plan() + replan_needed -- bake one corridor, drive
+    it, re-anchor only when the gate trips (this avoids planning the whole route up front and reacts to
+    traffic). Use plan_route when you want the WHOLE route in hand at once: to display it, validate it, or
+    pre-plan a leg offline. Both ride the same re-anchoring; this one just runs the loop for you.
+
+    Returns a Route (see the field notes above)."""
+    corridors = []
+    full_actions = []
+    cur = np.asarray(start, float)
+    stopped = "max_total"
+    while len(full_actions) < max_total:
+        room = min(corridor, max_total - len(full_actions))
+        p = plan(cur, field_step, max_steps=room, floor=floor, seed=seed,
+                 action_of=action_of, is_branch=is_branch)
+        corridors.append(p)
+        if not p.route:                                   # nothing decoded -> cannot advance, stop honestly
+            stopped = "stalled" if not full_actions else (p.stopped if p.stopped != "max_steps" else "stalled")
+            break
+        full_actions += p.actions
+        reached_end = (p.route[-1] == len(p.nodes) - 1)   # did the decode reach the corridor's LAST rolled-out tile?
+        if p.stopped in ("field_end", "branch") and reached_end:
+            stopped = p.stopped                           # goal/junction reached AND fully decoded -> done
+            break
+        cur = p.nodes[p.route[-1]]                        # re-anchor at the last RELIABLY-DECODED tile (never past it)
+    return Route(actions=full_actions, corridors=corridors, stopped=stopped,
+                 reanchors=max(0, len(corridors) - 1), steps=len(full_actions))
+
+
+def chunk_route(items, chunk=14, floor=0.15, seed=0, action_of=None):
+    """Store/replay an EXPLICIT ordered sequence you ALREADY HAVE -- a GPS route from a planner, a scientist's
+    fixed experiment protocol, any known list of N steps -- past the per-structure cap, by splitting it into
+    <=chunk-element directed-structure chunks, each individually clean. This is the explicit-list twin of
+    plan_route: there you DISCOVER the route by following a goal field; here the sequence is given, so you skip
+    the rollout and just chunk, bake, and replay it EXACTLY.
+
+    Why chunking and not one big structure: a single directed bundle decodes only ~15 tiles at dim 512-1024
+    before HRR crosstalk wins (that cap is physics, not a bug -- the same way a fixed-width buffer cannot hold
+    unbounded data). Splitting into <=chunk pieces keeps every piece inside its own capacity, so the EFFECTIVE
+    length is unbounded at LINEAR cost: a 200-step route is ~15 chunks, a 1000-step one ~72. Each chunk is ONE
+    compact hypervector (chunk.memory) you can store, compare, or compose like any other vector -- the whole
+    sequence becomes a short list of clean holographic objects instead of one overstuffed, unreadable blob.
+
+    `items` is the ordered list of element vectors; `chunk` is the per-piece length and must stay at/under the
+    dim's reliable decode depth (default 14, safe at dim 512-1024 -- an over-long chunk overstuffs its own piece,
+    the same cliff per chunk); `action_of(a, b)` labels each consecutive pair (the executable step). Chunks
+    OVERLAP by one element at the boundary so the next chunk re-anchors exactly where the last one ended -- no
+    element is skipped or double-counted. The elements must be distinguishable (a codebook): a sequence that
+    REVISITS the same element can confuse a chunk's cleanup, since two steps map to near-identical vectors.
+
+    Returns a Route: the full replayable action sequence (past the cap), the chunk Plans (each holding its
+    compact vector), the stop reason, the chunk-boundary count, and the step total."""
+    items = [np.asarray(x, float) for x in items]
+    if len(items) < 2:                                        # nothing to sequence
+        return Route(actions=[], corridors=[], stopped="stalled", reanchors=0, steps=0)
+    corridors, actions = [], []
+    start = 0
+    stopped = "sequence_end"
+    while start < len(items) - 1:
+        seg = items[start:start + chunk + 1]                 # a chunk of `chunk` EDGES needs chunk+1 nodes
+        ds = build(np.array(seg), seed=seed)                 # one clean directed structure over this piece
+        res = gated_traverse(make_step(ds), seg[0], floor=floor, max_steps=len(seg) - 1)
+        route = list(res.payloads)                           # decoded successor indices within the chunk
+        if not route:                                        # a chunk that won't even decode its first step -> stop
+            stopped = "stalled" if not actions else "sequence_end"
+            break
+        seg_actions = ([action_of(seg[j], seg[j + 1]) for j in range(len(route))]
+                       if action_of is not None else [])
+        corridors.append(Plan(memory=ds.memory, nodes=seg, route=route, actions=seg_actions,
+                              throughputs=list(res.throughputs), stopped="chunk", ds=ds))
+        actions += seg_actions
+        start += len(route)                                  # advance by what decoded; the boundary node is shared
+    return Route(actions=actions, corridors=corridors, stopped=stopped,
+                 reanchors=max(0, len(corridors) - 1), steps=len(actions))
+
+
+def dedup_chunks(vectors, tol=1e-9):
+    """Content-addressed deduplication of chunk vectors: a long route that REVISITS the same corridor, or a
+    program with repeated motifs, ends up storing the same compact chunk vector many times. Keep each UNIQUE
+    chunk once and replace every repeat with a reference, so the store shrinks by exactly the REPETITION RATIO
+    -- and by nothing when there is no repetition (the honest bound: dedup can only save what actually repeats,
+    measured 65% on a 17-corridor loop with 6 distinct chunks, 0% on a no-repeat control).
+
+    `vectors` is the ordered list of chunk vectors (e.g. `[c.memory for c in route.corridors]`); two are the
+    same chunk when their cosine is >= 1 - tol (default exact to floating point). Returns (unique, refs):
+    `unique` is the deduplicated store (each distinct chunk once, in first-seen order) and `refs` is one index
+    per ORIGINAL chunk into `unique`, so `[unique[r] for r in refs]` rebuilds the original list EXACTLY -- order
+    and repeats preserved, only the duplicate storage removed.
+
+    This is the storage twin of the StructuredIndex lookup: where that finds an item BY content, this stores
+    items BY content so identical ones coalesce. Comparing whole chunk vectors by cosine is an EVALUATION, not
+    a decode, so it does not hit the capacity cap -- two genuinely distinct chunks never collide at high dim."""
+    vectors = [np.asarray(v, float) for v in vectors]
+    unique, refs = [], []
+    for v in vectors:
+        hit = None
+        for i, u in enumerate(unique):
+            if u.shape == v.shape and cosine(u, v) >= 1.0 - tol:
+                hit = i
+                break
+        if hit is None:
+            unique.append(v)
+            refs.append(len(unique) - 1)
+        else:
+            refs.append(hit)
+    return unique, refs
+
+
+class RouteIndex:
+    """Sub-linear RANDOM ACCESS into a chunked route -- a BVH over the chunks. A long route is many chunks;
+    "where am I on it?" should be a jump, not a replay from the start. Index each chunk by a SUMMARY vector
+    (the bundle of its tiles), and locate a query two-level: nearest chunk summary, then nearest tile within
+    that chunk. Cost is ~(#chunks + chunk_size) per query instead of #tiles -- for a 200-tile route, ~28
+    comparisons vs 200 (measured ~6.9x fewer), and it located 200/200 tiles exactly.
+
+    Build it once from a Route (from plan_route or chunk_route); query it many times -- the courier asking its
+    position every tick is exactly the repeated-query case this amortises. Why a bundle summary works: a tile
+    that lives in a chunk has cosine ~1/sqrt(chunk_size) to that chunk's summary (it is one of its components)
+    and ~0 to the others, so the nearest summary is the right chunk; the second level is then an exact small
+    search. The same bundle-crosstalk that caps a single structure is what makes the summary a usable index."""
+
+    def __init__(self, route):
+        self.chunks = [np.asarray(c.nodes, float) for c in route.corridors]   # each chunk's tile vectors
+        self._summaries = []
+        for ch in self.chunks:
+            s = bundle(list(ch))                                              # one summary vector per chunk
+            n = np.linalg.norm(s)
+            self._summaries.append(s / n if n > 0 else s)
+        self._summaries = np.array(self._summaries) if self._summaries else np.zeros((0,))
+        # global step at which each chunk STARTS (chunks overlap by one tile, so subtract the shared boundary)
+        self._starts, acc = [], 0
+        for ch in self.chunks:
+            self._starts.append(acc)
+            acc += max(1, len(ch) - 1)
+
+    def locate(self, query):
+        """Return (chunk_index, position_in_chunk, global_step) of the route tile nearest `query` -- two-level,
+        sub-linear. global_step is the approximate index along the whole route (chunks overlap by one tile)."""
+        if not self.chunks:
+            return (-1, -1, -1)
+        q = np.asarray(query, float)
+        nq = np.linalg.norm(q)
+        q = q / nq if nq > 0 else q
+        c = int(np.argmax(self._summaries @ q))                              # level 1: nearest chunk summary
+        ch = self.chunks[c]
+        pos = int(np.argmax(ch @ q))                                         # level 2: nearest tile within it
+        return (c, pos, self._starts[c] + pos)
+
+    @property
+    def n_chunks(self):
+        return len(self.chunks)
+
+
 def _selftest():
     """CI-fast: bake a corridor and prove (1) an at-cap corridor decodes to the full direction sequence with
     high throughput, (2) an over-cap corridor honestly reports only its reliable prefix, (3) replan_needed
@@ -161,6 +338,57 @@ def _selftest():
     blocked = {p.route[3]}                                  # pretend the 4th tile is now blocked
     assert replan_needed(p, 3, tile_ok=lambda v: int(np.argmax(tiles @ v)) not in blocked) is True
     assert replan_needed(p, 2, tile_ok=lambda v: int(np.argmax(tiles @ v)) not in blocked) is False
+
+    # (4) plan_route: a 45-tile route (3x the single-corridor cap) comes back EXACTLY by chaining corridors,
+    #     where ONE plan() over the same route collapses to near-nothing. The cap bounds a leg, not the route.
+    big = rng.standard_normal((45, 512))
+    big /= np.linalg.norm(big, axis=1, keepdims=True)
+
+    def field_step_big(cur):
+        i = int(np.argmax(big @ (cur / (np.linalg.norm(cur) + 1e-12))))
+        return big[i + 1] if i + 1 < len(big) else None
+
+    def action_big(a, b):
+        return int(np.argmax(big @ (b / (np.linalg.norm(b) + 1e-12))))   # the tile-index each edge lands on
+
+    crammed = plan(big[0], field_step_big, max_steps=45, floor=0.12, action_of=action_big)
+    r = plan_route(big[0], field_step_big, corridor=14, floor=0.12, action_of=action_big)
+    assert len(crammed.actions) < 5                        # one structure overstuffed -> collapses (the cliff)
+    assert r.actions == list(range(1, 45))                 # chained corridors -> the FULL route, exact
+    assert r.stopped == "field_end" and r.reanchors >= 2   # it re-anchored at the decision points
+    assert len(r.actions) > len(crammed.actions) * 5       # decisively past the single-structure cap
+    # max_total caps the whole route, and what it returns is a correct prefix
+    rc = plan_route(big[0], field_step_big, max_total=20, corridor=14, floor=0.12, action_of=action_big)
+    assert rc.steps <= 20 and rc.actions == list(range(1, 1 + rc.steps))
+    # KEPT NEGATIVE: an over-long corridor overstuffs its OWN leg and corrupts -- corridor must stay <= the
+    # reliable decode depth (the default 14 does). corridor=30 at dim 512 does NOT recover the full route.
+    bad = plan_route(big[0], field_step_big, corridor=30, floor=0.12, action_of=action_big)
+    assert bad.actions != list(range(1, 45))               # honest: over-long legs are the same cliff, per leg
+
+    # (5) chunk_route: an EXPLICIT 200-element sequence (a known list, no field_step) replays EXACTLY by
+    #     chunking into <=14 clean pieces -- effective length unbounded at linear cost, ~N/14 chunks.
+    seq = rng.standard_normal((200, 512)); seq /= np.linalg.norm(seq, axis=1, keepdims=True)
+
+    def action_seq(a, b):
+        return int(np.argmax(seq @ (b / (np.linalg.norm(b) + 1e-12))))
+
+    cr = chunk_route(list(seq), chunk=14, floor=0.12, action_of=action_seq)
+    assert cr.actions == list(range(1, 200))               # the whole 200-step sequence, exact, past the cap
+    assert len(cr.corridors) <= 200 // 14 + 2              # linear: ~15 chunks, not one impossible structure
+    assert cr.corridors[0].memory.shape == (512,)          # each chunk is ONE compact vector
+    assert chunk_route([seq[0]], action_of=action_seq).steps == 0   # degenerate single-element -> empty, no crash
+
+    # (6) RouteIndex: sub-linear two-level random access -- locate every tile in the right chunk, exact position.
+    idx = RouteIndex(cr)
+    # which chunk does each tile actually live in (overlapping boundaries -> a tile can be in two; accept either)
+    def true_chunks(t):
+        return {k for k, c in enumerate(cr.corridors)
+                if any(np.array_equal(c.nodes[j], seq[t]) for j in range(len(c.nodes)))}
+    assert all(idx.locate(seq[t])[0] in true_chunks(t) for t in range(200))   # level 1 correct for all 200
+    c0, p0, g0 = idx.locate(seq[37])
+    assert np.allclose(idx.chunks[c0][p0], seq[37])        # level 2 exact: the located tile matches the query
+    assert idx.n_chunks == len(cr.corridors)
+    assert RouteIndex(chunk_route([], action_of=action_seq)).locate(seq[0]) == (-1, -1, -1)  # empty route safe
 
 
 if __name__ == "__main__":

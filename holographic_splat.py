@@ -188,6 +188,51 @@ def recall_region(scene_hv, cell, ctx):
     return best_q / (L - 1)
 
 
+def splat_bundle_tiled(splats, shape, dim=4096, grid=16, levels=5, tile=8, seed=0):
+    """A splat scene as a GRID OF TILE BUNDLES, so content-addressable region recall stays accurate at FINE
+    resolution. `splat_bundle` puts all grid*grid role->occupancy bindings in ONE vector, and `recall_region`
+    decodes each by unbind+cleanup -- a decode-via-cleanup readout, so as the grid gets finer the bundle's own
+    crosstalk grows and recall caps (measured at dim 4096: ~100% at grid 8, ~98% at 16, ~88% at 24, ~75% at
+    32). This is exactly the decode-from-a-crowded-superposition cap that chunking bounds elsewhere (routes,
+    sequences, programs); here the chunk is a TILE. Each cell is routed to its tile by floor-dividing its grid
+    index by `tile`, so a tile bundle holds at most tile*tile bindings no matter how fine the TOTAL grid is --
+    the per-bundle load is fixed and recall holds ~100% at any resolution. Costs one hypervector per tile
+    (proportional storage -- the price of exceeding a single vector's capacity, the same trade chunk_route and
+    chunked SequenceMemory make). Cells keep their GLOBAL roles, so recall_region_tiled needs no remapping.
+
+    Returns a ctx dict that IS the tiled scene: ctx['tiles'] maps (ty, tx) -> the tile's bundle hypervector,
+    and ctx carries the shared role/level codebooks + geometry. Read a cell back with recall_region_tiled."""
+    from holographic_ai import bind, bundle, Vocabulary
+    H, W = shape[0], shape[1]
+    rendered = splat_render(splats, (H, W))
+    roles = Vocabulary(dim, seed=seed)
+    lvl = Vocabulary(dim, seed=seed + 1)                  # `levels` near-orthogonal occupancy atoms
+    peak = float(np.abs(rendered).max()) + 1e-12
+    tile_parts, desc = {}, {}
+    for gy in range(grid):
+        for gx in range(grid):
+            ys, ye = gy * H // grid, (gy + 1) * H // grid
+            xs, xe = gx * W // grid, (gx + 1) * W // grid
+            energy = float(np.clip(np.abs(rendered[ys:ye, xs:xe]).max() / peak, 0.0, 1.0))
+            q = int(round(energy * (levels - 1)))
+            desc[(gy, gx)] = q / (levels - 1)
+            ty, tx = gy // tile, gx // tile              # which tile bundle this cell lands in
+            tile_parts.setdefault((ty, tx), []).append(bind(roles.get(f"cell:{gy}:{gx}"), lvl.get(f"lvl:{q}")))
+    tiles = {k: (bundle(v) if v else np.zeros(dim)) for k, v in tile_parts.items()}
+    return {"roles": roles, "lvl": lvl, "levels": levels, "grid": grid, "tile": tile,
+            "tiles": tiles, "desc": desc, "dim": dim, "shape": (H, W)}
+
+
+def recall_region_tiled(scene, cell):
+    """Read a global cell back from a TILED splat scene (from splat_bundle_tiled): route the cell to its tile
+    bundle -- which holds at most tile*tile bindings, so crosstalk stays low and recall stays accurate at fine
+    TOTAL resolution -- then decode it with the same unbind+cleanup as recall_region. `cell` is (gy, gx) in the
+    full grid; returns the recovered occupancy in [0, 1] (0.0 for an empty tile)."""
+    gy, gx = cell
+    hv = scene["tiles"].get((gy // scene["tile"], gx // scene["tile"]))
+    return 0.0 if hv is None else recall_region(hv, cell, scene)
+
+
 # --- anisotropic splats: full-covariance Gaussians fit by gradient descent (the real 3DGS primitive) ------
 # Each splat is (center, amplitude, L) where L is an n*n lower-triangular Cholesky factor of the INVERSE
 # covariance, so the Gaussian is amp * exp(-0.5 * ||L^T (x - center)||^2). L lower-triangular keeps the

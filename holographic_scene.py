@@ -271,6 +271,27 @@ class SceneCoder:
                 idxs[k] = self._best_factor(scene - others, iters, restarts, rng)
         return [self._tags_from_idx(i) for i in idxs]
 
+    def factor_scene_tiled(self, tile_scenes, counts, iters=60, restarts=0, sweeps=2, seed=0):
+        """Factor a scene TOO BIG to recover whole, by tiling. A many-object scene exceeds the resonator's
+        per-scene object cap (measured ~5 at dim 1024 -- past it whole-scene recovery collapses, ~30% at 15
+        objects across seeds), so split the objects into spatial TILES of <= cap each, factor every tile's
+        sub-scene independently (each one inside the cap), and concatenate the recovered objects. Tiling lifts
+        recovery from ~30% to ~93% at 15 objects, dim 1024 -- the same move chunk_route makes for a long route
+        and splat_bundle_tiled for a dense field: beat a fixed-width structure's capacity with composition, at
+        the price of keeping the tiles (proportional storage). The tile size plays the chunk's role -- it must
+        stay at/under the per-tile cap, exactly as a chunk stays under the decode depth; an over-full tile
+        re-hits the same cliff.
+
+        `tile_scenes` is the list of per-tile scene vectors (each the `encode_scene` superposition of that
+        tile's objects -- a real caller groups objects by spatial region, then encodes each group); `counts` is
+        the object count per tile. Returns the flat list of recovered tag-triples across all tiles. NOTE tiling
+        does not separate objects that share a tile -- it only keeps each tile under the cap; objects that crowd
+        one region go in the same tile and the resonator handles them. The cap is per-tile, never global."""
+        out = []
+        for scene, n in zip(tile_scenes, counts):
+            out += self.factor_scene(scene, n, iters=iters, restarts=restarts, sweeps=sweeps, seed=seed)
+        return out
+
     def blend_scenes(self, scene_a, scene_b, n_objects, project="colour",
                      iters=60, sweeps=2, seed=0):
         """PROJECTION AT THE SCENE LEVEL: given two scene VECTORS (objects

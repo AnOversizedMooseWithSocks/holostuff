@@ -2254,6 +2254,90 @@ def test_plan_bakes_a_corridor_and_replan_gates():
     assert m.replan_needed(p, 0, floor=0.12) is False          # on-route, execute the baked step
     assert m.replan_needed(p, len(p.route), floor=0.12) is True # exhausted -> re-anchor
 
+def test_plan_route_returns_a_whole_route_past_the_single_corridor_cap():
+    """Corridor planning bounds ONE leg, not the route: a 40-tile route (well past the per-structure cap)
+    that collapses if crammed into one plan() comes back EXACT through the mind's plan_route, which chains
+    cap-sized corridors and re-anchors internally. The expensive call happens once per corridor, not per tile."""
+    rng = np.random.default_rng(3)
+    m = UnifiedMind(dim=512, seed=0)
+    N = 40
+    tiles = rng.standard_normal((N, 512)); tiles /= np.linalg.norm(tiles, axis=1, keepdims=True)
+    def field_step(cur):
+        i = int(np.argmax(tiles @ (cur / (np.linalg.norm(cur) + 1e-12))))
+        return tiles[i + 1] if i + 1 < N else None
+    def action_of(a, b):
+        return int(np.argmax(tiles @ (b / (np.linalg.norm(b) + 1e-12))))
+    crammed = m.plan(tiles[0], field_step, max_steps=N, floor=0.12, action_of=action_of)
+    route = m.plan_route(tiles[0], field_step, corridor=14, floor=0.12, action_of=action_of)
+    assert len(crammed.actions) < 5                            # one structure can't carry the whole route
+    assert route.actions == list(range(1, N))                 # plan_route does -- the full route, exact
+    assert route.stopped == "field_end" and route.reanchors >= 2
+
+def test_chunk_route_replays_an_explicit_known_sequence_through_the_mind():
+    """The explicit-list twin: a known 200-step plan (GPS waypoints, an experiment protocol) you ALREADY hold
+    replays EXACTLY through the mind by chunking into <=14 clean pieces -- effective length unbounded at linear
+    cost, ~15 chunks for 200 steps, each chunk one compact vector. The per-chunk cap is physics; chunking is
+    the scale answer, and now it's a one-call faculty for sequences you have, not only ones you discover."""
+    rng = np.random.default_rng(4)
+    m = UnifiedMind(dim=512, seed=0)
+    N = 200
+    seq = rng.standard_normal((N, 512)); seq /= np.linalg.norm(seq, axis=1, keepdims=True)
+    def action_of(a, b):
+        return int(np.argmax(seq @ (b / (np.linalg.norm(b) + 1e-12))))
+    r = m.chunk_route(list(seq), chunk=14, floor=0.12, action_of=action_of)
+    assert r.actions == list(range(1, N))                     # the whole 200-step sequence, exact, past the cap
+    assert len(r.corridors) <= N // 14 + 2                    # linear cost: ~15 chunks
+    assert all(c.memory.shape == (512,) for c in r.corridors) # each chunk is one compact vector
+
+def test_index_route_gives_sub_linear_random_access_through_the_mind():
+    """A long chunked route should be random-access, not replay-from-start: m.index_route builds a BVH over the
+    chunks, and .locate(query) finds "where am I" two-level (nearest chunk summary -> nearest tile within), in
+    ~(#chunks + chunk_size) comparisons instead of #tiles. Exact location, far fewer comparisons."""
+    rng = np.random.default_rng(5)
+    m = UnifiedMind(dim=512, seed=0)
+    N = 200
+    seq = rng.standard_normal((N, 512)); seq /= np.linalg.norm(seq, axis=1, keepdims=True)
+    route = m.chunk_route(list(seq), chunk=14, floor=0.12, action_of=lambda a, b: 0)
+    idx = m.index_route(route)
+    for t in (0, 73, 137, 199):                               # locate sample tiles: exact chunk+position+step
+        c, p, g = idx.locate(seq[t])
+        assert np.allclose(idx.chunks[c][p], seq[t]) and g == t
+    assert idx.n_chunks + max(len(c) for c in idx.chunks) < N  # sub-linear comparisons per query
+
+def test_learn_plan_chunked_keeps_a_long_protocol_exact_through_the_mind():
+    """A long ordered plan (a scientist's multi-step protocol) stored with learn_plan(..., chunk=K) keeps
+    step_at / precedes / validate_plan EXACT past the single-bundle cap, where the unchunked positional
+    encoding decays with length. Short plans are unchanged (chunk defaults to 0)."""
+    m = UnifiedMind(dim=2048, seed=0)
+    steps = [f"op{i}" for i in range(200)]
+    m.learn_plan("protocol", steps, chunk=14)
+    assert all(m.step_at("protocol", i) == steps[i] for i in range(0, 200, 11))   # positional access exact
+    assert m.precedes("protocol", "op10", "op180") is True                        # order exact across a long gap
+    assert m.precedes("protocol", "op180", "op10") is False
+    ok, viol = m.validate_plan("protocol", [("op10", "op180"), ("op50", "op150")])
+    assert ok and viol == []
+    m.learn_plan("short", steps[:20])                                             # short plan: default, still works
+    assert m.step_at("short", 7) == "op7"
+
+def test_splat_scene_tiling_keeps_region_recall_exact_at_fine_resolution_through_the_mind():
+    """A content-addressable splat scene built through the mind: region recall is decode-via-cleanup and a
+    single bundle caps as the grid gets finer, but splat_scene's tiling routes each cell to a small tile
+    bundle so 'what is at this cell?' stays accurate at fine resolution -- the chunking lesson in the image
+    domain (image generation/representation, not text: text generators use bounded context and don't cap)."""
+    rng = np.random.default_rng(1)
+    S = 96
+    yy, xx = np.mgrid[0:S, 0:S].astype(float)
+    img = np.zeros((S, S))
+    for _ in range(8):
+        cy, cx, sig, amp = rng.uniform(10, S-10), rng.uniform(10, S-10), rng.uniform(5, 12), rng.uniform(0.5, 1.0)
+        img += amp * np.exp(-((yy-cy)**2 + (xx-cx)**2) / (2*sig**2))
+    img /= img.max()
+    m = UnifiedMind(dim=1024, seed=0)
+    scene = m.splat_scene(img, grid=32, tile=8, levels=5, k=30)
+    acc = sum(abs(m.splat_region(scene, (gy, gx)) - scene["desc"][(gy, gx)]) < 1e-9
+              for gy in range(32) for gx in range(32)) / (32*32)
+    assert acc > 0.99 and len(scene["tiles"]) == 16
+
 def test_mis_recover_beats_naive_average_and_singles():
     """MIS-1: m.mis_recover combines hard 1-NN and soft Hopfield per-query by the balance heuristic. On a mix
     of on-grid + off-grid cues over a coarse sharp-kernel manifold it beats naive averaging AND both singles,
@@ -2606,3 +2690,59 @@ def test_morph_scene_phase_slides_translation_better_than_dct():
     ph = midpeak(m.morph_scene(a, b, method="phase"))
     dc = midpeak(m.morph_scene(a, b, method="dct"))
     assert ph > dc, (ph, dc)                                        # phase slides compactly; dct smears
+
+
+def test_structured_index_faculty_is_the_shared_lookup_for_content_and_routes():
+    # The shared abstraction proves itself by serving BOTH jobs through ONE faculty: content-addressed
+    # lookup (the store) and route/sequence position lookup (the chunkers), distinguished only by payload.
+    m = UnifiedMind(dim=512, seed=0)
+    rng = np.random.default_rng(0)
+
+    # (a) content-address: file items under themselves, get back meaningful labels -- the content-store job
+    items = rng.standard_normal((400, 512)); items /= np.linalg.norm(items, axis=1, keepdims=True)
+    cidx = m.structured_index(items, payloads=[f"doc:{i}" for i in range(400)], n_trees=6, leaf_size=64)
+    assert cidx.locate(items[42], beam=6)[0] == "doc:42"           # routes home (sub-linearity: see unit test)
+
+    # (b) the SAME faculty, payloads carrying (chunk, step) -- the route/sequence job, one primitive
+    tiles = rng.standard_normal((300, 512)); tiles /= np.linalg.norm(tiles, axis=1, keepdims=True)
+    ridx = m.structured_index(tiles, payloads=[(i // 14, i) for i in range(300)])
+    assert ridx.locate_exact(tiles[157])[0] == (157 // 14, 157)    # exact, structured label returned
+
+
+# ---- C1 / X1 chunking-transfer faculties (dedup + tiled scene factorization) ----------------------
+
+def test_dedup_chunks_faculty_coalesces_repeated_chunks_exactly():
+    # One mind faculty content-addresses a chunk store: a route revisiting corridors collapses to its distinct
+    # chunks, and the references rebuild the original sequence bit-for-bit.
+    m = UnifiedMind(dim=512, seed=0)
+    rng = np.random.default_rng(0)
+    segs = [rng.standard_normal(512) for _ in range(4)]
+    pattern = [0, 1, 2, 0, 1, 0, 3, 0, 1, 2]                 # 10 chunks, 4 distinct
+    chunks = [segs[p] for p in pattern]
+    unique, refs = m.dedup_chunks(chunks)
+    assert len(unique) == 4 and refs == pattern
+    rebuilt = [unique[r] for r in refs]
+    assert all(np.array_equal(rebuilt[i], chunks[i]) for i in range(len(chunks)))
+
+
+def test_decompose_scene_tiled_faculty_beats_whole_past_the_cap():
+    # The tiled-factorization faculty recovers a 15-object scene that the whole-scene resonator cannot.
+    # (Per-seed tiled recovery runs 10-15/15 -- within-tile crosstalk at tile=5/dim=1024; the multi-seed
+    # robustness is asserted in test_holographic_scene.py. Here one representative scene confirms the wiring
+    # and the unambiguous win over the capped whole scene.)
+    from holographic_scene import COLOURS, SHAPES, TEXTURES
+    m = UnifiedMind(dim=1024, seed=0)
+    coder = m.scene()
+    r = np.random.default_rng(200)
+    seen, objs = set(), []
+    while len(objs) < 15:
+        t = (COLOURS[r.integers(len(COLOURS))], SHAPES[r.integers(len(SHAPES))], TEXTURES[r.integers(len(TEXTURES))])
+        if t not in seen:
+            seen.add(t)
+            objs.append({"colour": t[0], "shape": t[1], "texture": t[2]})
+    keys = lambda os: set((o["colour"], o["shape"], o["texture"]) for o in os)
+    groups = [objs[i:i + 5] for i in range(0, 15, 5)]
+    tiled = m.decompose_scene_tiled([coder.encode_scene(g) for g in groups], [len(g) for g in groups], sweeps=3)
+    whole = coder.factor_scene(coder.encode_scene(objs), 15, sweeps=3)
+    assert len(keys(tiled) & keys(objs)) >= 13          # tiling recovers nearly all 15
+    assert len(keys(tiled) & keys(objs)) > len(keys(whole) & keys(objs)) + 5   # well past the capped whole scene

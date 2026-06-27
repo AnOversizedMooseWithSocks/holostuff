@@ -1850,6 +1850,25 @@ class UnifiedMind:
         from holographic_verify import CompositionTree
         return CompositionTree(items, seed=self.seed if seed is None else seed)
 
+    def structured_index(self, keys, payloads=None, n_trees=4, leaf_size=64):
+        """A content-addressable structured index over a list of key vectors (holographic_tree.StructuredIndex)
+        -- the one shared lookup the route/sequence chunkers and the content store all draw from: file each
+        item under its OWN vector, find the nearest in SUB-LINEAR comparisons, and get back a meaningful label
+        (the `payloads`), not a row number. Returns a StructuredIndex.
+
+        It exists so the next caller that needs "find the item this query points at, at scale" reaches for one
+        primitive instead of re-growing a fourth near-copy and rediscovering the same two limits. Both rules
+        are enforced and explained in the class: KEY ON THE ITEMS THEMSELVES (a hyperplane tree only routes
+        when query ~= key; a bundle-summary the query is weakly correlated with mis-routes -- measured), and
+        NEVER STORE THE INDEX AS A BUNDLE (a superposed index caps with set size -- measured). locate() is the
+        sub-linear path with a free agreement/abstention signal; locate_exact() is the flat guaranteed-nearest
+        for small sets (what RouteIndex's flat scan already is). For INTEGRITY of a stored set instead of
+        lookup -- has anything changed, which item -- use verify_store, the holographic Merkle tree: a
+        different job, and comparing whole composites by cosine is an evaluation that does NOT cap."""
+        from holographic_tree import StructuredIndex
+        return StructuredIndex(self.dim, n_trees=n_trees, leaf_size=leaf_size,
+                               seed=self.seed).build(keys, payloads)
+
     def vector_function_encoder(self, n_dims, bounds=None, kernel="rbf", bandwidth=3.0):
         """An N-dimensional Fractional Power Encoder (holographic_fpe) on this mind's dim and seed: encode a
         continuous point in R^n so that a SHIFT is a BINDING and the similarity is a designed PRODUCT kernel,
@@ -1942,6 +1961,17 @@ class UnifiedMind:
         resonator, on the mind's own scene coder. Verifies a composed scene by recovering
         exactly what built it."""
         return self.scene().factor_scene(scene_vec, n_objects, sweeps=sweeps)
+
+    def decompose_scene_tiled(self, tile_scenes, counts, sweeps=2):
+        """Factor a scene too big to recover whole, by TILING (chunking-transfer item X1). A many-object scene
+        exceeds the resonator's per-scene object cap (~5 at dim 1024; past it whole-scene recovery collapses,
+        ~30% at 15 objects), so split objects into spatial tiles of <= cap each, factor every tile's sub-scene
+        independently, and merge -- lifting recovery from ~30% to ~93% at 15 objects, dim 1024. The same move
+        chunk_route makes for a long route: beat a fixed structure's capacity with composition, the tile size
+        playing the chunk's role (keep it under the per-tile cap). `tile_scenes`: per-tile scene vectors (each
+        an encode_scene of that tile's objects, grouped by region by the caller); `counts`: objects per tile.
+        Returns the flat list of recovered tag-triples across all tiles."""
+        return self.scene().factor_scene_tiled(tile_scenes, counts, sweeps=sweeps)
 
     def _group_roles(self):
         """A small vocabulary of group-key atoms, seed-derived so a nested scene
@@ -2145,6 +2175,58 @@ class UnifiedMind:
         -- execute the next baked step. No value() calls, no decode work: a list index and a comparison."""
         from holographic_plan import replan_needed as _replan
         return _replan(p, executed, tile_ok=tile_ok, floor=floor)
+
+    def plan_route(self, start, field_step, max_total=200, corridor=14, floor=0.15,
+                   seed=None, action_of=None, is_branch=None):
+        """Bake a WHOLE arbitrarily-long route in one call, by chaining cap-sized corridors and re-anchoring
+        internally at each leg's reliably-decoded end. This is the way past the per-structure ~15 cap
+        delivered as a single result: a 45-tile route that collapses to noise if crammed into one plan()
+        comes back correct here as a sequence of clean corridors. `corridor` is the per-leg length and must
+        stay at/under the dim's reliable decode depth (default 14, safe at dim 512-1024) -- an over-long leg
+        overstuffs its own structure, the same cliff per leg; `max_total` caps the whole route. Use this when
+        you want the full route in hand (display / validate / pre-plan a leg); a real-time courier reacting to
+        traffic still wants plan() + replan_needed (bake-as-you-go). Returns a Route: the full action sequence,
+        the chained corridors, why it stopped, the re-anchor count, and the step total."""
+        from holographic_plan import plan_route as _plan_route
+        return _plan_route(start, field_step, max_total=max_total, corridor=corridor, floor=floor,
+                           seed=self.seed if seed is None else seed,
+                           action_of=action_of, is_branch=is_branch)
+
+    def chunk_route(self, items, chunk=14, floor=0.15, seed=None, action_of=None):
+        """Store/replay an EXPLICIT ordered sequence you ALREADY HAVE -- a GPS route from a planner, a fixed
+        experiment protocol, any known list of N steps -- past the per-structure cap, by splitting it into
+        <=chunk-element directed-structure pieces, each individually clean. The explicit-list twin of
+        plan_route (which DISCOVERS its route by following a field): here the sequence is given, so it skips
+        the rollout and just chunks, bakes, and replays it EXACTLY. The per-piece cap is HRR physics (a fixed
+        structure can't hold unbounded order); chunking makes the EFFECTIVE length unbounded at LINEAR cost --
+        a 200-step route is ~15 chunks, a 1000-step one ~72 -- and each chunk is ONE compact vector you can
+        store or compose. `chunk` must stay at/under the dim's reliable decode depth (default 14); elements
+        must be distinguishable so each chunk decodes. Returns a Route (full replayable actions + the chunk
+        Plans + step total)."""
+        from holographic_plan import chunk_route as _chunk_route
+        return _chunk_route(items, chunk=chunk, floor=floor,
+                            seed=self.seed if seed is None else seed, action_of=action_of)
+
+    def index_route(self, route):
+        """Build a sub-linear RANDOM-ACCESS index over a chunked route (from plan_route / chunk_route): a BVH
+        over the chunks. "Where am I on this route?" becomes a jump, not a replay from the start -- index each
+        chunk by a summary vector and locate a query two-level (nearest chunk summary, then nearest tile within
+        it), ~(#chunks + chunk_size) comparisons instead of #tiles. Build once, query many (the courier asking
+        its position every tick). Returns a RouteIndex; call its .locate(query) -> (chunk, position, global_step)."""
+        from holographic_plan import RouteIndex
+        return RouteIndex(route)
+
+    def dedup_chunks(self, chunk_vectors, tol=1e-9):
+        """Content-addressed deduplication of chunk vectors (chunking-transfer item C1): a route that REVISITS
+        the same corridor, or a program with repeated motifs, stores the same compact chunk vector many times.
+        Keep each unique chunk once and replace repeats with a reference -- storage shrinks by exactly the
+        repetition ratio (measured 65% on a 17-corridor loop of 6 distinct chunks), and by nothing when there
+        is no repetition (the honest bound). `chunk_vectors` is the ordered chunk list (e.g. the corridors'
+        `.memory` vectors). Returns (unique, refs) where `[unique[r] for r in refs]` rebuilds the original list
+        EXACTLY. The storage twin of structured_index: that finds an item by content, this stores by content so
+        identical chunks coalesce -- and comparing whole chunks by cosine is an evaluation, so it never caps."""
+        from holographic_plan import dedup_chunks
+        return dedup_chunks(chunk_vectors, tol=tol)
 
     # ---- the DECOMPOSE / DENOISE / FIT half of the loop (integration plan, Tier 1) -------------
     # UnifiedMind was already strong on one half of the loop: COMPOSE / RECALL / PREDICT / GENERATE.
@@ -3155,6 +3237,27 @@ class UnifiedMind:
         from holographic_splat_archive import SplatArchive
         return SplatArchive(shape, keep=keep)
 
+    def splat_scene(self, field, grid=16, tile=8, levels=5, k=30, dim=4096, seed=0):
+        """Build a CONTENT-ADDRESSABLE splat scene from a field -- a coarse occupancy map stored as ONE
+        hypervector per tile that you can query by region ('what is at this cell?'). Fits k Gaussian splats,
+        then encodes them with TILED bundling so region recall stays accurate at FINE resolution. The plain
+        single-bundle scene's region readback is decode-via-cleanup (unbind a cell role, clean up to a level)
+        and so caps as the grid gets finer -- measured ~98% at grid 16 down to ~75% at grid 32 at dim 4096 --
+        while routing each cell to a tile bundle of at most tile*tile bindings holds recall ~100% at any total
+        resolution, the same chunk-to-beat-the-cap trade the route/sequence faculties make (one vector per
+        tile). The EXACT complement is splat_archive's region (explicit per-splat); this is the compact,
+        content-addressable, coarse-but-robust one. Returns the scene; read a cell back with splat_region."""
+        from holographic_splat import splat_fit, splat_bundle_tiled
+        field = np.asarray(field, float)
+        splats = splat_fit(field, k)
+        return splat_bundle_tiled(splats, field.shape, dim=dim, grid=grid, levels=levels, tile=tile, seed=seed)
+
+    def splat_region(self, scene, cell):
+        """Read a region's occupancy in [0, 1] back from a splat scene built by splat_scene -- the
+        content-addressable 'what is at grid cell (gy, gx)?' query, routed to the cell's tile bundle."""
+        from holographic_splat import recall_region_tiled
+        return recall_region_tiled(scene, tuple(cell))
+
     def render_scene(self, tag_list, S=96, seed=0):
         """Render composed attribute tags to an actual RGB image via the scene renderer."""
         from holographic_scene import make_scene
@@ -3627,11 +3730,18 @@ class UnifiedMind:
             remaining.discard(pick)
         return order
 
-    def learn_plan(self, name, steps):
+    def learn_plan(self, name, steps, chunk=0):
         """Store an ORDERED plan/recipe/protocol by name. Unlike absorb (which
         files things order-free for classification and recall), this keeps the
-        SEQUENCE queryable: meaning that lives in the order is preserved."""
-        self._seq_mem().add(name, steps)
+        SEQUENCE queryable: meaning that lives in the order is preserved.
+
+        For a LONG plan (a scientist's many-step protocol, a long itinerary), pass
+        `chunk` (e.g. 14): the plan is stored as positional blocks so step_at /
+        precedes / validate_plan stay EXACT past the single-bundle cap (the positional
+        encoding alone caps with length -- ~100% to length ~50-100, decaying to ~15%
+        by 800 at dim 2048). chunk=0 (default) is the original storage, ideal for short
+        plans where chunking is a no-op."""
+        self._seq_mem().add(name, steps, chunk=chunk)
         return self
 
     def step_at(self, name, i):

@@ -105,3 +105,49 @@ def test_adaptive_fit_respects_bounds():
     hard = ((xs > .3) & (xs < .7) & (ys > .3) & (ys < .7)).astype(float)
     _, k_hard = adaptive_fit(hard, noise_thresh=0.005, k_min=4, k_max=25)
     assert k_hard == 25                                       # the smooth basis can't resolve a hard edge -> k_max
+
+
+def _occupancy_target(S=96, seed=0):
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:S, 0:S].astype(float)
+    img = np.zeros((S, S))
+    for _ in range(8):
+        cy, cx, sig, amp = rng.uniform(10, S-10), rng.uniform(10, S-10), rng.uniform(5, 12), rng.uniform(0.5, 1.0)
+        img += amp * np.exp(-((yy-cy)**2 + (xx-cx)**2) / (2*sig**2))
+    return img / img.max()
+
+
+def test_single_splat_bundle_region_recall_caps_with_resolution():
+    # The kept negative that motivates tiling: the bundled scene's region readback is decode-via-cleanup, so
+    # as the grid gets finer the bundle crosstalk grows and recall accuracy falls (here 100% -> ~75% by grid 32).
+    from holographic_splat import splat_bundle, recall_region, splat_fit
+    splats = splat_fit(_occupancy_target(), 30)
+
+    def acc(grid):
+        hv, ctx = splat_bundle(splats, (96, 96), dim=4096, grid=grid, levels=5, seed=0)
+        return sum(abs(recall_region(hv, (gy, gx), ctx) - ctx["desc"][(gy, gx)]) < 1e-9
+                   for gy in range(grid) for gx in range(grid)) / (grid*grid)
+
+    assert acc(8) == 1.0                         # comfortably under the cap
+    assert acc(32) < 0.85                        # the cap bites at fine resolution -- the negative
+
+
+def test_tiled_splat_bundle_holds_region_recall_at_fine_resolution():
+    # Tiling fixes it: each cell routes to a tile bundle of at most tile*tile bindings, so recall stays ~100%
+    # at a resolution where the single bundle has fallen to ~75%.
+    from holographic_splat import splat_bundle_tiled, recall_region_tiled, splat_fit
+    splats = splat_fit(_occupancy_target(), 30)
+    scene = splat_bundle_tiled(splats, (96, 96), dim=4096, grid=32, levels=5, tile=8, seed=0)
+    acc = sum(abs(recall_region_tiled(scene, (gy, gx)) - scene["desc"][(gy, gx)]) < 1e-9
+              for gy in range(32) for gx in range(32)) / (32*32)
+    assert acc > 0.99                            # tiling holds recall where the single bundle capped
+    assert len(scene["tiles"]) == 16            # 32/8 = 4 tiles per side
+
+
+def test_tiled_splat_bundle_is_deterministic_and_empty_safe():
+    from holographic_splat import splat_bundle_tiled, recall_region_tiled, splat_fit
+    splats = splat_fit(_occupancy_target(), 30)
+    a = splat_bundle_tiled(splats, (96, 96), dim=2048, grid=16, tile=8, seed=0)
+    b = splat_bundle_tiled(splats, (96, 96), dim=2048, grid=16, tile=8, seed=0)
+    assert all(np.array_equal(a["tiles"][k], b["tiles"][k]) for k in a["tiles"])      # bit-identical run-to-run
+    assert recall_region_tiled({"tiles": {}, "tile": 8, "roles": None, "lvl": None, "levels": 5}, (0, 0)) == 0.0

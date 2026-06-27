@@ -828,13 +828,13 @@ in, and a Labyrinth mode has it learn the way out of a maze -- all on a prototyp
 **Test suite** (runs the full pytest suite), **Query & recall** (the interactive image demo - degrade an
 image, optionally destroy part of the plate, watch it get recalled), **Recall by description**
 (cross-modal recall - describe an image in words and get the matching one back from the tag address space),
-**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (1031 at last count; up to six skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out (and that resonator now takes an optional softmax-sharpened cleanup -- the SBC readout lesson swept down -- which recovers more at high codebook load; default off, so the small-vocabulary scene case is unchanged). Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
+**Set packer** (delta-code a set of related images against one reference), and **Image vault** (the general store: relate by fingerprint, compress adaptively across lossless and lossy encoders with an honest table, and query by example). The Test suite panel auto-discovers and runs every test_*.py (1067 at last count; up to six skip without NLTK or its downloaded corpora). The package also ships the real 712-sprite set packed to ~67 KB at `features/sprites.hsp` (which doubles as a live demo of the sprite packer), and the UI uses it in two places: the Image vault runs relate/compress/query on the whole set, and the learning creature is drawn as a real walking sprite (`amg2`) that turns to face the direction it moves and cycles its two walk frames -- with its baked-in background keyed out (flood-filled from the edges) so it shows real transparency over the grid instead of an opaque tile. The creature also runs on an energy mechanic: it starts each life with 100 energy, every step costs 1, each star it reaches gives +3, and stepping on poison empties the battery -- instant death -- so collecting stars and staying alive are the same goal. Finally, a **Vision** panel shows that the image is just numbers: RGB->HSV colour and dominant-colour extraction, Sobel edges with Hough line/circle detection and Harris corners, a geometric shape classifier, and unsupervised *emergent* classes that fall out of clustering simple feature descriptors -- then a VSA prototype classifier (bundle + cosine cleanup) labels held-out shapes, tying the vision work back to the holographic engine. The panel reports each step's accuracy honestly, including where unsupervised clustering tops out. A final **Compositional scene** panel takes the opposite stance to a holistic descriptor: it reads the DCT coefficient layout as a texture tag (finally using the DCT as a feature, not just for compression), pairs it with HSV colour and geometric shape for automatic per-object tags, then encodes each object as a product of attribute atoms and a scene as their superposition -- so a ResonatorNetwork can factor the parts back out (and that resonator now takes an optional softmax-sharpened cleanup -- the SBC readout lesson swept down -- which recovers more at high codebook load; default off, so the small-vocabulary scene case is unchanged). Multi-object scenes now decompose reliably up to ~5 objects: the old ~50%-at-three ceiling turned out to be a scale bug (normalising the scene) plus missing refinement, not a real capacity limit -- keeping the scene as an unnormalised superposition and adding coordinate-descent sweeps recovers 3-4 objects at 100%. A **Scaling** panel confronts the deepest limit head-on: one holographic trace is a bundle with finite capacity (a 2048-d memory recalls 100% of 64 pairs but ~0% of 2048), so instead of one flat store it grows a deterministic recursive tree -- each node a seeded random hyperplane splitting items at the median, each leaf a small memory kept inside capacity, queries descending with a beam that back-tracks into nearby cells. This is the random projection tree of Dasgupta & Freund and, in spirit, how slime mould beats the size limit of pure diffusion by resolving a broad mass into a hierarchical vein network. The flat memory collapses with scale while the tree holds 100%, and search reaches ~96% recall at a fraction of a full scan's comparisons; per-leaf query 'flux' shows the thick-vein / thin-vein structure. A HoloForest of several differently-seeded trees breaks the single tree's recall ceiling, reaching ~100% recall at a fraction of a full scan's comparisons. Finally, a **Content addresses** panel realises the original partitioning idea the way AWS S3 does: no folders, just a flat keyspace where each object's name encodes the hierarchy. The auto-tags (colour/shape/texture) generate a deterministic URI like `red/circle/smooth`, the key *is* the partition path, and a FacetStore supports S3-style prefix listing and CommonPrefixes roll-up. Where the RP-tree splits by meaningless random hyperplanes, this splits by meaning -- readable, queryable paths -- at the honest cost of bucket skew, with key depth as the lever. And the resonator closes the loop: it recovers an item's URI from its content vector alone, so the address is computed from the content. And the skew problem is now handled: build_indexes gives any hot bucket its own in-bucket HoloForest, so content search inside a popular prefix stays sub-linear -- the bi-level structure (semantic prefix outside, geometric forest inside) realised.
 
 ### From the command line
     python tour.py                    # guided tour of all subsystems (~20s)
     python holographic_creature.py    # any module runs its own demo
     python holographic_encoders.py    # numbers / text / records demos
-    pytest -q                         # the whole test suite (1031 tests)
+    pytest -q                         # the whole test suite (1067 tests)
 
 ---
 
@@ -1473,6 +1473,9 @@ noisy unbind-and-clean per instruction read, and the numerics underneath never l
 restoration *loop* and the generative *process* are now stored, composable, recipe-savable objects rather than
 control flow: process, not object. The boundary stayed where the audit drew it; the numerical primitives (the
 FFT bind, the SVD, Sinkhorn) *are* the substrate and cannot become programs that run on themselves.
+(To WRITE your own VSA programs — the `(opcode, operand)` syntax, the `IFMATCH` trigger pattern for
+reacting to data, and bridging `APPLY` to the mind's faculties — see `writing_vsa_programs.md`, a guide
+whose every example is run and verified.)
 
 **Then a faculty that had become fast was promoted to a gate, and the basis it guards learned to scale.** A
 performance audit found persistent homology (made 83× faster a session earlier) was the lone heavy outlier;
@@ -2124,7 +2127,7 @@ The app and tour:
     tour.py       command-line tour of every subsystem
     run.bat       Windows launcher
 
-Tests (1031 total):
+Tests (1067 total):
 
     test_holographic.py           core engine (bind/bundle/memory/reflex/drift)
     test_holographic_image.py     image store / WHT / quantisation
@@ -2133,8 +2136,8 @@ Tests (1031 total):
     test_pack_sprites.py          sprite packer round-trip + size
     test_image_vault.py           vault round-trip, query, clustering, lossy tier
     test_holographic_vision.py    HSV / edges / Hough / shape ID / clustering
-    test_holographic_scene.py     compositional tags + multi-object resonator
-    test_holographic_tree.py      capacity curve, RP-tree + forest recall
+    test_holographic_scene.py     compositional tags + multi-object resonator (+ tiled factorization past the cap)
+    test_holographic_tree.py      capacity curve, RP-tree + forest recall, shared StructuredIndex lookup
     test_holographic_uri.py       S3-style keyspace, prefixes, bi-level buckets
     test_holographic_navigator.py learned data-tree navigator vs fixed beam
     test_holographic_mind.py      universal encoder + modality self-discovery + index regime
@@ -2190,7 +2193,9 @@ Tests (1031 total):
     test_holographic_flow.py      B6 + sweep: the Tero flow solver, and `tero_flux` exposing the converged edge
                                   flux as a Hodge-decomposable flow -- gradient divergence == injected current,
                                   harmonic dimension == B1 (loops), zero circulation on a tree (flow_circulation)
-                                  (recover/refine/region) + splat_bundle/recall_region; and the honesty layer
+                                  (recover/refine/region) + splat_bundle/recall_region (and splat_bundle_tiled:
+                                  tiling holds content-addressable region recall at fine resolution where a
+                                  single bundle's decode-via-cleanup readback caps); and the honesty layer
                                   woven into recognition (calibrated recognize + classify/recall abstention,
                                   SPRT stream, FDR-controlled batch); coherence-gated maintenance
                                   (reorganize only when incoherent -- fewer passes at comparable accuracy);
@@ -2292,6 +2297,10 @@ Tests (1031 total):
                                   direction role suppresses the predecessor leak that makes the undirected chain
                                   ambiguous (successor recovered, predecessor -> noise), a branching graph node
                                   returns all its successors, and it composes with the gated walk (directed_*)
+    test_holographic_sequence.py  ordered sequences (position = rotation, bundled): step / position_of / precedes /
+                                  validate answer the order relation a bag store cannot, plus add(..., chunk=K) --
+                                  store a LONG sequence as positional blocks so order/position queries stay exact
+                                  past the single-bundle cap (single-bundle decode decays with length; chunked holds)
     test_holographic_mis.py       multiple importance sampling (Veach's balance heuristic): combining hard 1-NN
                                   and soft Hopfield per-query by reliability beats naive averaging AND both
                                   singles on a mix of on-grid/off-grid cues -- where naive averaging is WORSE
@@ -2405,7 +2414,21 @@ Tests (1031 total):
                                     keeps the rollout on-manifold (RAY-1 confirmed) but there is nothing to improve
     test_holographic_plan.py        corridor planning (re-anchoring): bake a short route on the directed
                                     substrate, run it cheap, re-anchor when the throughput gate trips -- the
-                                    way past the per-structure capacity cap (one brain call per corridor)
+                                    way past the per-structure capacity cap (one brain call per corridor).
+                                    plan_route chains cap-sized corridors to return a whole arbitrarily-long
+                                    route in one call, and chunk_route does the same for an EXPLICIT known
+                                    sequence (GPS waypoints, an experiment protocol) -- ~N/14 compact chunks,
+                                    replayed exactly (with the over-long-chunk cliff kept as a negative).
+                                    RouteIndex gives sub-linear random access into a long chunked route -- a BVH
+                                    over the chunks, locating "where am I" two-level in ~(#chunks+chunk) compares.
+                                    dedup_chunks content-addresses the chunk store -- a route revisiting corridors
+                                    collapses to its distinct chunks (saving exactly the repetition ratio, nothing
+                                    without repeats), references rebuilding the original sequence bit-for-bit.
+    test_holographic_machine.py     the stored-program machine (a program is one vector executed by VSA ops):
+                                    LOAD/BIND/BUNDLE/PERMUTE/CALL/APPLY/IFMATCH/REPEAT, embedded-function
+                                    library, inception nesting depth, and run_chunked -- runs a program too
+                                    long for one structure by threading the accumulator across clean <=14-instr
+                                    chunks (the CALL-the-library route kept on record as a measured negative)
     test_holographic_probesweep.py
                                     the cross-cutting PROBE SWEEP -- six transfers the panel pre-judged no-op, all
                                     measured and KEPT NEGATIVE: A1 low-discrepancy codebook (~3% coherence, identical
