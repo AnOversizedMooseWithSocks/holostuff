@@ -3520,6 +3520,114 @@ print(f"  MESH -> SDF: signed distance at origin = {float(_sdf_probe[0]):.3f} (i
 _blob_b = _meshm.mesh_from_sdf(_metaball(_np_fwd4.array([[-0.4, 0, 0], [0.4, 0, 0]]), radius=0.4), ((-1.5,) * 3, (1.5,) * 3), res=20, level=0.5)
 print(f"  SPLAT -> MESH: a sum of 2 Gaussian splats iso-extracts to a {_blob_b.n_faces}-face blob (closed manifold={_blob_b.is_closed() and _blob_b.is_manifold()}) -- splats enter the mesh world through the same extractor")
 
+title("ARCH-1: the recipe's Euler operators -- validate + local edits that preserve the realized vector")
+# Turn the mesh editors INWARD: just as a mesh has flip/split/collapse preserving chi, a StructureRecipe gets
+# edits preserving the realized VECTOR -- because bind/bundle are commutative, a local rewrite is an algebra identity.
+from holographic_recipe import StructureRecipe as _SR
+_ra = _SR(dim=512, seed=0)
+_h_a = _ra.atom("a"); _h_b = _ra.atom("b"); _h_c = _ra.atom("c")
+_h_ab = _ra.bind(_h_a, _h_b); _h_bun = _ra.bundle([_h_a, _h_b, _h_c])
+_ra.mark_output(_h_ab); _ra.mark_output(_h_bun)
+_base_r = [v.copy() for v in _ra.outputs()]
+_ok_r, _ = _meshm.validate_recipe(_ra)
+_bad_r = __import__('holographic_recipeops')._clone(_ra); _bad_r._ops[3] = ("bind", 3, 99)
+print(f"  VALIDATE (the recipe's is_manifold): well-formed recipe -> {_ok_r}; same recipe with a dangling reference -> {_meshm.validate_recipe(_bad_r)[0]}")
+_flip_r = _meshm.recipe_commute_bind(_ra, _h_ab)
+_twice_r = _meshm.recipe_commute_bind(_flip_r, _h_ab)
+print(f"  commute_bind = flip_edge: bind(a,b)->bind(b,a) leaves the vector unchanged (max diff {float(_np_fwd4.max(_np_fwd4.abs(_flip_r.outputs()[0] - _base_r[0]))):.0e}), and is its OWN INVERSE (twice -> diff {float(_np_fwd4.max(_np_fwd4.abs(_twice_r.outputs()[0] - _base_r[0]))):.0e})")
+_sub_r = _meshm.recipe_substitute_atom(_ra, 0, "z")
+_restore_r = _meshm.recipe_substitute_atom(_sub_r, 0, "a")
+print(f"  substitute_atom = vertex move: renaming atom a->z CHANGES the result (cos {float(_np_fwd4.dot(_sub_r.outputs()[0], _base_r[0]) / (_np_fwd4.linalg.norm(_sub_r.outputs()[0]) * _np_fwd4.linalg.norm(_base_r[0]))):.2f}), renaming back restores it EXACTLY (diff {float(_np_fwd4.max(_np_fwd4.abs(_restore_r.outputs()[0] - _base_r[0]))):.0e})")
+
+title("ARCH-4: a REAL seam -- cut a closed surface into a disk by vertex duplication (the FWD-3 payback)")
+# FWD-3 could only open a closed surface with a crude `puncture` (delete a vertex). ARCH-4 cuts along a seam,
+# duplicating its interior vertices on a consistent side -> a disk that keeps ALL its geometry.
+from holographic_meshsmooth import _icosphere as _ico_seam
+from holographic_meshuv import uv_unwrap as _uvu_seam, uv_distortion as _uvd_seam, puncture as _punc_seam
+_ssph = _ico_seam(3)
+_n_seam = int(_np_fwd4.argmax(_ssph.vertices[:, 2])); _s_seam = int(_np_fwd4.argmin(_ssph.vertices[:, 2]))
+_merid = _meshm.mesh_shortest_seam(_ssph, _n_seam, _s_seam)
+_disk_seam = _meshm.mesh_cut_seam(_ssph, _merid)
+_punc = _punc_seam(_ssph, 0)
+print(f"  meridian cut: closed sphere (chi 2) -> DISK (chi {_disk_seam.euler_characteristic()}), manifold, V {_ssph.n_vertices}->{_disk_seam.n_vertices} (+{len(_merid) - 2} duplicated)")
+print(f"  NON-DESTRUCTIVE: the cut keeps all {_disk_seam.n_faces} faces; the crude puncture DELETES {_ssph.n_faces - _punc.n_faces} faces (loses geometry)")
+_eq_seam = int(_np_fwd4.argmin(_np_fwd4.abs(_ssph.vertices[:, 2])))
+_good_seam = _meshm.mesh_cut_seam(_ssph, _meshm.mesh_shortest_seam(_ssph, _n_seam, _eq_seam))
+_gd = float(_uvd_seam(_good_seam, _uvu_seam(_good_seam))); _pd = float(_uvd_seam(_punc, _uvu_seam(_punc))); _fd = float(_uvd_seam(_disk_seam, _uvu_seam(_disk_seam)))
+print(f"  PAYBACK: a pole-to-equator seam unwraps at {_gd:.3f} < puncture {_pd:.3f}.  KEPT NEGATIVE: a full meridian ({_fd:.3f}) is worse -- seam choice matters (a good atlas needs several cuts)")
+
+title("ARCH-7: representation routing -- booleans have no mesh implementation, so route through the SDF (CSG)")
+# The policy layer on FWD-11's bridge: union/intersection/difference are trivial field min/max on an SDF but
+# impossible on a mesh directly -> route mesh->SDF->op->mesh, even CHANGING topology.
+from holographic_mesh import Mesh as _Mesh_csg
+_sph_csg = _ico_seam(2)
+def _tr_csg(off): return _Mesh_csg(_sph_csg.vertices + _np_fwd4.array(off, float), [tuple(f) for f in _sph_csg.faces])
+_Acsg, _Bcsg = _tr_csg([-0.5, 0, 0]), _tr_csg([0.5, 0, 0])
+print(f"  ROUTING POLICY: 'union' -> {_meshm.route_representation('union')} representation (the mesh kernel has no boolean); 'boundary' -> {_meshm.route_representation('boundary')}")
+_uni_csg = _meshm.mesh_csg("union", _Acsg, _Bcsg, res=24)
+_sep_csg = _meshm.mesh_csg("union", _tr_csg([-1.6, 0, 0]), _tr_csg([1.6, 0, 0]), res=24)
+print(f"  TOPOLOGY CHANGE: two OVERLAPPING spheres union to {_meshm.mesh_connected_components(_uni_csg)} blob (closed manifold={_uni_csg.is_closed() and _uni_csg.is_manifold()}); two SEPARATE spheres stay {_meshm.mesh_connected_components(_sep_csg)} components -- the field merges or keeps-apart by itself")
+_int_csg = _meshm.mesh_csg("intersection", _Acsg, _Bcsg, res=24)
+_vA_csg, _vB_csg, _vU_csg, _vI_csg = float(_meshm.mesh_volume(_Acsg)), float(_meshm.mesh_volume(_Bcsg)), float(_meshm.mesh_volume(_uni_csg)), float(_meshm.mesh_volume(_int_csg))
+print(f"  GEOMETRICALLY correct (not just topologically): vol(A or B) {_vU_csg:.2f} ~ vA+vB-vInt {_vA_csg + _vB_csg - _vI_csg:.2f} (inclusion-exclusion)")
+
+title("ARCH-3: geometry-weighted graph ops -- the cotangent Laplacian turned inward (cosine-similarity weights)")
+# The mesh's cotangent Laplacian weights edges by geometry; on hypervectors the geometry IS cosine similarity.
+# A similarity-weighted graph Laplacian's eigenmap recovers a manifold's intrinsic coordinates.
+from holographic_simgraph import _ring_vectors as _ringv, _circ_corr as _ccorr
+_Vu_g, _thu_g = _ringv(nonuniform=False, seed=0)
+_rec_w = _ccorr(_meshm.graph_ring_order(_Vu_g, weighted=True), _thu_g)
+_Aw_g = _meshm.similarity_graph(_Vu_g, k=6, weighted=True); _nz_g = _Aw_g[_Aw_g > 0]
+print(f"  RING RECOVERY: the weighted similarity-graph eigenmap recovers a ring from {len(_Vu_g)} high-D vectors -- recovered order vs true angle |corr|={float(_rec_w):.3f}")
+print(f"  the geometry is in the WEIGHTS: weighted edges carry cosine similarities (range {float(_nz_g.min()):.2f}-{float(_nz_g.max()):.2f}); the engine's binary kNN edges are all 1")
+_Vn_g, _thn_g = _ringv(nonuniform=True, seed=0)
+_rnw = _ccorr(_meshm.graph_ring_order(_Vn_g, weighted=True), _thn_g); _rnb = _ccorr(_meshm.graph_ring_order(_Vn_g, weighted=False), _thn_g)
+_rub = _ccorr(_meshm.graph_ring_order(_Vu_g, weighted=False), _thu_g)
+print(f"  WHERE WEIGHTING WINS: under NON-UNIFORM sampling weighted {float(_rnw):.3f} > binary {float(_rnb):.3f} (corrects density, like cotangent on an irregular mesh).  KEPT NEGATIVE: under UNIFORM sampling weighted {float(_rec_w):.3f} ~ binary {float(_rub):.3f} TIE -- high-D concentration, unlike a mesh's sharp cotangent gap")
+
+title("ARCH-5: subdivision curves -- FWD-8's mesh subdivision turned inward on a sequence of vectors (1-manifold)")
+# A sequence of hypervectors is a polyline through vector space; Chaikin corner-cutting refines it into a smooth
+# limit curve -- the same refine+low-pass as Loop subdivision, one dimension down.
+_rng_sd = _np_fwd4.random.default_rng(0)
+_P_sd = _rng_sd.standard_normal((6, 64))
+_counts_sd = [len(_meshm.subdivide_sequence(_P_sd, levels=_l)) for _l in range(4)]
+print(f"  REFINE: an open sequence of 6 vectors doubles each level -> {_counts_sd} (2(n-1)/level), exactly as Loop quadruples faces")
+_a_sd = _rng_sd.standard_normal(64); _b_sd = _rng_sd.standard_normal(64)
+_ramp_sd = _np_fwd4.array([_a_sd + (_b_sd - _a_sd) * _t for _t in _np_fwd4.linspace(0, 1, 6)])
+_sub_sd = _meshm.subdivide_sequence(_ramp_sd, levels=3); _dn_sd = (_b_sd - _a_sd) / _np_fwd4.linalg.norm(_b_sd - _a_sd)
+_resid_sd = max(float(_np_fwd4.linalg.norm((p - _a_sd) - _np_fwd4.dot(p - _a_sd, _dn_sd) * _dn_sd)) for p in _sub_sd)
+_zig_sd = _np_fwd4.zeros((10, 64)); _zig_sd[::2, 0] = 1.0; _zig_sd[1::2, 0] = -1.0
+_r0_sd = float(_np_fwd4.sum(_np_fwd4.diff(_zig_sd, n=2, axis=0) ** 2)); _r2_sd = float(_np_fwd4.sum(_np_fwd4.diff(_meshm.subdivide_sequence(_zig_sd, levels=2), n=2, axis=0) ** 2))
+print(f"  AFFINE: a straight line of vectors stays straight (residual {_resid_sd:.0e}, FWD-8's 'flat stays flat').  LOW-PASS: a zig-zag's roughness {_r0_sd:.0f} -> {_r2_sd:.2f} after 2 levels.  KEPT NEGATIVE: Chaikin approximates -- it cuts the control points (like Loop on a sphere)")
+
+title("ARCH-6: rig + IK for structures -- blendshape posing (FWD-9 skinning + FWD-10 IK, turned inward)")
+# A rig is a set of pose-target structures; FORWARD is a soft blend (skinning), INVERSE solves the blend weights
+# to reach a goal -- via the SAME project_onto_constraints sweeper FWD-10 used for FABRIK.
+_rng_bp = _np_fwd4.random.default_rng(0)
+_P_bp = _rng_bp.standard_normal((4, 256))
+_onehot_bp = _meshm.blend_pose(_P_bp, [0, 1, 0, 0])
+print(f"  FORWARD (skinning): a one-hot weight reproduces target #1 exactly (cos {float(_np_fwd4.dot(_onehot_bp, _P_bp[1]) / _np_fwd4.linalg.norm(_P_bp[1])):.4f}) -- a soft blend of pose-target structures")
+_wtrue_bp = _np_fwd4.array([0.4, 0.3, 0.2, 0.1]); _goal_bp = _P_bp.T @ _wtrue_bp
+_w_bp = _meshm.solve_pose(_P_bp, _goal_bp)
+print(f"  IK REACHABLE: goal is a known blend -> solver recovers the weights {[round(float(x),2) for x in _w_bp]} (true {[float(x) for x in _wtrue_bp]}), residual {float(_np_fwd4.linalg.norm(_P_bp.T @ _w_bp - _goal_bp)):.0e} -- like FWD-10 hitting a reachable target")
+_goal2_bp = _rng_bp.standard_normal(256); _w2_bp = _meshm.solve_pose(_P_bp, _goal2_bp)
+_br_bp = float(_np_fwd4.linalg.norm(_P_bp.T @ _w2_bp - _goal2_bp)); _vr_bp = min(float(_np_fwd4.linalg.norm(_P_bp[i] - _goal2_bp)) for i in range(4))
+print(f"  IK UNREACHABLE: an out-of-span goal -> CLOSEST valid blend (residual {_br_bp:.2f} <= best single target {_vr_bp:.2f}) but cannot reach -- like FWD-10's chain fully extending toward an out-of-reach target.  *** §ARCH complete ***")
+
+title("FWD-7 remainder: the three fiddlier modeler verbs -- bevel, bridge, loop-cut (vertex duplication + loop tracing)")
+# The verbs FWD-7 deferred: bevel chamfers a corner, bridge joins two loops into a tube, loop-cut threads a new
+# edge ring through a quad strip. All preserve the mesh's topology (chi) where they should.
+from holographic_mesh import box as _box_v2
+_cube_v2 = _box_v2()
+_bev_v2 = _meshm.mesh_bevel_vertex(_cube_v2, 0, ratio=0.3)
+_szs_v2 = sorted(len(f) for f in _bev_v2.faces)
+print(f"  BEVEL a cube corner -> a small facet: V {_cube_v2.n_vertices}->{_bev_v2.n_vertices}, face sizes {_szs_v2} (3 quads became pentagons + a triangle cap), still closed manifold, chi {_bev_v2.euler_characteristic()} preserved")
+_sq0_v2 = _np_fwd4.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], float); _sq1_v2 = _sq0_v2.copy(); _sq1_v2[:, 2] = 1.0
+_tube_v2 = _meshm.mesh_bridge(_np_fwd4.vstack([_sq0_v2, _sq1_v2]), [0, 1, 2, 3], [4, 5, 6, 7], closed=True)
+print(f"  BRIDGE two squares -> an open tube: {_tube_v2.n_faces} side quads, manifold={_tube_v2.is_manifold()}, chi {_tube_v2.euler_characteristic()} (an open cylinder)")
+_f0_v2 = tuple(_cube_v2.faces[0]); _lc_v2 = _meshm.mesh_loop_cut(_cube_v2, 0, (_f0_v2[0], _f0_v2[1]))
+print(f"  LOOP-CUT a cube -> a new edge ring: F {_cube_v2.n_faces}->{_lc_v2.n_faces} (the ring crosses 4 quads, splitting each), still closed manifold, chi {_lc_v2.euler_characteristic()} preserved.  *** FWD modeler verb set complete ***")
+
 title("One routing fabric: the chunkers/tilers/stores converge -- pick the pivot, get the regime (StructuredIndex keying)")
 # The capacity-cliff cure ("route each item to a bounded-load bucket") had been re-grown five times. It is
 # ONE fabric: you escape the cliff HORIZONTALLY and address shards by a PIVOT -- and the pivot you pick IS the

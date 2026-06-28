@@ -9979,3 +9979,342 @@ TIER 3 OPENED with the bridge. The FWD backlog is now: Tier 1 (FWD-3/4/5/6) DONE
 FWD-9, FWD-10) DONE; Tier 3 FWD-11 DONE. REMAINING: FWD-7 remainder (bevel/bridge/loop-cut); ARCH items (ARCH-4
 atlas/seams -> a real FWD-3 seam; ARCH-1 StructureRecipe validator+edit-ops mirroring the Euler operators; ARCH-3
 geometry-weighted graph ops; etc.). The mesh DCC suite is now broadly complete end to end.
+
+
+--------------------------------------------------------------------------------
+ARCH-1 -- the first §ARCH item: turn the 3-D DCC concepts INWARD on the engine's own structures. FWD-7 gave the
+MESH its local invariant-preserving editors (the Euler operators: flip/split/collapse, each preserving chi + the
+manifold). ARCH-1 is the exact mirror for the StructureRecipe (the one build-graph program/tree/scene all reduce
+to, B7): a VALIDATOR (check well-formedness -- the recipe's is_manifold) + EDIT OPERATORS that rewrite a recipe
+while preserving its meaning.
+
+THE PARALLEL (the point): a mesh Euler op preserves a topological invariant; a recipe edit op preserves the
+REALIZED VECTOR -- for the SAME reason: it is a local rewrite that is an IDENTITY of the underlying algebra. bind
+is circular convolution (commutative); bundle/superpose are sums (commutative). So:
+  * commute_bind  -- bind(a,b)=bind(b,a)            <-> flip_edge (its own inverse, preserves the invariant)
+  * reorder_members -- bundle(any order) is equal   <-> a parameterised flip (invertible by the inverse perm)
+  * substitute_atom -- rename a leaf                 <-> a vertex-position move (structure fixed, result changes, reversible)
+
+WHAT SHIPPED (holographic_recipeops.py; additive; four UnifiedMind faculties):
+  * validate(recipe) [faculty validate_recipe] -> (ok, problems) -- every op references only EARLIER existing
+    results (DAG, no forward/dangling/out-of-range refs), raw indices + repeat templates in range.
+  * commute_bind(recipe, handle) [recipe_commute_bind] -- swap a bind's args. Vector-preserving, OWN INVERSE.
+  * reorder_members(recipe, handle, perm) [recipe_reorder_members] -- permute a bundle/superpose's members.
+    Vector-preserving, invertible by the inverse perm.
+  * substitute_atom(recipe, handle, new_name) [recipe_substitute_atom] -- rename an atom leaf. Validity-preserving,
+    result changes predictably, invertible by renaming back.
+  Each returns a NEW recipe (originals untouched, as the mesh operators returned new meshes). _op_index_for_handle
+  maps an absolute result handle to its op position (repeat produces several results, so it's not just `handle`).
+
+MEASURED (the bar):
+  * validate ACCEPTS a well-formed recipe and REJECTS a corrupted one (a forward/out-of-range reference, a bad raw
+    index) -- with human-readable problems.
+  * commute_bind + reorder_members leave the realized vector BIT-EXACT to FFT precision (1e-12) and the recipe
+    valid; commute_bind applied twice literally restores the op (own inverse); reorder undone by the inverse perm.
+  * substitute_atom CHANGES the realized vector and reverses EXACTLY by substituting the original name back.
+  * Edits don't mutate the original recipe; deterministic.
+
+KEPT NEGATIVES (loud):
+  * These are the VECTOR-PRESERVING / structure-preserving edits (the recipe's Euler-operator CORE). Edits that
+    REMOVE/RESIZE ops (flatten a nested superpose, splice out dead results) require re-indexing every downstream
+    handle -- the recipe analogue of the mesh face-list reindex in collapse/dissolve -- and are deferred; the
+    in-place edits are correct and complete on their own (as flip_edge is).
+  * "bit-exact" is up to FFT/float round-off (~1e-12), an algebraic identity (FP-equal not literally bit-equal) --
+    the same honest caveat the bind_batch vectorization carries.
+
+Tests: +15 (1313 -> 1328). test_holographic_recipeops.py (+14): validate accepts/rejects (forward ref, bad raw);
+commute_bind preserves vector + own inverse + rejects non-bind; reorder preserves vector + inverts + rejects
+non-permutation; substitute_atom changes + reverses; edits keep validity; edits don't mutate the original;
+determinism. test_integration.py (+1): the recipe editors through the mind end-to-end. Files:
+holographic_recipeops.py (new), test_holographic_recipeops.py (new), holographic_unified.py (4 faculties),
+test_integration.py, README, NOTES_concepts.md, tour.py. Faculty count -> 250 (round milestone). NEXT §ARCH:
+ARCH-4 atlas/seams (-> a real FWD-3 seam); ARCH-3 geometry-weighted graph ops; ARCH-5 subdivision-for-structures;
+ARCH-6 rig+IK-for-structures; ARCH-7 representation routing. Plus FWD-7 remainder (bevel/bridge/loop-cut).
+
+
+--------------------------------------------------------------------------------
+ARCH-4 -- seam cutting / atlas: opening a closed surface into a disk by vertex duplication. THE FWD-3 PAYBACK.
+FWD-3 (UV unwrap) shipped with a kept negative -- a CLOSED surface needs a CUT to flatten, and its only opener was
+`puncture` (delete a vertex, leaving a tiny hole that unwraps badly). ARCH-4 supplies the real thing: cut along a
+SEAM (an edge path) by DUPLICATING the seam's interior vertices, opening the surface into a disk that keeps ALL
+its geometry.
+
+THE SUBTLE PART (why FWD-3 deferred it): a seam arc does NOT separate the surface, so you cannot 2-colour faces
+left/right globally -- the sides are LOCAL. Fix: ORIENT the seam (v0->...->vk) and at each interior vertex
+duplicate the fan on the side matching the path direction (the fan containing the face carrying directed edge
+v_i->v_{i+1}). That side is defined by the single path orientation, so the duplicated side is consistent all along
+the seam and the two lips line up -> a manifold. (Get this wrong -> non-manifold mess.)
+
+WHAT SHIPPED (holographic_meshseam.py; additive; two UnifiedMind faculties):
+  * cut_seam(mesh, seam) [mesh_cut_seam] -- cut open along an ordered vertex path, duplicating interior seam
+    vertices on a consistent side. Returns a new (open) Mesh. _components_of_incident_faces splits a vertex's
+    umbrella into its two fans (faces sharing a non-seam edge through the vertex); _face_with_directed_edge
+    picks the consistent side.
+  * shortest_seam(mesh, a, b) [mesh_shortest_seam] -- shortest edge path (Dijkstra), e.g. a meridian.
+  * _boundary_loop_count -- verify the cut made exactly one boundary (a disk).
+
+TOPOLOGY: cutting a closed genus-0 surface (chi=2) along a simple arc of k edges duplicates its k-1 interior
+vertices and splits each of k seam edges into two -> dchi = (k-1)-k = -1: chi 2->1, a DISK.
+
+MEASURED (the bar):
+  * cut_seam(sphere, meridian) -> a DISK: chi=1, NOT closed, manifold, exactly ONE boundary loop, V grown by
+    (interior seam vertices = 15 for the icosphere meridian).
+  * ROBUST PAYBACK (always true): the cut is NON-DESTRUCTIVE -- preserves all 512 faces; the puncture DELETES 4
+    faces (loses geometry). A real seam keeps the whole surface.
+  * DISTORTION PAYBACK (good seam): a pole-to-equator seam unwraps at 0.405 < the puncture's 0.507.
+  * Deterministic.
+
+KEPT NEGATIVE (measured, loud): SEAM CHOICE MATTERS. A FULL pole-to-pole meridian opens a valid disk but unwraps
+WORSE than the puncture (0.579 > 0.507) -- it makes a long thin lune. One cut never makes a sphere unwrap WELL
+(Gauss); a good atlas uses several cuts / multiple charts (the rest of ARCH-4, deferred). The win is
+"non-destructive, and beats the puncture with a sensible seam", not "distortion-free". The first-draft assumed any
+meridian beats the puncture -- WRONG (the full meridian doesn't); the honest finding (seam-dependent) is kept.
+
+Tests: +10 (1328 -> 1338). test_holographic_meshseam.py (+9): cut opens to a disk (chi=1, manifold, open); one
+boundary loop; interior vertices duplicated; preserves every face; puncture deletes faces but cut doesn't;
+well-chosen seam beats puncture distortion; full meridian is worse (the kept negative); shortest_seam is a valid
+edge path; determinism. test_integration.py (+1): seam cutting through the mind (disk, non-destructive, beats
+puncture) end-to-end. Files: holographic_meshseam.py (new), test_holographic_meshseam.py (new),
+holographic_unified.py (2 faculties), test_integration.py, README, NOTES_concepts.md, tour.py. (Note: edges()
+yields sorted TUPLES not frozensets -- a test-only normalisation fix, no code change.) NEXT §ARCH: ARCH-3
+(geometry-weighted graph ops), ARCH-5 (subdivision-for-structures), ARCH-6 (rig+IK-for-structures), ARCH-7
+(representation routing). Plus FWD-7 remainder (bevel/bridge/loop-cut).
+
+
+--------------------------------------------------------------------------------
+ARCH-7 -- representation routing: the POLICY layer on top of FWD-11's mesh<->SDF<->splat bridge. FWD-11 built the
+conversions; ARCH-7 decides WHEN to use them. Different operations are natural in different representations, so
+route to the one that makes an operation easy, do it there, convert back. (Same shape as the decode-vs-evaluate
+principle for vectors -- use the representation the operation actually fits.)
+
+THE FLAGSHIP: CSG (constructive solid geometry). Boolean union/intersection/difference have NO native mesh
+implementation (robust mesh booleans need surface-surface intersection, never built). On an SDF they are trivial
+exact FIELD ops: union=min(dA,dB), intersection=max(dA,dB), difference=max(dA,-dB). So the router takes meshes ->
+SDF (mesh_to_sdf) -> combine fields -> extract back to mesh (marching tetrahedra, FWD-11). Crucially this lets a
+boolean CHANGE TOPOLOGY -- two separate spheres become ONE blob when overlapping, stay TWO when not -- which a mesh
+cannot do to itself; the field merges/keeps-separate automatically.
+
+WHAT SHIPPED (holographic_route.py; additive; four UnifiedMind faculties):
+  * REPRESENTATION_CAPABILITIES -- the routing table (which ops each representation supports: sdf owns
+    booleans/inside_test/offset, mesh owns boundary/render/subdivide, splat owns blend/scatter).
+  * representation_for(op) [route_representation] -- the routing decision.
+  * route_csg(op, A, B, res, bounds) [mesh_csg] -- the flagship boolean via SDF routing. Returns a Mesh.
+  * connected_components(mesh) [mesh_connected_components], mesh_volume(mesh) [mesh_volume] -- the measurements.
+
+MEASURED (the bar):
+  * the table sends booleans -> "sdf" and boundary/render -> "mesh"; "union" is explicitly NOT a mesh capability
+    (that is WHY routing exists).
+  * OVERLAPPING spheres: union merges to ONE connected component, a closed manifold (topology merged). SEPARATE
+    spheres: union stays TWO components (separation preserved).
+  * GEOMETRICALLY correct, not just topologically -- inclusion-exclusion holds to a few percent: vol(uni) 6.50 ~
+    vA+vB-vInt 6.55; vA 3.82 ~ vInt+vDiff 3.77.
+  * Deterministic.
+
+KEPT NEGATIVES (loud):
+  * Resolution is the grid's (FWD-11 inherited): sharp intersection seams round at the cell size. Volumes converge
+    to the truth FROM BELOW (marching-tet under-fills) -- hence the inclusion-exclusion checks carry a few-percent
+    tolerance, not machine precision.
+  * route_csg trusts mesh_to_sdf's sign, reliable for convex-ish inputs but mis-signs deep concavities in an INPUT
+    mesh; the spheres are convex so the combined field is exact. A non-convex input needs a winding-number sign
+    (the FWD-11 fix, deferred).
+  * The table is a small curated policy (published strengths), not a learned cost model.
+
+Tests: +14 (1338 -> 1352). test_holographic_route.py (+13): table routes booleans->sdf + boundary->mesh; union not
+a mesh capability; unknown op raises; overlapping union -> 1 component; union is closed manifold; separate union ->
+2 components; intersection smaller than inputs; difference smaller than minuend; inclusion-exclusion for union;
+intersection+difference recovers A; components of a single sphere = 1; determinism. test_integration.py (+1): CSG
+routing through the mind (policy + merged-topology union + inclusion-exclusion). Files: holographic_route.py (new),
+test_holographic_route.py (new), holographic_unified.py (4 faculties), test_integration.py, README,
+NOTES_concepts.md, tour.py. Faculty count -> 256. NEXT §ARCH: ARCH-3 (geometry-weighted graph ops), ARCH-5
+(subdivision-for-structures), ARCH-6 (rig+IK-for-structures). Plus FWD-7 remainder (bevel/bridge/loop-cut).
+
+
+--------------------------------------------------------------------------------
+ARCH-3 -- geometry-weighted graph operations on hypervectors: the COTANGENT LAPLACIAN, turned inward. On a mesh
+(FWD-4) the cotangent Laplacian weights edges by the actual geometry (angles) and respects the shape where uniform
+combinatorial weights distort it. The engine's graphs (knn_adjacency over stored vectors) are BINARY (every edge
+1). The natural geometry of the hypervector world is COSINE SIMILARITY, so a similarity-WEIGHTED graph is the
+cotangent analogue.
+
+WHAT SHIPPED (holographic_simgraph.py; additive; three UnifiedMind faculties):
+  * similarity_adjacency(vectors, k, weighted) [similarity_graph] -- a kNN graph; weighted=True -> each edge carries
+    the cosine similarity (the geometry), weighted=False -> the engine's existing BINARY kNN graph (reused verbatim).
+  * spectral_embedding(vectors, k, dims, weighted) [graph_spectral_embedding] -- Laplacian eigenmaps (low
+    eigenvectors of the weighted graph Laplacian) via holographic_spectral's graph_laplacian/laplacian_eigenbasis.
+  * ring_order(vectors, k, weighted) [graph_ring_order] -- recovered cyclic coordinate atan2(e2,e1) for ring points.
+
+MEASURED (the bar):
+  * POSITIVE (clean): the weighted similarity-graph eigenmap RECOVERS a ring -- recovered cyclic order tracks the
+    true angle to |corr|=0.998 from high-D hypervectors. The geometry-weighted op recovers intrinsic manifold
+    structure.
+  * WHERE WEIGHTING WINS: under NON-UNIFORM sampling (points bunched into arcs) the weighted graph recovers the ring
+    BETTER than binary (0.917 > 0.812 at seed 0; weighted wins 6/6 seeds) -- the cosine weighting corrects sampling
+    density, exactly as the cotangent Laplacian corrects an irregular mesh.
+  * weighted adjacency entries ARE the cosine similarities (varying, in (0,1]); binary entries are all 1.
+  * Deterministic.
+
+KEPT NEGATIVES (loud, measured -- the honest headline):
+  * Under UNIFORM sampling / well-separated data, similarity-weighting and the BINARY graph essentially TIE (ring
+    recovery 0.998 either way). This is a REAL difference from the mesh: a mesh's edge LENGTHS vary by orders of
+    magnitude so cotangent-vs-uniform differs sharply, but in high dimension the CONCENTRATION OF MEASURE makes a
+    kNN graph's edges nearly equal in strength, so weighting has little to correct. Geometry-weighting here helps
+    most under IRREGULAR SAMPLING, not universally.
+  * Downstream tasks the mesh weighting would help (cluster label propagation, vector denoising by graph smoothing)
+    showed NO weighted-over-binary gain on well-separated high-D clusters in this engine, same concentration reason
+    -- measured during development and kept; the module ships the operations + the regime where weighting
+    demonstrably helps (irregular sampling on a continuous manifold), not an overclaim that weighting always wins.
+
+Tests: +10 (1352 -> 1362). test_holographic_simgraph.py (+9): weighted eigenmap recovers a ring; weighted edges
+carry varying similarities; binary edges all 1; adjacency symmetric; weighting wins under non-uniform sampling;
+weighting ties binary under uniform sampling (kept negative); embedding shape; ring_order length; determinism.
+test_integration.py (+1): geometry-weighted graph through the mind (ring recovery + weights + non-uniform win).
+Files: holographic_simgraph.py (new), test_holographic_simgraph.py (new), holographic_unified.py (3 faculties),
+test_integration.py, README, NOTES_concepts.md, tour.py. Faculty count -> 259. NEXT §ARCH: ARCH-5
+(subdivision-for-structures, mirrors FWD-8 inward), ARCH-6 (rig+IK-for-structures, mirrors FWD-9/10 inward). Plus
+FWD-7 remainder (bevel/bridge/loop-cut).
+
+
+--------------------------------------------------------------------------------
+ARCH-5 -- subdivision curves on hypervector sequences: FWD-8's Loop subdivision, turned inward onto a 1-manifold.
+FWD-8 subdivided a MESH (2-manifold): refine (1 tri -> 4) + low-pass smooth toward a limit surface. ARCH-5 does the
+same to the engine's own 1-D structure -- a SEQUENCE of hypervectors is a polyline through vector space (what the
+sequence faculties encode) -- via CHAIKIN corner-cutting (the curve analogue of Loop, generator of a quadratic
+B-spline limit): each edge (p_i,p_{i+1}) -> (3/4 p_i + 1/4 p_{i+1}, 1/4 p_i + 3/4 p_{i+1}), which both REFINES
+(doubles the count) and SMOOTHS (corner-cutting is a low-pass filter).
+
+THE MESH PROPERTIES MAP ACROSS EXACTLY:
+  Loop faces x4/level            <-> Chaikin points x2/level
+  Loop flat-stays-flat (affine)  <-> Chaikin straight-line-of-vectors-stays-straight (affine)
+  Loop -> limit surface          <-> Chaikin -> limit curve
+  Loop dihedral-spread shrinks   <-> Chaikin roughness (2nd-diffs) shrinks
+
+WHAT SHIPPED (holographic_subdivcurve.py; additive; one UnifiedMind faculty):
+  * chaikin_subdivide(points, closed) -- one level of corner-cutting.
+  * subdivide_sequence(points, levels, closed) [subdivide_sequence] -- `levels` of Chaikin on a vector sequence;
+    returns the refined (M,dim) sequence.
+
+MEASURED (the bar):
+  * REFINE: open polyline n -> 2(n-1)/level ([6,10,18,34]); closed -> 2n/level ([6,12,24,48]).
+  * AFFINE REPRODUCTION: a straight line of vectors (linear ramp) stays ON the line to 2e-15 -- the exact analogue
+    of FWD-8's "flat stays flat".
+  * CONVERGENCE: curve length deltas [21.9,5.7,2.2,0.9,0.4] shrink (approaches a limit curve).
+  * LOW-PASS: a zig-zag's roughness [128,16,2,0.25,0.03] shrinks ~8x/level (corner cutting removes high freqs).
+  * Deterministic.
+
+KEPT NEGATIVE (loud): Chaikin is APPROXIMATING, not interpolating -- the limit curve cuts the original control
+points' corners and does NOT pass through interior control points (nearest 0.25, not ~0). This is the EXACT mirror
+of FWD-8's negative (Loop approximates -> a curved icosphere smooths to Loop's own limit, not the exact sphere). An
+INTERPOLATING scheme (Dyn-Levin-Gregory 4-point) keeps the control points but is less smooth and needs >=4 points
+with boundary special-casing -- the classic approximating/interpolating trade-off, deferred. Also: the open scheme
+cuts the end corners too (first/last control points not preserved; an endpoint-preserving boundary rule is separate).
+
+Tests: +10 (1362 -> 1372). test_holographic_subdivcurve.py (+9): open/closed counts double; single-level count;
+straight line stays straight; curve length converges; zig-zag roughness shrinks; approximating (control points not
+interpolated); short sequence unchanged; determinism. test_integration.py (+1): subdivide_sequence through the mind
+(refine + affine + low-pass). Files: holographic_subdivcurve.py (new), test_holographic_subdivcurve.py (new),
+holographic_unified.py (1 faculty), test_integration.py, README, NOTES_concepts.md, tour.py. Faculty count -> 260
+(round milestone). NEXT §ARCH: ARCH-6 (rig+IK-for-structures, mirrors FWD-9/10 inward) -- the last §ARCH item. Plus
+FWD-7 remainder (bevel/bridge/loop-cut).
+
+
+--------------------------------------------------------------------------------
+ARCH-6 -- rig + IK for STRUCTURES via blendshape posing: FWD-9 (linear blend skinning) + FWD-10 (IK) turned inward.
+The LAST inward mirror, and it closes the §ARCH block. A "rig" is a set of pose-TARGET structures (blendshapes)
+p_1..p_m; a pose is a soft weighted blend pose(w)=normalize(sum w_i p_i). The two halves of FWD-9/10 map across:
+  * FORWARD = SKINNING (FWD-9): given weights, the pose is the blend -- FWD-9's soft mixture of bone transforms,
+    one rung up (mixing whole structures, not transforms).
+  * INVERSE = IK (FWD-10): given a GOAL structure, SOLVE the blend weights to reach it -- via the SAME
+    project_onto_constraints sweeper FWD-10 used for FABRIK. The "joint angles" are the weights; the swept
+    constraints are FIT-the-goal (least-squares gradient step = FABRIK's reach) + VALID-CONVEX-BLEND (simplex
+    projection = FABRIK's bone-length projection). Literal reuse, distinct from 3-D mesh IK (this is IK in the
+    engine's semantic vector space).
+
+WHAT SHIPPED (holographic_blendpose.py; additive; two UnifiedMind faculties):
+  * blend_pose(targets, weights) [blend_pose] -- forward skinning/blendshape map: normalize(sum w_i targets_i).
+  * solve_pose(targets, goal, iters) [solve_pose] -- IK: solve the blend weights via project_onto_constraints
+    ([fit, simplex_project]). Returns a valid convex blend. _simplex_project = Duchi et al. 2008 simplex projection.
+
+MEASURED (the bar):
+  * FORWARD: a one-hot weight reproduces that target exactly (1e-12); a mix leans toward its targets.
+  * IK REACHABLE: goal IS a known interior blend -> recovers the weights (L1 err 0.000) and the achieved pose
+    matches the goal (residual 1e-15). The analogue of FWD-10 hitting a reachable target exactly.
+  * IK UNREACHABLE: random goal outside the span -> CLOSEST valid blend (residual 18.94 <= best single target 22.37,
+    a GUARANTEE: the simplex it searches contains every vertex) but cannot reach (residual > 1). The analogue of
+    FWD-10's chain fully extending toward an out-of-reach target.
+  * solved weights are always a valid convex blend (w>=0, sum=1).
+  * Deterministic.
+
+CRITICAL IMPLEMENTATION NOTE (kept): the least-squares step size MUST come from the Lipschitz constant (largest
+eigenvalue of the Gram P P^T, ~dim for random targets); a fixed step diverges and the simplex projection collapses
+to a vertex (the bug found in the probe). mu = 1/L fixes it -> exact recovery.
+
+KEPT NEGATIVES (loud):
+  * The IK CANNOT reach a goal outside the targets' convex blend -- returns the closest valid blend (the honest
+    analogue of FWD-10's unreachable target). Reaching arbitrary goals needs a richer rig (more targets), not a
+    better solver.
+  * Returns A best convex blend, not THE only one: linearly-dependent targets -> non-unique weights (the POSE is
+    still optimal, the weights just aren't identifiable) -- the same "a-solution-not-the-solution" caveat as FWD-10.
+  * Forward map is a blend in the AMBIENT vector space (FWD-9's linear-blend analogue), not a nonlinear pose
+    manifold -- the same scope as linear blend skinning (whose own negative was the candy-wrapper collapse).
+
+Tests: +10 (1372 -> 1382). test_holographic_blendpose.py (+9): one-hot blend is that target; mix leans to targets;
+IK recovers a reachable blend; reachable pose matches goal; unreachable is closest valid blend; unreachable cannot
+reach; solved weights valid simplex; simplex projection lands on simplex; determinism. test_integration.py (+1):
+blendshape posing through the mind (forward + reachable IK + closest-blend). Files: holographic_blendpose.py (new),
+test_holographic_blendpose.py (new), holographic_unified.py (2 faculties), test_integration.py, README,
+NOTES_concepts.md, tour.py. Faculty count -> 262.
+
+*** §ARCH BLOCK COMPLETE: ARCH-1 (recipe Euler ops), ARCH-2 (delta protocol, prior session), ARCH-3 (geometry-
+weighted graph ops), ARCH-4 (real seam), ARCH-5 (subdivision curves), ARCH-6 (rig+IK for structures), ARCH-7
+(representation routing) all shipped. Each turned a piece of the FWD mesh pipeline inward onto the engine's own
+structures. *** NEXT: FWD-7 modeler remainder (bevel/bridge/loop-cut) is the main remaining FWD thread.
+
+
+--------------------------------------------------------------------------------
+FWD-7 REMAINDER -- bevel, bridge, loop-cut: the three modeler verbs FWD-7 deferred because they need vertex
+DUPLICATION or edge-loop TRACING (FWD-7 shipped the face-list-rewrite verbs extrude/inset/dissolve). This ships
+them, reusing the vertex-fan/umbrella logic from the ARCH-4 seam and the unused-vertex compaction (reindex) from
+dissolve.
+
+WHAT SHIPPED (holographic_meshverbs2.py; additive; three UnifiedMind faculties):
+  * bevel_vertex(mesh, vertex, ratio) [mesh_bevel_vertex] -- chamfer a corner: pull each incident edge back toward
+    its neighbour by ratio, chamfer every incident face, cap the hole with a new face. Needs the cyclic neighbour
+    order (the umbrella) + compaction of the removed corner vertex.
+  * bridge_loops(verts, loop_a, loop_b, closed) [mesh_bridge] -- join two equal-length ordered vertex loops with a
+    band of quads (build a tube between two openings).
+  * loop_cut(mesh, start_face, start_edge) [mesh_loop_cut] -- trace the perpendicular quad loop (enter a quad
+    through one edge, leave through the OPPOSITE edge, cross to the neighbour) and split every crossed quad in two.
+
+MEASURED (the bar):
+  * BEVEL a cube corner (degree 3): closed manifold, chi PRESERVED (2); the 3 incident quads become PENTAGONS and a
+    TRIANGULAR cap appears (face sizes [3,4,4,4,5,5,5]); V = 8-1+3 (corner removed, 3 new). New verts sit on the
+    incident edges at the ratio.
+  * BRIDGE two squares -> an open tube: 4 quads, chi=0, exactly TWO boundary loops, manifold.
+  * LOOP-CUT a cube: closed manifold, chi PRESERVED (2), +4 faces (the ring crosses 4 quads). LOOP-CUT a grid(3,3):
+    chi PRESERVED (1), +3 faces (the open strip crosses 3 quads).
+  * Deterministic.
+
+TWO BUGS FOUND IN THE PROBE (kept as notes): (1) loop-cut first split quads after reordering the cycle to start at
+an arbitrary vertex -> inconsistent winding across the strip -> non-manifold ("directed edge appears twice"). FIX:
+split using the quad's OWN native cyclic order (v0,v1,v2,v3 from the entering-edge position) so adjacent cells wind
+oppositely on the shared cut edge. (2) bevel left the removed corner vertex ORPHANED in the array -> chi wrong (3
+not 2). FIX: _compact drops unused vertices and reindexes (the dissolve/seam reindex).
+
+KEPT NEGATIVES (loud):
+  * BEVEL is the VERTEX bevel (chamfer a corner). The EDGE bevel (widen an edge into a chamfer face, splitting BOTH
+    endpoints' fans) is the harder two-sided split, deferred -- the same fan-consistency the seam solved for one
+    path, here needed on both sides. ratio must be in (0,1); boundary/non-manifold vertices out of scope.
+  * BRIDGE requires two EQUAL-LENGTH, ALREADY-ALIGNED loops (caller supplies the correspondence); resampling/matching
+    unequal loops (the general bridge) is deferred.
+  * LOOP-CUT needs QUADS (the opposite-edge trace is undefined on triangles); the trace stops at a boundary (open
+    cut) or when it returns to the start (closed ring).
+
+Tests: +12 (1382 -> 1394). test_holographic_meshverbs2.py (+11): bevel closed-manifold + chi preserved; bevel
+pentagons+cap; bevel vertex count; bevel new verts near corner; bridge open tube; bridge two boundary loops; bridge
+unequal loops raises; loop-cut box chi+4faces; loop-cut grid chi+3faces; loop-cut on triangle raises; determinism.
+test_integration.py (+1): all three verbs through the mind. Files: holographic_meshverbs2.py (new),
+test_holographic_meshverbs2.py (new), holographic_unified.py (3 faculties), test_integration.py, README,
+NOTES_concepts.md, tour.py. Faculty count -> 265.
+
+*** With this, the FWD direct-modeling verb set is complete: extrude/inset/dissolve (FWD-7) + bevel/bridge/loop-cut
+(remainder). The broad FWD DCC pipeline + the full §ARCH inward-mirror block are both done. ***

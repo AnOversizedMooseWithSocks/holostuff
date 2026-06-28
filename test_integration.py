@@ -3411,3 +3411,195 @@ def test_fwd11_mesh_sdf_bridge_through_the_mind():
     blob = um.mesh_from_sdf(metaball_field(np.array([[-0.4, 0, 0], [0.4, 0, 0]]), radius=0.4),
                             ((-1.5,) * 3, (1.5,) * 3), res=20, level=0.5)
     assert blob.is_closed() and blob.is_manifold()
+
+
+def test_arch1_recipe_edit_operators_through_the_mind():
+    """ARCH-1: the StructureRecipe validator + edit operators (the recipe equivalent of the mesh Euler operators)
+    are real UnifiedMind faculties. Through the mind: validate accepts a well-formed recipe; commute_bind and
+    reorder_members preserve the realized vector and are invertible; substitute_atom changes it and reverses."""
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    from holographic_recipe import StructureRecipe
+
+    um = UnifiedMind(dim=512, seed=0)
+    r = StructureRecipe(dim=512, seed=0)
+    a = r.atom("a"); b = r.atom("b"); c = r.atom("c")
+    ab = r.bind(a, b); bun = r.bundle([a, b, c])
+    r.mark_output(ab); r.mark_output(bun)
+    base = [v.copy() for v in r.outputs()]
+
+    assert um.validate_recipe(r)[0]                                    # well-formed
+
+    # commute_bind: vector-preserving + own inverse
+    flipped = um.recipe_commute_bind(r, ab)
+    assert um.validate_recipe(flipped)[0]
+    assert np.allclose(flipped.outputs()[0], base[0], atol=1e-12)
+    assert np.allclose(um.recipe_commute_bind(flipped, ab).outputs()[0], base[0], atol=1e-12)
+
+    # reorder_members: vector-preserving
+    assert np.allclose(um.recipe_reorder_members(r, bun, [2, 0, 1]).outputs()[1], base[1], atol=1e-12)
+
+    # substitute_atom: changes and reverses
+    swapped = um.recipe_substitute_atom(r, 0, "z")
+    assert not np.allclose(swapped.outputs()[0], base[0], atol=1e-6)
+    assert np.allclose(um.recipe_substitute_atom(swapped, 0, "a").outputs()[0], base[0], atol=1e-12)
+
+
+def test_arch4_seam_cutting_through_the_mind():
+    """ARCH-4: seam cutting is a real UnifiedMind faculty -- the real FWD-3 seam. Through the mind: a meridian seam
+    cuts a closed sphere into a disk (chi=1, manifold), NON-DESTRUCTIVELY (every face preserved, unlike the
+    puncture which deletes faces), and a well-chosen seam unwraps better than the puncture -- end-to-end."""
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    from holographic_meshsmooth import _icosphere
+    from holographic_meshuv import uv_unwrap, uv_distortion, puncture
+
+    um = UnifiedMind(dim=256, seed=0)
+    s = _icosphere(3)
+    north = int(np.argmax(s.vertices[:, 2]))
+    south = int(np.argmin(s.vertices[:, 2]))
+
+    meridian = um.mesh_shortest_seam(s, north, south)
+    disk = um.mesh_cut_seam(s, meridian)
+    assert disk.is_manifold() and not disk.is_closed() and disk.euler_characteristic() == 1   # a disk
+    assert disk.n_faces == s.n_faces                                  # non-destructive
+    assert puncture(s, 0).n_faces < s.n_faces                        # the puncture deletes geometry
+
+    # a well-chosen seam beats the puncture on unwrap distortion
+    equator = int(np.argmin(np.abs(s.vertices[:, 2])))
+    good = um.mesh_cut_seam(s, um.mesh_shortest_seam(s, north, equator))
+    assert uv_distortion(good, uv_unwrap(good)) < uv_distortion(puncture(s, 0), uv_unwrap(puncture(s, 0)))
+
+
+def test_arch7_representation_routing_csg_through_the_mind():
+    """ARCH-7: representation routing is a real UnifiedMind faculty -- the policy layer on FWD-11's bridge.
+    Through the mind: the router sends booleans to the SDF representation, and mesh_csg computes a union by routing
+    two meshes through the SDF -- merging topology when they overlap (one closed-manifold blob), and getting it
+    geometrically right (inclusion-exclusion) -- something the mesh kernel can't do natively."""
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    from holographic_mesh import Mesh
+    from holographic_meshsmooth import _icosphere
+
+    um = UnifiedMind(dim=256, seed=0)
+    assert um.route_representation("union") == "sdf"          # the policy
+    assert um.route_representation("boundary") == "mesh"
+
+    sph = _icosphere(2)
+    A = Mesh(sph.vertices + np.array([-0.5, 0, 0]), [tuple(f) for f in sph.faces])
+    B = Mesh(sph.vertices + np.array([0.5, 0, 0]), [tuple(f) for f in sph.faces])
+
+    uni = um.mesh_csg("union", A, B)
+    assert um.mesh_connected_components(uni) == 1            # overlapping -> merged to one blob
+    assert uni.is_closed() and uni.is_manifold()
+
+    inter = um.mesh_csg("intersection", A, B)
+    vA, vB = um.mesh_volume(A), um.mesh_volume(B)
+    assert abs(um.mesh_volume(uni) - (vA + vB - um.mesh_volume(inter))) / vA < 0.05   # inclusion-exclusion
+
+
+def test_arch3_geometry_weighted_graph_through_the_mind():
+    """ARCH-3: geometry-weighted graph operations on hypervectors are real UnifiedMind faculties -- the
+    cotangent-Laplacian mirror. Through the mind: the weighted similarity-graph eigenmap recovers a ring, the
+    weighted adjacency carries cosine similarities (not 1s), and under non-uniform sampling weighting beats binary."""
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    from holographic_simgraph import _ring_vectors, _circ_corr
+
+    um = UnifiedMind(dim=256, seed=0)
+    V, th = _ring_vectors(nonuniform=False, seed=0)
+
+    # the eigenmap recovers the ring
+    assert _circ_corr(um.graph_ring_order(V, weighted=True), th) > 0.99
+
+    # the weighting carries the geometry (cosine similarities), not binary 1s
+    A = um.similarity_graph(V, k=6, weighted=True)
+    assert A[A > 0].std() > 0.0 and A[A > 0].max() <= 1.0000001
+    B = um.similarity_graph(V, k=6, weighted=False)
+    assert set(np.unique(B[B > 0])) == {1.0}              # the binary graph's edges are all 1
+
+    # geometry-weighting wins under irregular sampling
+    Vn, thn = _ring_vectors(nonuniform=True, seed=0)
+    rw = _circ_corr(um.graph_ring_order(Vn, weighted=True), thn)
+    rb = _circ_corr(um.graph_ring_order(Vn, weighted=False), thn)
+    assert rw > rb
+
+
+def test_arch5_subdivide_sequence_through_the_mind():
+    """ARCH-5: subdivision curves on hypervector sequences are a real UnifiedMind faculty -- FWD-8's mesh
+    subdivision turned inward (1-manifold). Through the mind: the count doubles each level (refine), a straight line
+    of vectors stays straight (affine reproduction), and a zig-zag's roughness shrinks (low-pass smoothing)."""
+    import numpy as np
+    from holographic_unified import UnifiedMind
+
+    um = UnifiedMind(dim=64, seed=0)
+    rng = np.random.default_rng(0)
+
+    # refine: count doubles
+    P = rng.standard_normal((6, 64))
+    assert len(um.subdivide_sequence(P, levels=2)) == 18                  # 6 -> 10 -> 18
+
+    # affine reproduction: a straight line of vectors stays on the line
+    a, b = rng.standard_normal(64), rng.standard_normal(64)
+    ramp = np.array([a + (b - a) * t for t in np.linspace(0, 1, 6)])
+    sub = um.subdivide_sequence(ramp, levels=3)
+    dn = (b - a) / np.linalg.norm(b - a)
+    assert max(np.linalg.norm((p - a) - np.dot(p - a, dn) * dn) for p in sub) < 1e-12
+
+    # low-pass: a zig-zag smooths
+    zig = np.zeros((10, 64)); zig[::2, 0] = 1.0; zig[1::2, 0] = -1.0
+    r0 = float(np.sum(np.diff(zig, n=2, axis=0) ** 2))
+    r2 = float(np.sum(np.diff(um.subdivide_sequence(zig, levels=2), n=2, axis=0) ** 2))
+    assert r2 < r0
+
+
+def test_arch6_blendshape_posing_through_the_mind():
+    """ARCH-6: rig + IK for structures (blendshape posing) are real UnifiedMind faculties -- FWD-9 skinning + FWD-10
+    IK turned inward. Through the mind: the forward blend reproduces a target for a one-hot weight (skinning), and
+    the IK recovers a reachable blend's weights / returns the closest valid blend otherwise -- via the same
+    project_onto_constraints sweeper FWD-10 uses."""
+    import numpy as np
+    from holographic_unified import UnifiedMind
+
+    um = UnifiedMind(dim=256, seed=0)
+    P = np.random.default_rng(0).standard_normal((4, 256))
+
+    # forward skinning: a one-hot blend is that target
+    assert np.allclose(um.blend_pose(P, [0, 1, 0, 0]), P[1] / np.linalg.norm(P[1]), atol=1e-12)
+
+    # IK reachable: recover a known blend's weights
+    w_true = np.array([0.4, 0.3, 0.2, 0.1])
+    w = um.solve_pose(P, P.T @ w_true)
+    assert np.sum(np.abs(w - w_true)) < 0.02
+    assert w.min() >= -1e-9 and abs(w.sum() - 1.0) < 1e-6        # a valid convex blend
+
+    # IK unreachable: closest valid blend (beats any single target)
+    goal = np.random.default_rng(9).standard_normal(256)
+    w2 = um.solve_pose(P, goal)
+    blend_resid = np.linalg.norm(P.T @ w2 - goal)
+    assert blend_resid <= min(np.linalg.norm(P[i] - goal) for i in range(4)) + 1e-6
+
+
+def test_fwd7_remainder_modeler_verbs_through_the_mind():
+    """FWD-7 remainder: bevel, bridge, loop-cut are real UnifiedMind faculties -- the three verbs needing vertex
+    duplication / loop tracing. Through the mind: bevel chamfers a cube corner (chi preserved), bridge joins two
+    squares into a tube, loop-cut inserts an edge loop around a cube (chi preserved)."""
+    import numpy as np
+    from holographic_unified import UnifiedMind
+    from holographic_mesh import box
+
+    um = UnifiedMind(dim=128, seed=0)
+    cube = box()
+
+    bev = um.mesh_bevel_vertex(cube, 0, ratio=0.3)
+    assert bev.is_manifold() and bev.is_closed() and bev.euler_characteristic() == 2
+
+    sq0 = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], float)
+    sq1 = sq0.copy(); sq1[:, 2] = 1.0
+    tube = um.mesh_bridge(np.vstack([sq0, sq1]), [0, 1, 2, 3], [4, 5, 6, 7], closed=True)
+    assert tube.is_manifold() and tube.n_faces == 4 and tube.euler_characteristic() == 0
+
+    f0 = tuple(cube.faces[0])
+    lc = um.mesh_loop_cut(cube, 0, (f0[0], f0[1]))
+    assert lc.is_manifold() and lc.is_closed() and lc.euler_characteristic() == 2
+    assert lc.n_faces == cube.n_faces + 4

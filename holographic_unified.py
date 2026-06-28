@@ -1909,6 +1909,40 @@ class UnifiedMind:
         from holographic_spectral import SpectralBasis
         return SpectralBasis(points, k=k, n_basis=n_basis)
 
+    def similarity_graph(self, vectors, k=6, weighted=True):
+        """A geometry-weighted kNN graph over hypervectors (holographic_simgraph, ARCH-3): the cotangent-Laplacian
+        idea turned inward. weighted=True makes each edge carry the COSINE SIMILARITY (the geometry of the vector
+        space) -- the analogue of cotangent weights; weighted=False is the engine's existing BINARY kNN graph.
+        Returns a symmetric adjacency matrix."""
+        from holographic_simgraph import similarity_adjacency
+        return similarity_adjacency(vectors, k, weighted=weighted)
+
+    def graph_spectral_embedding(self, vectors, k=6, dims=2, weighted=True):
+        """Laplacian eigenmaps of a hypervector set (holographic_simgraph, ARCH-3): the `dims` lowest non-trivial
+        eigenvectors of the (similarity-weighted) graph Laplacian -- the data-driven coordinates the manifold's
+        points live on. Recovers a ring as a circle, a curve as a line. Returns (N, dims). Kept negative: under
+        UNIFORM high-D sampling the weighted and binary graphs essentially tie (concentration of measure, unlike a
+        mesh's sharp cotangent gap); weighting helps most under IRREGULAR sampling."""
+        from holographic_simgraph import spectral_embedding
+        return spectral_embedding(vectors, k=k, dims=dims, weighted=weighted)
+
+    def graph_ring_order(self, vectors, k=6, weighted=True):
+        """For hypervectors sampled on a 1-D ring, the recovered cyclic coordinate (holographic_simgraph, ARCH-3):
+        atan2 of the first two non-trivial Laplacian eigenvectors -- a ring's eigenmap is a circle, so this recovers
+        the points' order around the ring from the high-D vectors alone. Returns (N,) angles."""
+        from holographic_simgraph import ring_order
+        return ring_order(vectors, k=k, weighted=weighted)
+
+    def subdivide_sequence(self, points, levels=1, closed=False):
+        """Subdivide a SEQUENCE of hypervectors into a smooth limit curve (holographic_subdivcurve, ARCH-5):
+        Chaikin corner-cutting, the 1-D inward mirror of FWD-8's mesh subdivision. Each level doubles the point
+        count (refine) and low-pass smooths (corner-cutting). Reproduces a straight line of vectors exactly (affine,
+        like FWD-8's 'flat stays flat'), converges to a limit curve, and shrinks a zig-zag's roughness. Returns the
+        refined (M, dim) sequence. Kept negative: Chaikin is APPROXIMATING -- the original control points are cut,
+        not interpolated (the same approximating nature as Loop; an interpolating 4-point scheme is deferred)."""
+        from holographic_subdivcurve import subdivide_sequence
+        return subdivide_sequence(points, levels=levels, closed=closed)
+
     def manifold_topology(self, points, lo=1.3, hi=2.6, steps=7, max_points=250):
         """Name a point cloud's topology by persistent homology (holographic_topology, EXP-7): the Betti
         signature (components, loops, voids) that persists across a scale band. The principled generalisation
@@ -2089,6 +2123,35 @@ class UnifiedMind:
         """Replay a StructureRecipe to its output vector(s) -- the single realize path for any structure."""
         outs = recipe.outputs()
         return outs[0] if len(outs) == 1 else outs
+
+    def validate_recipe(self, recipe):
+        """Check a StructureRecipe is WELL-FORMED (holographic_recipeops, ARCH-1) -- the recipe's is_manifold():
+        every op references only EARLIER existing results (a DAG, no forward/dangling/out-of-range refs), raw
+        indices and repeat templates in range. Returns (ok, problems). Pairs with the recipe EDIT operators below
+        -- the recipe equivalent of the mesh Euler operators (validate + local invariant-preserving edits)."""
+        from holographic_recipeops import validate
+        return validate(recipe)
+
+    def recipe_commute_bind(self, recipe, handle):
+        """Edit a recipe (holographic_recipeops, ARCH-1): swap the two arguments of the bind at `handle`,
+        bind(a,b)->bind(b,a). Because bind is circular convolution (commutative), the realized vector is unchanged
+        (FFT precision). ITS OWN INVERSE -- the recipe analogue of mesh flip_edge. Returns a new recipe."""
+        from holographic_recipeops import commute_bind
+        return commute_bind(recipe, handle)
+
+    def recipe_reorder_members(self, recipe, handle, perm):
+        """Edit a recipe (holographic_recipeops, ARCH-1): permute the members of the bundle/superpose at `handle`
+        by `perm`. Because bundle/superpose are sums (commutative), the realized vector is unchanged; invertible by
+        the inverse permutation. The parameterised cousin of recipe_commute_bind. Returns a new recipe."""
+        from holographic_recipeops import reorder_members
+        return reorder_members(recipe, handle, perm)
+
+    def recipe_substitute_atom(self, recipe, handle, new_name):
+        """Edit a recipe (holographic_recipeops, ARCH-1): rename the atom leaf at `handle` -- the recipe analogue
+        of moving a vertex (keeps the STRUCTURE valid while changing the realized vector predictably; reversed
+        exactly by substituting the original name back). Returns a new recipe."""
+        from holographic_recipeops import substitute_atom
+        return substitute_atom(recipe, handle, new_name)
 
     def template_names(self):
         """The names of the available parameterized recipe templates (ISA-6, the macro layer)."""
@@ -2884,6 +2947,23 @@ class UnifiedMind:
         from holographic_meshuv import uv_distortion
         return uv_distortion(mesh, uv)
 
+    def mesh_cut_seam(self, mesh, seam):
+        """Cut a mesh open along a SEAM (holographic_meshseam, ARCH-4): given `seam` (an ordered list of vertex
+        indices forming an edge path), duplicate the seam's interior vertices on a consistent side, opening a
+        closed surface into a disk -- the REAL seam that FWD-3's crude `puncture` stood in for. Non-destructive
+        (every face preserved, unlike puncture which deletes faces). A meridian-cut sphere becomes a disk (chi=1).
+        Returns a new Mesh. Kept negative: seam CHOICE matters (a full pole-to-pole meridian unwraps worse than a
+        pole-to-equator cut); a good atlas needs several cuts (deferred)."""
+        from holographic_meshseam import cut_seam
+        return cut_seam(mesh, seam)
+
+    def mesh_shortest_seam(self, mesh, a, b):
+        """A seam path between two vertices (holographic_meshseam, ARCH-4): the shortest edge path from `a` to `b`
+        (Dijkstra on the mesh edge graph), e.g. a meridian from a pole to its antipode. Returns an ordered list of
+        vertex indices to hand to mesh_cut_seam."""
+        from holographic_meshseam import shortest_seam
+        return shortest_seam(mesh, a, b)
+
     def mesh_extrude(self, mesh, face_index, distance):
         """EXTRUDE a face (holographic_meshverbs, FWD-7): lift face `face_index` along its outward normal by
         `distance` and wall it in -- the iconic modelling verb. Preserves the Euler characteristic and keeps a
@@ -2904,6 +2984,32 @@ class UnifiedMind:
         manifold, one fewer vertex. Distinct from `mesh_collapse_edge` (the decimation cousin). Returns a Mesh."""
         from holographic_meshverbs import dissolve_vertex
         return dissolve_vertex(mesh, vertex)
+
+    def mesh_bevel_vertex(self, mesh, vertex, ratio=0.25):
+        """BEVEL a corner (holographic_meshverbs2, FWD-7 remainder): pull each edge incident to `vertex` back toward
+        its neighbour by `ratio`, chamfer every incident face, and cap the hole with a new face -- the corner
+        becomes a small facet. Preserves chi + closed + manifold. Returns a Mesh. Kept negative: this is the VERTEX
+        bevel; the EDGE bevel (two-sided fan split) is deferred; ratio must be in (0,1)."""
+        from holographic_meshverbs2 import bevel_vertex
+        return bevel_vertex(mesh, vertex, ratio=ratio)
+
+    def mesh_bridge(self, verts, loop_a, loop_b, closed=True):
+        """BRIDGE two edge loops (holographic_meshverbs2, FWD-7 remainder): join two equal-length ordered vertex
+        loops with a band of quads -- the verb that builds a tube between two openings. `verts` holds all points;
+        `loop_a`/`loop_b` are equal-length index lists. Returns a Mesh of the band. Kept negative: requires
+        equal-length, already-aligned loops (the caller supplies the correspondence); matching unequal loops is
+        deferred."""
+        from holographic_meshverbs2 import bridge_loops
+        return bridge_loops(verts, loop_a, loop_b, closed=closed)
+
+    def mesh_loop_cut(self, mesh, start_face, start_edge):
+        """LOOP-CUT: insert an edge loop (holographic_meshverbs2, FWD-7 remainder): trace the perpendicular loop of
+        quads (enter through one edge, leave through the OPPOSITE edge) carrying `start_edge` of quad `start_face`,
+        and split every crossed quad in two with a new mid-loop -- the verb that adds a ring of resolution.
+        Preserves chi. Returns a Mesh. Kept negative: QUADS only (the opposite-edge trace is undefined on
+        triangles); the trace stops at a boundary or when it returns to the start."""
+        from holographic_meshverbs2 import loop_cut
+        return loop_cut(mesh, start_face, start_edge)
 
     def mesh_subdivide(self, mesh, levels=1):
         """Loop-SUBDIVIDE a triangle mesh (holographic_meshsubdiv, FWD-8): refine each triangle into four and
@@ -2937,6 +3043,25 @@ class UnifiedMind:
         from holographic_meshskin import skin_mesh as _skin_mesh
         return _skin_mesh(mesh, transforms, weights)
 
+    def blend_pose(self, targets, weights):
+        """The forward blendshape/skinning map for STRUCTURES (holographic_blendpose, ARCH-6): a soft weighted blend
+        of pose-target structures, normalize(sum_i w_i targets_i) -- FWD-9's soft mixture, one rung up (mixing whole
+        structures, not transforms). `targets` is (m,dim), `weights` (m,). Returns the (dim,) pose. Paired with
+        solve_pose (the inverse)."""
+        from holographic_blendpose import blend_pose
+        return blend_pose(targets, weights)
+
+    def solve_pose(self, targets, goal, iters=400):
+        """Inverse kinematics for a blendshape rig of STRUCTURES (holographic_blendpose, ARCH-6): solve the blend
+        weights so blend_pose(targets, w) reaches `goal`, by handing two constraints to the SAME
+        project_onto_constraints sweeper FWD-10 used for FABRIK -- FIT the goal (least-squares step, FABRIK's reach)
+        and stay a VALID CONVEX BLEND (simplex projection, FABRIK's length constraint). The blend weights are the
+        'joint angles'. Returns the weights (a valid convex blend). Exact when the goal is a blend of the targets;
+        the CLOSEST valid blend otherwise (residual <= any single target). Kept negative: a goal outside the
+        targets' convex blend is unreachable -- that needs a richer rig (more targets), not a better solver."""
+        from holographic_blendpose import solve_pose
+        return solve_pose(targets, goal, iters=iters)
+
     def mesh_from_sdf(self, sdf, bounds, res=24, level=0.0):
         """Extract a MESH from an implicit field (holographic_meshbridge, FWD-11; SDF -> mesh): sample the scalar
         field `sdf` (a callable points(N,3)->values, e.g. `sphere_sdf` or a `metaball_field` of Gaussian splats) on
@@ -2957,6 +3082,36 @@ class UnifiedMind:
         is always right; a generalized winding number is the fix, not shipped)."""
         from holographic_meshbridge import mesh_to_sdf as _mesh_to_sdf
         return _mesh_to_sdf(mesh, points)
+
+    def route_representation(self, operation):
+        """The routing POLICY (holographic_route, ARCH-7): the representation whose capability set supports
+        `operation` -- e.g. booleans ("union"/"intersection"/"difference") route to "sdf" (field min/max), explicit
+        "boundary"/"render" to "mesh", soft "blend" to "splat". The decision layer on top of the FWD-11 bridge."""
+        from holographic_route import representation_for
+        return representation_for(operation)
+
+    def mesh_csg(self, operation, mesh_a, mesh_b, res=28, bounds=None):
+        """Boolean of two solids by ROUTING through the SDF (holographic_route, ARCH-7's flagship): `operation` in
+        {"union","intersection","difference"}. The mesh kernel has no native booleans; this routes mesh_a, mesh_b
+        -> SDF (mesh_to_sdf), combines the fields (min / max / max-with-negation), and extracts back to a mesh
+        (marching tetrahedra). The result can CHANGE TOPOLOGY -- overlapping solids merge to one component, separate
+        ones stay two -- which a mesh cannot do to itself. Geometrically correct (satisfies inclusion-exclusion).
+        Returns a Mesh. Kept negative: resolution is the grid's (sharp seams round); the input meshes' SDF sign must
+        be reliable (convex-ish), per FWD-11."""
+        from holographic_route import route_csg
+        return route_csg(operation, mesh_a, mesh_b, res=res, bounds=bounds)
+
+    def mesh_volume(self, mesh):
+        """The enclosed volume of a closed mesh (holographic_route, ARCH-7; divergence theorem over outward-wound
+        triangles). Used to verify CSG booleans are geometrically -- not just topologically -- correct."""
+        from holographic_route import mesh_volume
+        return mesh_volume(mesh)
+
+    def mesh_connected_components(self, mesh):
+        """The number of connected components of a mesh (holographic_route, ARCH-7; flood fill over edge adjacency).
+        A CSG union of overlapping solids has 1; of separate solids, 2."""
+        from holographic_route import connected_components
+        return connected_components(mesh)
 
     # ---- the SEARCH & DYNAMICS faculties (integration plan, Tier 3) -----------------------------
     # Min-cost search on a graph or a trellis (a maze; a fragment assembly) and learned linear
