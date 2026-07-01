@@ -2479,7 +2479,8 @@ adds the repo root to its own import path so it still runs from anywhere:
     benchmark_holographic.py, stress_holographic.py    (still at the root: these are
                                        the live measurement suites, not one-offs)
     holographic_metrics.py             central JSON/Markdown evidence rollup; run `make metrics`
-                                       for fast evidence or `make metrics-path-d` to refresh core
+                                       for fast evidence, `make metrics-c-tests` for NumPy/C
+                                       mode parity, or `make metrics-path-d` to refresh core
                                        Path D caches first
     figures/   rendered results
 
