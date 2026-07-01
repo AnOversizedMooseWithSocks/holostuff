@@ -2189,6 +2189,8 @@ Tests (2083 total):
                                   + localises a single tamper in <= log2(n) checks (the verify_store faculty)
     test_benchmarks.py            external-baseline harness (BLD-2): the rd code vs zlib/lzma and the forest
                                   vs exact brute-force NN, asserting the honest direction (incl. where stdlib wins)
+    test_holographic_metrics.py   central metrics spine: external baselines, ablations, C evidence, and Path D
+                                  cache parsers produce one JSON/Markdown report
     test_theory_references.py     BLD-3: every test THEORY.md cites must exist, so the guarantees doc can't rot
     test_holographic_fpe.py       BLD-7: N-D fractional power encoding -- n-D shift-as-bind, product kernel,
                                   compute-on-functions (a function as a bundle, queried + shifted by bind);
@@ -2476,6 +2478,9 @@ adds the repo root to its own import path so it still runs from anywhere:
     archive/make_test_image.py        (e.g. `python archive/exp_wht.py`)
     benchmark_holographic.py, stress_holographic.py    (still at the root: these are
                                        the live measurement suites, not one-offs)
+    holographic_metrics.py             central JSON/Markdown evidence rollup; run `make metrics`
+                                       for fast evidence or `make metrics-path-d` to refresh core
+                                       Path D caches first
     figures/   rendered results
 
 ---
